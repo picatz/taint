@@ -96,7 +96,10 @@ func imports(pass *analysis.Pass, pkgs ...string) bool {
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
-	// Require the database/sql package is used.
+	// Require the database/sql or GORM v1 packages are imported in the
+	// program being analyzed before running the analysis.
+	//
+	// This prevents wasting time analyzing programs that don't use SQL.
 	if !imports(pass, "database/sql", "github.com/jinzhu/gorm") {
 		return nil, nil
 	}
