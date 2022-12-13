@@ -1,0 +1,38 @@
+# This workflow runs go build and test for each
+# push and pull request to the main branch.
+name: Build and Test
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup Go
+      uses: actions/setup-go@v3
+      with:
+        go-version: 1.19
+
+  - name: Setup Go Cache
+    uses: actions/cache@v3
+    with:
+      path: |
+        ~/.cache/go-build
+        ~/go/pkg/mod
+      key: ${{ runner.os }}-golang-${{ hashFiles('**/go.sum') }}
+      restore-keys: |
+        ${{ runner.os }}-golang-
+
+    - name: Build
+      run: go build -v ./...
+
+    - name: Test
+      run: go test -v ./...
+ 
