@@ -7,11 +7,11 @@ if err != nil {
 }
 
 sources := taint.NewSources(
-    "*net/http.Request",
+	"*net/http.Request",
 )
 
 sinks := taint.NewSources(
-    "(*database/sql.DB).Query",
+	"(*database/sql.DB).Query",
 	"(*database/sql.DB).QueryContext",
 	"(*database/sql.DB).QueryRow",
 	"(*database/sql.DB).QueryRowContext",
