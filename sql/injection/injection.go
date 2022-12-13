@@ -12,8 +12,8 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-const Category = "go/sast/internal/database/sql/injection"
-
+// userControlledValues are the sources of user controlled values that
+// can be tained and end up in a SQL query.
 var userControlledValues = taint.NewSources(
 	// Function (and method) calls
 	// "(net/url.Values).Get",
@@ -34,6 +34,7 @@ var userControlledValues = taint.NewSources(
 	//
 	// Types (and fields)
 	"*net/http.Request",
+	//
 	// "google.golang.org/grpc/metadata.MD", ?
 	//
 	// TODO: add more, consider pointer variants and specific fields on types
@@ -55,41 +56,48 @@ var injectableSQLMethods = taint.NewSinks(
 	// GORM v1
 	// https://gorm.io/docs/security.html
 	// https://gorm.io/docs/security.html#SQL-injection-Methods
-	// "(*github.com/jinzhu/gorm.DB).Where",
-	// "(*github.com/jinzhu/gorm.DB).Or",
-	// "(*github.com/jinzhu/gorm.DB).Not",
-	// "(*github.com/jinzhu/gorm.DB).Group",
-	// "(*github.com/jinzhu/gorm.DB).Having",
-	// "(*github.com/jinzhu/gorm.DB).Joins",
-	// "(*github.com/jinzhu/gorm.DB).Select",
-	// "(*github.com/jinzhu/gorm.DB).Distinct",
-	// "(*github.com/jinzhu/gorm.DB).Pluck",
-	// "(*github.com/jinzhu/gorm.DB).Raw",
-	// "(*github.com/jinzhu/gorm.DB).Exec",
-	// "(*github.com/jinzhu/gorm.DB).Order",
+	"(*github.com/jinzhu/gorm.DB).Where",
+	"(*github.com/jinzhu/gorm.DB).Or",
+	"(*github.com/jinzhu/gorm.DB).Not",
+	"(*github.com/jinzhu/gorm.DB).Group",
+	"(*github.com/jinzhu/gorm.DB).Having",
+	"(*github.com/jinzhu/gorm.DB).Joins",
+	"(*github.com/jinzhu/gorm.DB).Select",
+	"(*github.com/jinzhu/gorm.DB).Distinct",
+	"(*github.com/jinzhu/gorm.DB).Pluck",
+	"(*github.com/jinzhu/gorm.DB).Raw",
+	"(*github.com/jinzhu/gorm.DB).Exec",
+	"(*github.com/jinzhu/gorm.DB).Order",
 	//
 	// TODO: add more, consider (non-)pointer variants?
 )
 
 var Analyzer = &analysis.Analyzer{
 	Name:     "sqli",
-	Doc:      "finds potential database/sql injection issues",
+	Doc:      "finds potential SQL injection issues",
 	Run:      run,
 	Requires: []*analysis.Analyzer{buildssa.Analyzer},
 }
 
-func imports(pass *analysis.Pass, pkg string) bool {
+func imports(pass *analysis.Pass, pkgs ...string) bool {
+	var imported bool
 	for _, imp := range pass.Pkg.Imports() {
-		if imp.Path() == pkg {
-			return true
+		for _, pkg := range pkgs {
+			if strings.HasSuffix(imp.Path(), pkg) {
+				imported = true
+				break
+			}
+		}
+		if imported {
+			break
 		}
 	}
-	return false
+	return imported
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
 	// Require the database/sql package is used.
-	if !imports(pass, "database/sql") || !imports(pass, "github.com/jinzhu/gorm") {
+	if !imports(pass, "database/sql", "github.com/jinzhu/gorm") {
 		return nil, nil
 	}
 

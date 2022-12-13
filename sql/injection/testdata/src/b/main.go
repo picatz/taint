@@ -7,25 +7,6 @@ import (
 	"net/url"
 )
 
-/*
-o.business
-0:
-        [*ssa.Alloc          ] t0 = new [1]any (varargs)
-        [*ssa.IndexAddr      ] t1 = &t0[0:int]
-        [*ssa.MakeInterface  ] t2 = make any <- string (name)
-        [*ssa.Store          ] *t1 = t2
-        [*ssa.Slice          ] t3 = slice t0[:]
-        [*ssa.Call           ] t4 = fmt.Sprintf("SELECT * FROM foo...":string, t3...)
-        [*ssa.Call           ] t5 = (*database/sql.DB).Query(db, t4, nil:[]any...)
-        [*ssa.Extract        ] t6 = extract t5 #0
-        [*ssa.Extract        ] t7 = extract t5 #1
-        [*ssa.BinOp          ] t8 = t7 != nil:error
-        [*ssa.If             ] if t8 goto 1 else 2
-1:
-        [*ssa.Return         ] return t7
-2:
-        [*ssa.Return         ] return nil:error
-*/
 func business(db *sql.DB, name string) error {
 	q := fmt.Sprintf("SELECT * FROM voo where name='%s'", name)
 	_, err := db.Query(q) // want "potential sql injection"

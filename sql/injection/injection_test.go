@@ -44,3 +44,7 @@ func TestH(t *testing.T) {
 func TestExample(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "example")
 }
+
+func TestI(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "i")
+}

@@ -6,7 +6,7 @@ import (
 )
 
 func business(db *sql.DB, q string) {
-	db.Query(q)
+	db.Query(q) // want "potential sql injection"
 }
 
 func run() {

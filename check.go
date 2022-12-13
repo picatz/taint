@@ -127,6 +127,8 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 	// calls from crashing the program.
 	visited.add(v)
 
+	// fmt.Printf("! check SSA value %s: %[1]T\n", v)
+
 	// This is the core of the algorithm.
 	//
 	// It handles traversing the SSA value and callgraph to identify
@@ -151,8 +153,14 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 	// because we need to step backwards through the callgraph path
 	// (just one step?) to identify what actual value the caller used.
 	case *ssa.Parameter:
+		// Check if the parameter's type is a source.
+		paramTypeStr := value.Type().String()
+		if src, ok := sources.includes(paramTypeStr); ok {
+			return true, src, value
+		}
+
 		// TODO: consider if we can remove the range with a single
-		//       step backwards.
+		//       step backwards?
 		for _, edge := range path {
 			// Find the caller that used the function parameter's parent (the function).
 			if edge.Callee.Func == v.Parent() {
@@ -251,20 +259,56 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 		parentFn := value.Parent().Parent()
 		for _, block := range parentFn.DomPreorder() {
 			for _, instr := range block.Instrs {
+				// fmt.Printf("\t - check SSA value %s: %[1]T ~ %[2]v\n", instr, value.Name())
 				val, isval := instr.(ssa.Value)
 				if !isval {
 					continue
 				}
 				alloc, isalloc := val.(*ssa.Alloc)
-				if !isalloc {
+				if isalloc {
+					if alloc.Comment == value.Name() {
+						tainted, src, tv := checkSSAValue(path, sources, val, visited)
+						if tainted {
+							return true, src, tv
+						}
+					}
 					continue
 				}
-				if alloc.Comment == value.Name() {
-					tainted, src, tv := checkSSAValue(path, sources, val, visited)
-					if tainted {
-						return true, src, tv
-					}
-				}
+
+				//  Example
+				//
+				//  mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				//  	var input map[string]any ←────────╮         ↑
+				//                      ╭─────────────────↓─────────╯
+				// 		json.NewDecoder(r.Body).Decode(&input) ←────╮
+				//	                                               	│
+				// 		func() {									↓
+				// 			userValue := fmt.Sprintf("%s", input["query"]) ←────────╮
+				// 			business(db, func() *string {							│
+				// 				return &userValue ←─────────────────────────────────╯
+				// 			}())
+				// 		}()
+				//  })
+				//
+				// tainted, src, tv := checkSSAValue(path, sources, val, valueSet{})
+				// if tainted {
+				// 	// The value is tainted so we need to check if the value is the
+				// 	// same as the value we are looking for (*ssa.FreeVar).
+				// 	if tv.Referrers() != nil {
+				// 		// TODO: how to handle this case?
+				// 		for _, ref := range *tv.Referrers() {
+				// 			if value.Name() == "input" {
+				// 				fmt.Printf("\t\t\t\t tv %T: %[1]v\n", tv)
+				// 				for _, instr := range ref.Block().Instrs {
+				// 					fmt.Printf("\t\t\t\t ref ----------------> %T: %[1]v\n", instr)
+				// 				}
+				// 			}
+				// 		}
+				// 	}
+				// 	if tv.Name() == value.Name() {
+				// 		return true, src, tv
+				// 	}
+				// }
 			}
 		}
 	case *ssa.IndexAddr:
@@ -299,6 +343,11 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 		*/
 		if src, ok := sources.includes(value.X.Type().String()); ok {
 			return true, src, value
+		}
+
+		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
+		if tainted {
+			return true, src, tv
 		}
 
 		refs := value.Referrers()
@@ -360,6 +409,7 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 		if tainted {
 			return true, src, tv
 		}
+
 	case *ssa.Slice:
 		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
 		if tainted {
@@ -416,9 +466,15 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 // SSA instructions, like the contents of a calling function.
 func checkSSAInstruction(path callgraph.Path, sources Sources, i ssa.Instruction, visited valueSet) (bool, string, ssa.Value) {
 	// fmt.Printf("! check SSA instr %s: %[1]T\n", i)
+
+	i.Parent()
 	switch instr := i.(type) {
 	case *ssa.Store:
 		tainted, src, tv := checkSSAValue(path, sources, instr.Val, visited)
+		if tainted {
+			return true, src, tv
+		}
+		tainted, src, tv = checkSSAValue(path, sources, instr.Addr, visited)
 		if tainted {
 			return true, src, tv
 		}
