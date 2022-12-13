@@ -6,6 +6,10 @@ import (
 )
 
 // Result is an individual finding from a taint check.
+//
+// It contains the path within the callgraph where the source
+// found its way into the sink, along with the source and sink
+// type information and SSA values.
 type Result struct {
 	// Path is the specific path within a callgraph
 	// where the source founds its way into a sink.
@@ -25,12 +29,14 @@ type Result struct {
 // Results is a collection of unique findings from a taint check.
 type Results []Result
 
-// Check is the primary function users of this package will interact with.
+// Check is the primary function users of this package will use.
+//
 // It returns a list of results from the callgraph, where any of the given
 // sources found their way into any of the given sinks.
 //
 // Sources is a list of functions that return user-controlled values,
-// and sinks is a list of potentially dangerous functions.
+// such as HTTP request parameters. Sinks is a list of potentially dangerous
+// functions that should not be called with user-controlled values.
 //
 //	Diagram
 //	             ╭───────────────────────────────────────────────────────────────╮
@@ -45,7 +51,14 @@ type Results []Result
 //	                                       ╭─────────╮
 //	                                       │ Results │
 //	                                       ╰─────────╯
+//
+// This is a recursive algorithm that will traverse the callgraph to identify
+// if any of the given sources were used to obtain the initial SSA value (v).
+// We handle this value, depending on its type, where we "peel back" its
+// references and relevant SSA instructions to determine if any of the given
+// sinks were involved in the creation of the initial value.
 func Check(cg *callgraph.Graph, sources Sources, sinks Sinks) Results {
+	// The results of the taint check.
 	results := Results{}
 
 	// For each sink given, identify the individual paths from
@@ -70,6 +83,7 @@ func Check(cg *callgraph.Graph, sources Sources, sinks Sinks) Results {
 				// to include in the results.
 				query := sinkPath.Last()
 
+				// Add the result to the list of results.
 				results = append(results, Result{
 					Path:        sinkPath,
 					SourceType:  src,
@@ -81,22 +95,31 @@ func Check(cg *callgraph.Graph, sources Sources, sinks Sinks) Results {
 		}
 	}
 
+	// Return the results of the taint check.
 	return results
 }
 
 // checkPath implements taint analysis that can be used to identify if the given
 // callgraph path contains information from taintable sources (typically user input).
 func checkPath(path callgraph.Path, sources Sources) (bool, string, ssa.Value) {
+	// Ensure the path isn't empty (which can happen?!).
 	if path.Empty() {
 		return false, "", nil
 	}
 
+	// Extract the last call from the path, along with its arguments,
+	// to check if any of the given sources were used to obtain it.
 	var (
 		lastCall     = path.Last()
 		lastCallArgs = lastCall.Site.Common().Args
 		visited      = valueSet{}
 	)
 
+	// Check if any of the given sources were used to obtain the last call
+	// in the path. If so, we can assume the path is tainted.
+	//
+	// TODO: when non-function sinks are supported, we will need to handle
+	//       them differently here.
 	for _, lastCallArg := range lastCallArgs {
 		tainted, src, tv := checkSSAValue(path, sources, lastCallArg, visited)
 		if tainted {
@@ -275,6 +298,8 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 					continue
 				}
 
+				// TODO: handle more cases like this...
+				//
 				//  Example
 				//
 				//  mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
