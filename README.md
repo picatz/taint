@@ -1,5 +1,7 @@
 # taint
- 
+
+Implements static [taint analysis](https://en.wikipedia.org/wiki/Taint_checking) for Go programs.
+
 ```go
 cg, _ := callgraph.New(mainFn, buildSSA.SrcFuncs...)
 
