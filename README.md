@@ -1,10 +1,7 @@
 # taint
  
 ```go
-cg, err := callgraph.New(mainFn, buildSSA.SrcFuncs...)
-if err != nil {
-	return nil, fmt.Errorf("failed to create new callgraph: %w", err)
-}
+cg, _ := callgraph.New(mainFn, buildSSA.SrcFuncs...)
 
 sources := taint.NewSources(
 	"*net/http.Request",
