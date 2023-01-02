@@ -2,16 +2,22 @@
 
 Implements static [taint analysis](https://en.wikipedia.org/wiki/Taint_checking) for Go programs. 
 
-Taint analysis is a technique for identifying and tracking the flow of sensitive data through a program. 
-It can be used to identify potential security vulnerabilities, such as SQL injection attacks or cross-site 
-scripting (XSS) attacks, by identifying sources of sensitive data in the program and tracking how this data 
-is used and transformed as it flows through the code. 
+Taint analysis is a technique for identifying the flow of sensitive data through a program. 
+It can be used to identify potential security vulnerabilities, such as SQL injection or 
+cross-site scripting (XSS) attacks, by understanding how this data is used and transformed 
+as it flows through the code.
+
+A "**source**" is a point in the program where sensitive data originates, typically from user 
+input, such as data entered into a form on a web page, or data loaded from an external source. 
+A "**sink**" is a point in the program where sensitive data is used or transmitted to exploit 
+the program.
 
 ## Example
 
 This code generates a function call graph rooted at a program's `main` function and 
 then runs taint analysis on it. If the program uses `database/sql`, the taint analysis
-will determine if the program is vulnerable to SQL injection.
+will determine if the program is vulnerable to SQL injection such that any of the given
+sources reach the given sinks.
 
 ```go
 cg, _ := callgraph.New(mainFn, buildSSA.SrcFuncs...)
