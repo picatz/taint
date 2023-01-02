@@ -38,7 +38,7 @@ func TestG(t *testing.T) {
 
 // TODO: this is not worked out yet
 func TestH(t *testing.T) {
-	t.Skip("skipping known failing test for now")
+	// t.Skip("skipping known failing test for now")
 	analysistest.Run(t, testdata, Analyzer, "h")
 }
 

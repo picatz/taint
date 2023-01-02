@@ -72,6 +72,8 @@ var injectableSQLMethods = taint.NewSinks(
 	// TODO: add more, consider (non-)pointer variants?
 )
 
+// Analyzer finds potential SQL injection issues to demonstrate
+// the github.com/picatz/taint package.
 var Analyzer = &analysis.Analyzer{
 	Name:     "sqli",
 	Doc:      "finds potential SQL injection issues",
@@ -79,6 +81,7 @@ var Analyzer = &analysis.Analyzer{
 	Requires: []*analysis.Analyzer{buildssa.Analyzer},
 }
 
+// imports returns true if the package imports any of the given packages.
 func imports(pass *analysis.Pass, pkgs ...string) bool {
 	var imported bool
 	for _, imp := range pass.Pkg.Imports() {

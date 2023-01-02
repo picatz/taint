@@ -315,25 +315,23 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 				// 		}()
 				//  })
 				//
-				// tainted, src, tv := checkSSAValue(path, sources, val, valueSet{})
-				// if tainted {
-				// 	// The value is tainted so we need to check if the value is the
-				// 	// same as the value we are looking for (*ssa.FreeVar).
-				// 	if tv.Referrers() != nil {
-				// 		// TODO: how to handle this case?
-				// 		for _, ref := range *tv.Referrers() {
-				// 			if value.Name() == "input" {
-				// 				fmt.Printf("\t\t\t\t tv %T: %[1]v\n", tv)
-				// 				for _, instr := range ref.Block().Instrs {
-				// 					fmt.Printf("\t\t\t\t ref ----------------> %T: %[1]v\n", instr)
-				// 				}
-				// 			}
-				// 		}
-				// 	}
-				// 	if tv.Name() == value.Name() {
-				// 		return true, src, tv
-				// 	}
-				// }
+				tainted, src, tv := checkSSAValue(path, sources, val, valueSet{})
+				if tainted {
+					return true, src, tv
+					// if tv.Referrers() != nil {
+					// 	for _, ref := range *tv.Referrers() {
+					// 		// if value.Name() == "input" {
+					// 		fmt.Printf("\t\t\t\t tv %T: %[1]v\n", tv)
+					// 		for _, instr := range ref.Block().Instrs {
+					// 			fmt.Printf("\t\t\t\t ref ----------------> %T: %[1]v\n", instr)
+					// 		}
+					// 		// }
+					// 	}
+					// }
+					// if tv.Name() == value.Name() {
+					// 	return true, src, tv
+					// }
+				}
 			}
 		}
 	case *ssa.IndexAddr:
@@ -492,7 +490,6 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 func checkSSAInstruction(path callgraph.Path, sources Sources, i ssa.Instruction, visited valueSet) (bool, string, ssa.Value) {
 	// fmt.Printf("! check SSA instr %s: %[1]T\n", i)
 
-	i.Parent()
 	switch instr := i.(type) {
 	case *ssa.Store:
 		tainted, src, tv := checkSSAValue(path, sources, instr.Val, visited)
