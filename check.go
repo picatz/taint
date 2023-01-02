@@ -246,6 +246,12 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 				return true, src, tv
 			}
 		}
+	// Free variables can be traversed using the value's referrers, or the
+	// value's parent's referrers. Each referrer is either an SSA value or
+	// instruction.
+	//
+	// These can be tricky because they can be used in a few different ways,
+	// preventing us from just checking the value's referrers in all cases.
 	case *ssa.FreeVar:
 		refs := value.Referrers()
 		for _, ref := range *refs {
@@ -318,19 +324,6 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 				tainted, src, tv := checkSSAValue(path, sources, val, valueSet{})
 				if tainted {
 					return true, src, tv
-					// if tv.Referrers() != nil {
-					// 	for _, ref := range *tv.Referrers() {
-					// 		// if value.Name() == "input" {
-					// 		fmt.Printf("\t\t\t\t tv %T: %[1]v\n", tv)
-					// 		for _, instr := range ref.Block().Instrs {
-					// 			fmt.Printf("\t\t\t\t ref ----------------> %T: %[1]v\n", instr)
-					// 		}
-					// 		// }
-					// 	}
-					// }
-					// if tv.Name() == value.Name() {
-					// 	return true, src, tv
-					// }
 				}
 			}
 		}
@@ -432,34 +425,38 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 		if tainted {
 			return true, src, tv
 		}
-
 	case *ssa.Slice:
+		// Check the sliced value.
 		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
 		if tainted {
 			return true, src, tv
 		}
 	case *ssa.MakeInterface:
+		// Check the value being made into an interface.
 		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
 		if tainted {
 			return true, src, tv
 		}
 	case *ssa.Convert:
+		// Check the value being converted.
 		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
 		if tainted {
 			return true, src, tv
 		}
 	case *ssa.Extract:
+		// Check the value being extracted.
 		tainted, src, tv := checkSSAValue(path, sources, value.Tuple, visited)
 		if tainted {
 			return true, src, tv
 		}
 	case *ssa.Lookup:
-		// Check the string or map value
+		// Check the string or map value being looked up.
 		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
 		if tainted {
 			return true, src, tv
 		}
-		// Check the index value
+
+		// Check the index value being looked up.
 		refs := value.Index.Referrers()
 		if refs != nil {
 			for _, ref := range *refs {
@@ -492,6 +489,8 @@ func checkSSAInstruction(path callgraph.Path, sources Sources, i ssa.Instruction
 
 	switch instr := i.(type) {
 	case *ssa.Store:
+		// Store instructions need to be checked for both the value being stored,
+		// and the address being stored to.
 		tainted, src, tv := checkSSAValue(path, sources, instr.Val, visited)
 		if tainted {
 			return true, src, tv
@@ -501,6 +500,7 @@ func checkSSAInstruction(path callgraph.Path, sources Sources, i ssa.Instruction
 			return true, src, tv
 		}
 	case *ssa.Call:
+		// Check the operands of the call instruction.
 		for _, instrValue := range instr.Operands(nil) {
 			if instrValue == nil {
 				continue
