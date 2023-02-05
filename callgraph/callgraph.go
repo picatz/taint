@@ -256,7 +256,7 @@ type Edge struct {
 }
 
 func (e Edge) String() string {
-	return fmt.Sprintf("%s --> %s", e.Caller, e.Callee)
+	return fmt.Sprintf("%s → %s", e.Caller, e.Callee)
 }
 
 func (e Edge) Description() string {
