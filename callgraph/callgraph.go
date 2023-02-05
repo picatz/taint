@@ -1,6 +1,7 @@
 package callgraph
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"go/token"
@@ -364,6 +365,21 @@ func (p Path) Last() *Edge {
 		return nil
 	}
 	return p[len(p)-1]
+}
+
+// String returns a string representation of the path which
+// is a sequence of edges separated by " → ".
+//
+// Intended to be used while debugging.
+func (p Path) String() string {
+	var buf bytes.Buffer
+	for i, e := range p {
+		if i > 0 {
+			buf.WriteString(" → ")
+		}
+		buf.WriteString(e.String())
+	}
+	return buf.String()
 }
 
 type Paths []Path
