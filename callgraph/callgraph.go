@@ -377,7 +377,7 @@ func (p Path) String() string {
 		if i > 0 {
 			buf.WriteString(" → ")
 		}
-		buf.WriteString(e.String())
+		buf.WriteString(e.Callee.String())
 	}
 	return buf.String()
 }
