@@ -232,6 +232,19 @@ func (g *Graph) CreateNode(fn *ssa.Function) *Node {
 	return n
 }
 
+func (g *Graph) String() string {
+	var buf bytes.Buffer
+
+	for _, n := range g.Nodes {
+		fmt.Fprintf(&buf, "%s\n", n)
+		for _, e := range n.Out {
+			fmt.Fprintf(&buf, "\t→ %s\n", e.Callee)
+		}
+		fmt.Fprintf(&buf, "\n")
+	}
+	return buf.String()
+}
+
 // A Node represents a node in a call graph.
 type Node struct {
 	sync.RWMutex
