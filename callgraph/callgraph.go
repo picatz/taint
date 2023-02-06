@@ -374,9 +374,12 @@ func (p Path) Last() *Edge {
 func (p Path) String() string {
 	var buf bytes.Buffer
 	for i, e := range p {
-		if i > 0 {
-			buf.WriteString(" → ")
+		if i == 0 {
+			buf.WriteString(e.Caller.String())
 		}
+
+		buf.WriteString(" → ")
+
 		buf.WriteString(e.Callee.String())
 	}
 	return buf.String()
