@@ -128,11 +128,6 @@ func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 								switch argtFn := argt.Fn.(type) {
 								case *ssa.Function:
 									AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(argtFn))
-
-									// Assumes the anonymous functions are called.
-									for _, anFn := range argtFn.AnonFuncs {
-										AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(anFn))
-									}
 								}
 							}
 						}
