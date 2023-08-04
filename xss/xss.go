@@ -78,12 +78,8 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// up in injectable log functions (sinks).
 	results := taint.Check(cg, userControlledValues, injectableFunctions)
 
-	// For each result, check if a prepared statement is providing
-	// a mitigation for the user controlled value.
-	//
-	// TODO: ensure this makes sense for all the GORM usage?
 	for _, result := range results {
-		pass.Reportf(result.SinkValue.Pos(), "potential log injection")
+		pass.Reportf(result.SinkValue.Pos(), "potential XSS")
 	}
 
 	return nil, nil
