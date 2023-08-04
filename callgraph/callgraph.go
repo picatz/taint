@@ -1,6 +1,7 @@
 package callgraph
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"go/token"
@@ -85,12 +86,35 @@ func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 					switch instrt := instr.(type) {
 					case *ssa.Call:
 						// debugf("found call instr")
-						fn, ok := instrt.Call.Value.(*ssa.Function)
-						if ok {
-							err := g.AddFunction(fn, allFns)
-							if err != nil {
-								return fmt.Errorf("failed to add src function %v from block instr: %w", fn, err)
+						var instrCall *ssa.Function
+
+						// Handle the case where the function calls a
+						// named function (*ssa.Function), and the case
+						// where the function calls an anonymous
+						// function (*ssa.MakeClosure).
+						switch callt := instrt.Call.Value.(type) {
+						case *ssa.Function:
+							// debugf("found call instr to function")
+							instrCall = callt
+						case *ssa.MakeClosure:
+							// debugf("found call instr to closure")
+							switch calltFn := callt.Fn.(type) {
+							case *ssa.Function:
+								instrCall = calltFn
 							}
+						}
+
+						// If we could not determine the function being
+						// called, skip this instruction.
+						if instrCall == nil {
+							continue
+						}
+
+						AddEdge(g.CreateNode(fn), instrt, g.CreateNode(instrCall))
+
+						err := g.AddFunction(instrCall, allFns)
+						if err != nil {
+							return fmt.Errorf("failed to add function %v from block instr: %w", instrCall, err)
 						}
 
 						// attempt to link function arguments that are functions
@@ -99,16 +123,11 @@ func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 							switch argt := arg.(type) {
 							case *ssa.Function:
 								// TODO: check if edge already exists?
-								AddEdge(g.CreateNode(fn), instrt, g.CreateNode(argt))
+								AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(argt))
 							case *ssa.MakeClosure:
 								switch argtFn := argt.Fn.(type) {
 								case *ssa.Function:
-									AddEdge(g.CreateNode(fn), instrt, g.CreateNode(argtFn))
-
-									// Assumes the anonymous functions are called.
-									for _, anFn := range argtFn.AnonFuncs {
-										AddEdge(g.CreateNode(fn), instrt, g.CreateNode(anFn))
-									}
+									AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(argtFn))
 								}
 							}
 						}
@@ -208,6 +227,19 @@ func (g *Graph) CreateNode(fn *ssa.Function) *Node {
 	return n
 }
 
+func (g *Graph) String() string {
+	var buf bytes.Buffer
+
+	for _, n := range g.Nodes {
+		fmt.Fprintf(&buf, "%s\n", n)
+		for _, e := range n.Out {
+			fmt.Fprintf(&buf, "\t→ %s\n", e.Callee)
+		}
+		fmt.Fprintf(&buf, "\n")
+	}
+	return buf.String()
+}
+
 // A Node represents a node in a call graph.
 type Node struct {
 	sync.RWMutex
@@ -232,7 +264,7 @@ type Edge struct {
 }
 
 func (e Edge) String() string {
-	return fmt.Sprintf("%s --> %s", e.Caller, e.Callee)
+	return fmt.Sprintf("%s → %s", e.Caller, e.Callee)
 }
 
 func (e Edge) Description() string {
@@ -341,6 +373,24 @@ func (p Path) Last() *Edge {
 		return nil
 	}
 	return p[len(p)-1]
+}
+
+// String returns a string representation of the path which
+// is a sequence of edges separated by " → ".
+//
+// Intended to be used while debugging.
+func (p Path) String() string {
+	var buf bytes.Buffer
+	for i, e := range p {
+		if i == 0 {
+			buf.WriteString(e.Caller.String())
+		}
+
+		buf.WriteString(" → ")
+
+		buf.WriteString(e.Callee.String())
+	}
+	return buf.String()
 }
 
 type Paths []Path
