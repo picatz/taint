@@ -8,12 +8,12 @@ import (
 	"go/types"
 	"log"
 	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
-	"golang.org/x/sync/semaphore"
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
 )
@@ -37,12 +37,11 @@ func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 		Nodes:   make(map[*ssa.Function]*Node),
 		debug:   false, // TODO: make configurable with env variable?
 	}
+
 	g.Root = g.CreateNode(root)
 
 	eg, _ := errgroup.WithContext(context.Background())
 
-	// 500 = 5849.241s
-	// 10  = 4333.030s
 	var (
 		logger *log.Logger
 		ops    int64
@@ -54,19 +53,13 @@ func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 		total = len(srcFns)
 	}
 
-	s := semaphore.NewWeighted(10)
+	eg.SetLimit(runtime.NumCPU())
 
 	allFns := ssautil.AllFunctions(root.Prog)
 
 	for _, srcFn := range srcFns {
 		fn := srcFn
-		err := s.Acquire(context.Background(), 1)
-		if err != nil {
-			return nil, fmt.Errorf("failed to aquite semaphore: %w", err)
-		}
 		eg.Go(func() error {
-			defer s.Release(1)
-
 			if g.debug {
 				start := time.Now()
 				defer func() {
@@ -75,7 +68,7 @@ func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 				}()
 			}
 
-			err = g.AddFunction(fn, allFns)
+			err := g.AddFunction(fn, allFns)
 			if err != nil {
 				return fmt.Errorf("failed to add src function %v: %w", fn, err)
 			}
@@ -88,10 +81,8 @@ func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 						// debugf("found call instr")
 						var instrCall *ssa.Function
 
-						// Handle the case where the function calls a
-						// named function (*ssa.Function), and the case
-						// where the function calls an anonymous
-						// function (*ssa.MakeClosure).
+						// TODO: map more things to instrCall?
+
 						switch callt := instrt.Call.Value.(type) {
 						case *ssa.Function:
 							// debugf("found call instr to function")
@@ -102,6 +93,24 @@ func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 							case *ssa.Function:
 								instrCall = calltFn
 							}
+						case *ssa.Parameter:
+							// debugf("found call instr to parameter")
+
+							// This is likely a method call, so we need to
+							// get the function from the method receiver which
+							// is not available directly from the call instruction,
+							// but rather from the package level function.
+
+							// Skip this instruction if we could not determine
+							// the function being called.
+							if !instrt.Call.IsInvoke() || (instrt.Call.Method == nil) {
+								continue
+							}
+
+							// TODO: should we share the resulting function?
+							pkg := root.Prog.ImportedPackage(instrt.Call.Method.Pkg().Path())
+							fn := pkg.Prog.NewFunction(instrt.Call.Method.Name(), instrt.Call.Signature(), "callgraph")
+							instrCall = fn
 						}
 
 						// If we could not determine the function being
