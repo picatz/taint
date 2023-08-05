@@ -72,8 +72,6 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		return nil, fmt.Errorf("failed to create new callgraph: %w", err)
 	}
 
-	fmt.Println(cg.String())
-
 	// Run taint check for user controlled values (sources) ending
 	// up in injectable log functions (sinks).
 	results := taint.Check(cg, userControlledValues, injectableFunctions)
