@@ -6,12 +6,8 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
-	"log"
-	"os"
 	"runtime"
 	"sync"
-	"sync/atomic"
-	"time"
 
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/tools/go/ssa"
@@ -27,7 +23,6 @@ type Graph struct {
 	sync.RWMutex
 	Root  *Node                   // the distinguished root node
 	Nodes map[*ssa.Function]*Node // all nodes by function
-	debug bool
 }
 
 // New returns a new Graph with the specified root node.
@@ -35,23 +30,11 @@ func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 	g := &Graph{
 		RWMutex: sync.RWMutex{},
 		Nodes:   make(map[*ssa.Function]*Node),
-		debug:   false, // TODO: make configurable with env variable?
 	}
 
 	g.Root = g.CreateNode(root)
 
 	eg, _ := errgroup.WithContext(context.Background())
-
-	var (
-		logger *log.Logger
-		ops    int64
-		total  int
-	)
-
-	if g.debug {
-		logger = log.New(os.Stderr, "callgraph-debug ", log.LstdFlags)
-		total = len(srcFns)
-	}
 
 	eg.SetLimit(runtime.NumCPU())
 
@@ -60,14 +43,6 @@ func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 	for _, srcFn := range srcFns {
 		fn := srcFn
 		eg.Go(func() error {
-			if g.debug {
-				start := time.Now()
-				defer func() {
-					ops := atomic.AddInt64(&ops, 1)
-					logger.Printf("done processing %v (%v/%v) after %v seconds\n", fn, ops, total, time.Since(start).Seconds())
-				}()
-			}
-
 			err := g.AddFunction(fn, allFns)
 			if err != nil {
 				return fmt.Errorf("failed to add src function %v: %w", fn, err)
@@ -75,72 +50,7 @@ func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 
 			for _, block := range fn.DomPreorder() {
 				for _, instr := range block.Instrs {
-					// debugf("found block instr")
-					switch instrt := instr.(type) {
-					case *ssa.Call:
-						// debugf("found call instr")
-						var instrCall *ssa.Function
-
-						// TODO: map more things to instrCall?
-
-						switch callt := instrt.Call.Value.(type) {
-						case *ssa.Function:
-							// debugf("found call instr to function")
-							instrCall = callt
-						case *ssa.MakeClosure:
-							// debugf("found call instr to closure")
-							switch calltFn := callt.Fn.(type) {
-							case *ssa.Function:
-								instrCall = calltFn
-							}
-						case *ssa.Parameter:
-							// debugf("found call instr to parameter")
-
-							// This is likely a method call, so we need to
-							// get the function from the method receiver which
-							// is not available directly from the call instruction,
-							// but rather from the package level function.
-
-							// Skip this instruction if we could not determine
-							// the function being called.
-							if !instrt.Call.IsInvoke() || (instrt.Call.Method == nil) {
-								continue
-							}
-
-							// TODO: should we share the resulting function?
-							pkg := root.Prog.ImportedPackage(instrt.Call.Method.Pkg().Path())
-							fn := pkg.Prog.NewFunction(instrt.Call.Method.Name(), instrt.Call.Signature(), "callgraph")
-							instrCall = fn
-						}
-
-						// If we could not determine the function being
-						// called, skip this instruction.
-						if instrCall == nil {
-							continue
-						}
-
-						AddEdge(g.CreateNode(fn), instrt, g.CreateNode(instrCall))
-
-						err := g.AddFunction(instrCall, allFns)
-						if err != nil {
-							return fmt.Errorf("failed to add function %v from block instr: %w", instrCall, err)
-						}
-
-						// attempt to link function arguments that are functions
-						for a := 0; a < len(instrt.Call.Args); a++ {
-							arg := instrt.Call.Args[a]
-							switch argt := arg.(type) {
-							case *ssa.Function:
-								// TODO: check if edge already exists?
-								AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(argt))
-							case *ssa.MakeClosure:
-								switch argtFn := argt.Fn.(type) {
-								case *ssa.Function:
-									AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(argtFn))
-								}
-							}
-						}
-					}
+					checkBlockInstruction(root, allFns, g, fn, instr)
 				}
 			}
 			return nil
@@ -153,6 +63,129 @@ func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 	}
 
 	return g, nil
+}
+
+func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g *Graph, fn *ssa.Function, instr ssa.Instruction) error {
+	switch instrt := instr.(type) {
+	case *ssa.Call:
+		var instrCall *ssa.Function
+
+		// TODO: map more things to instrCall?
+
+		switch callt := instrt.Call.Value.(type) {
+		case *ssa.Function:
+			instrCall = callt
+
+			for _, instrtCallArg := range instrt.Call.Args {
+				switch instrtCallArgt := instrtCallArg.(type) {
+				case *ssa.ChangeInterface:
+					// Track type casts through matching interface methods.
+					//
+					// # Example
+					//
+					//  func buffer(r io.Reader) io.Reader {
+					//  	return bufio.NewReader(r)
+					//  }
+					//
+					//  func mirror(w http.ResponseWriter, r *http.Request) {
+					//  	_, err := io.Copy(w, buffer(r.Body)) // w is an http.ResponseWriter, convert to io.Writer for io.Copy
+					//  	if err != nil {
+					//  		panic(err)
+					//  	}
+					//  }
+					//
+					// io.Copy is called with an io.Writer, but the underlying type is a net/http.ResponseWriter.
+					//
+					//   n11:net/http.HandleFunc → n1:c.mirror → n5:io.Copy → n6:(io.Writer).Write → n7:(net/http.ResponseWriter).Write
+					//
+					switch argtt := instrtCallArgt.Type().Underlying().(type) {
+					case *types.Interface:
+						numMethods := argtt.NumMethods()
+
+						for i := 0; i < numMethods; i++ {
+							method := argtt.Method(i)
+
+							pkg := root.Prog.ImportedPackage(method.Pkg().Path())
+							fn := pkg.Prog.NewFunction(method.Name(), method.Type().(*types.Signature), "callgraph")
+							AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(fn))
+
+							switch xType := instrtCallArgt.X.Type().(type) {
+							case *types.Named:
+								named := xType
+
+								pkg2 := root.Prog.ImportedPackage(named.Obj().Pkg().Path())
+
+								methodSet := pkg2.Prog.MethodSets.MethodSet(named)
+								methodSel := methodSet.Lookup(pkg2.Pkg, method.Name())
+
+								if methodSel == nil {
+									continue
+								}
+
+								methodType := methodSel.Type().(*types.Signature)
+
+								fn2 := pkg2.Prog.NewFunction(method.Name(), methodType, "callgraph")
+
+								AddEdge(g.CreateNode(fn), instrt, g.CreateNode(fn2))
+							default:
+								continue
+							}
+						}
+					}
+				}
+			}
+		case *ssa.MakeClosure:
+			switch calltFn := callt.Fn.(type) {
+			case *ssa.Function:
+				instrCall = calltFn
+			}
+		case *ssa.Parameter:
+			// This is likely a method call, so we need to
+			// get the function from the method receiver which
+			// is not available directly from the call instruction,
+			// but rather from the package level function.
+
+			// Skip this instruction if we could not determine
+			// the function being called.
+			if !instrt.Call.IsInvoke() || (instrt.Call.Method == nil) {
+				return nil
+			}
+
+			// TODO: should we share the resulting function?
+			pkg := root.Prog.ImportedPackage(instrt.Call.Method.Pkg().Path())
+			fn := pkg.Prog.NewFunction(instrt.Call.Method.Name(), instrt.Call.Signature(), "callgraph")
+			instrCall = fn
+		}
+
+		// If we could not determine the function being
+		// called, skip this instruction.
+		if instrCall == nil {
+			return nil
+		}
+
+		AddEdge(g.CreateNode(fn), instrt, g.CreateNode(instrCall))
+
+		err := g.AddFunction(instrCall, allFns)
+		if err != nil {
+			return fmt.Errorf("failed to add function %v from block instr: %w", instrCall, err)
+		}
+
+		// attempt to link function arguments that are functions
+		for a := 0; a < len(instrt.Call.Args); a++ {
+			arg := instrt.Call.Args[a]
+			switch argt := arg.(type) {
+			case *ssa.Function:
+				// TODO: check if edge already exists?
+				AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(argt))
+			case *ssa.MakeClosure:
+				switch argtFn := argt.Fn.(type) {
+				case *ssa.Function:
+					AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(argtFn))
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // AddFunction analyzes the given target SSA function, adding information to the call graph.
