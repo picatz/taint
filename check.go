@@ -437,6 +437,12 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 		if tainted {
 			return true, src, tv
 		}
+	case *ssa.ChangeInterface:
+		// Check the value being changed into an interface.
+		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
+		if tainted {
+			return true, src, tv
+		}
 	case *ssa.Convert:
 		// Check the value being converted.
 		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
