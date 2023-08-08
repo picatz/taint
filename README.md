@@ -94,8 +94,65 @@ func run() {
 func main() {
         run()
 }
-$ time sqli main.go
+$ sqli main.go
 ./sql/injection/testdata/src/example/main.go:9:10: potential sql injection
+```
 
-sqli main.go  0.12s user 0.15s system 291% cpu 0.094 total
+### `logi`
+
+The `logi` analyzer is a CLI tool that demonstrates usage of the `taint` package to find
+potential log injections.
+
+```console
+$ go install github.com/picatz/taint/cmd/logi@latest
+```
+
+```console
+$ cd log/injection/testdata/src/a
+$ cat main.go
+package main
+
+import (
+        "log"
+        "net/http"
+)
+
+func main() {
+        http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+                log.Println(r.URL.Query().Get("input"))
+        })
+
+        http.ListenAndServe(":8080", nil)
+}
+$ logi main.go
+./log/injection/testdata/src/example/main.go:10:14: potential log injection
+```
+
+### `xss`
+
+The `xss` analyzer is a CLI tool that demonstrates usage of the `taint` package to find
+potential cross-site scripting (XSS) vulnerabilities.
+
+```console
+$ go install github.com/picatz/taint/cmd/xss@latest
+```
+
+```console
+$ cd xss/testdata/src/a
+$ cat main.go
+package main
+
+import (
+	"net/http"
+)
+
+func main() {
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(r.URL.Query().Get("input"))) // want "potential XSS"
+	})
+
+	http.ListenAndServe(":8080", nil)
+}
+$ xss main.go
+./xss/testdata/src/example/main.go:9:8: potential XSS
 ```
