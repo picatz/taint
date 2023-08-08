@@ -81,8 +81,8 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		// Check if html.EscapeString was called on the source value
 		// before it was passed to the sink.
 		var escaped bool
-		for _, call := range result.Path {
-			for _, arg := range call.Site.Common().Args {
+		for _, edge := range result.Path {
+			for _, arg := range edge.Site.Common().Args {
 				if checkIfHTMLEscapeString(arg) {
 					escaped = true
 					break
