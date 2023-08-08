@@ -19,3 +19,7 @@ func TestB(t *testing.T) {
 func TestC(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "c")
 }
+
+func TestD(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "d")
+}
