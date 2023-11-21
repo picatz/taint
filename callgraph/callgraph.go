@@ -2,14 +2,11 @@ package callgraph
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"go/token"
 	"go/types"
-	"runtime"
 	"sync"
 
-	"golang.org/x/sync/errgroup"
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
 )
@@ -20,7 +17,6 @@ import (
 // If the call graph is sound, such nodes indicate unreachable
 // functions.
 type Graph struct {
-	sync.RWMutex
 	Root  *Node                   // the distinguished root node
 	Nodes map[*ssa.Function]*Node // all nodes by function
 }
@@ -28,38 +24,24 @@ type Graph struct {
 // New returns a new Graph with the specified root node.
 func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 	g := &Graph{
-		RWMutex: sync.RWMutex{},
-		Nodes:   make(map[*ssa.Function]*Node),
+		Nodes: make(map[*ssa.Function]*Node),
 	}
 
 	g.Root = g.CreateNode(root)
 
-	eg, _ := errgroup.WithContext(context.Background())
-
-	eg.SetLimit(runtime.NumCPU())
-
 	allFns := ssautil.AllFunctions(root.Prog)
 
 	for _, srcFn := range srcFns {
-		fn := srcFn
-		eg.Go(func() error {
-			err := g.AddFunction(fn, allFns)
-			if err != nil {
-				return fmt.Errorf("failed to add src function %v: %w", fn, err)
-			}
+		err := g.AddFunction(srcFn, allFns)
+		if err != nil {
+			return g, fmt.Errorf("failed to add src function %v: %w", srcFn, err)
+		}
 
-			for _, block := range fn.DomPreorder() {
-				for _, instr := range block.Instrs {
-					checkBlockInstruction(root, allFns, g, fn, instr)
-				}
+		for _, block := range srcFn.DomPreorder() {
+			for _, instr := range block.Instrs {
+				checkBlockInstruction(root, allFns, g, srcFn, instr)
 			}
-			return nil
-		})
-	}
-
-	err := eg.Wait()
-	if err != nil {
-		return nil, fmt.Errorf("error from errgroup: %w", err)
+		}
 	}
 
 	return g, nil
@@ -69,8 +51,6 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 	switch instrt := instr.(type) {
 	case *ssa.Call:
 		var instrCall *ssa.Function
-
-		// TODO: map more things to instrCall?
 
 		switch callt := instrt.Call.Value.(type) {
 		case *ssa.Function:
@@ -155,6 +135,9 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 			pkg := root.Prog.ImportedPackage(instrt.Call.Method.Pkg().Path())
 			fn := pkg.Prog.NewFunction(instrt.Call.Method.Name(), instrt.Call.Signature(), "callgraph")
 			instrCall = fn
+		default:
+			// case *ssa.TypeAssert: ??
+			// fmt.Printf("unknown call type: %v: %[1]T\n", callt)
 		}
 
 		// If we could not determine the function being
@@ -199,24 +182,16 @@ func (cg *Graph) AddFunction(target *ssa.Function, allFns map[*ssa.Function]bool
 		recvType = recv.Type()
 	}
 
-	// start := time.Now()
-
 	if len(allFns) == 0 {
 		allFns = ssautil.AllFunctions(target.Prog)
 	}
 
-	// log.Printf("finished loading %d functions for target %v in %v seconds", len(allFns), target, time.Since(start).Seconds())
-
 	// Find all direct calls to function,
 	// or a place where its address is taken.
 	for progFn := range allFns {
-		fn := progFn
-		// debugf("checking prog fn %v", fn)
-		// log.Printf("strt analyzing %v : blk %d", targetNode, len(fn.Blocks))
 		var space [32]*ssa.Value // preallocate
-		blocks := fn.DomPreorder()
 
-		for _, block := range blocks {
+		for _, block := range progFn.DomPreorder() {
 			for _, instr := range block.Instrs {
 				// Is this a method (T).f of a concrete type T
 				// whose runtime type descriptor is address-taken?
@@ -239,7 +214,7 @@ func (cg *Graph) AddFunction(target *ssa.Function, allFns map[*ssa.Function]bool
 				// Direct call to target?
 				rands := instr.Operands(space[:0])
 				if site, ok := instr.(ssa.CallInstruction); ok && site.Common().Value == target {
-					AddEdge(cg.CreateNode(fn), site, targetNode)
+					AddEdge(cg.CreateNode(progFn), site, targetNode)
 					rands = rands[1:] // skip .Value (rands[0])
 				}
 
@@ -258,8 +233,6 @@ func (cg *Graph) AddFunction(target *ssa.Function, allFns map[*ssa.Function]bool
 
 // CreateNode returns the Node for fn, creating it if not present.
 func (g *Graph) CreateNode(fn *ssa.Function) *Node {
-	g.Lock()
-	defer g.Unlock()
 	n, ok := g.Nodes[fn]
 	if !ok {
 		n = &Node{Func: fn, ID: len(g.Nodes)}

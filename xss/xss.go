@@ -73,6 +73,8 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		return nil, fmt.Errorf("failed to create new callgraph: %w", err)
 	}
 
+	// fmt.Println(cg)
+
 	// Run taint check for user controlled values (sources) ending
 	// up in injectable log functions (sinks).
 	results := taint.Check(cg, userControlledValues, injectableFunctions)
@@ -83,10 +85,17 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		var escaped bool
 		for _, edge := range result.Path {
 			for _, arg := range edge.Site.Common().Args {
-				if checkIfHTMLEscapeString(arg) {
-					escaped = true
-					break
-				}
+				taint.WalkSSA(arg, func(v ssa.Value) error {
+					call, ok := v.(*ssa.Call)
+					if !ok {
+						return nil
+					}
+					if call.Call.Value.String() == "html.EscapeString" {
+						escaped = true
+						return taint.ErrStopWalk
+					}
+					return nil
+				})
 			}
 			if escaped {
 				break
@@ -99,54 +108,4 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	return nil, nil
-}
-
-// checkIfHTMLEscapeString returns true if the given value uses
-// html.EscapeString, calling itself recursively as needed.
-func checkIfHTMLEscapeString(value ssa.Value) bool {
-	switch value := value.(type) {
-	case *ssa.Call:
-		return value.Call.Value.String() == "html.EscapeString"
-	case *ssa.MakeInterface:
-		return checkIfHTMLEscapeString(value.X)
-	case *ssa.ChangeInterface:
-		return checkIfHTMLEscapeString(value.X)
-	case *ssa.Convert:
-		return checkIfHTMLEscapeString(value.X)
-	case *ssa.UnOp:
-		return checkIfHTMLEscapeString(value.X)
-	case *ssa.Phi:
-		for _, edge := range value.Edges {
-			if checkIfHTMLEscapeString(edge) {
-				return true
-			}
-		}
-		return false
-	case *ssa.Alloc:
-		refs := value.Referrers()
-		if refs == nil {
-			return false
-		}
-		for _, instr := range *refs {
-			for _, opr := range instr.Operands(nil) {
-				if checkIfHTMLEscapeString(*opr) {
-					return true
-				}
-			}
-		}
-	case *ssa.FieldAddr:
-		return checkIfHTMLEscapeString(value.X)
-	case *ssa.Field:
-		return checkIfHTMLEscapeString(value.X)
-	case *ssa.IndexAddr:
-		return checkIfHTMLEscapeString(value.X)
-	case *ssa.Index:
-		return checkIfHTMLEscapeString(value.X)
-	case *ssa.Lookup:
-		return checkIfHTMLEscapeString(value.X)
-	case *ssa.Slice:
-		return checkIfHTMLEscapeString(value.X)
-	}
-
-	return false
 }
