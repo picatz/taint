@@ -66,6 +66,7 @@ func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 }
 
 func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g *Graph, fn *ssa.Function, instr ssa.Instruction) error {
+	// fmt.Printf("block instr: %v: %[1]T\n", instr)
 	switch instrt := instr.(type) {
 	case *ssa.Call:
 		var instrCall *ssa.Function
@@ -155,6 +156,9 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 			pkg := root.Prog.ImportedPackage(instrt.Call.Method.Pkg().Path())
 			fn := pkg.Prog.NewFunction(instrt.Call.Method.Name(), instrt.Call.Signature(), "callgraph")
 			instrCall = fn
+		default:
+			// case *ssa.TypeAssert: ??
+			// fmt.Printf("unknown call type: %v: %[1]T\n", callt)
 		}
 
 		// If we could not determine the function being

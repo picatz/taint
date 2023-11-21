@@ -67,7 +67,10 @@ func Check(cg *callgraph.Graph, sources Sources, sinks Sinks) Results {
 	for sink := range sinks {
 		sinkPaths := callgraph.PathsSearchCallTo(cg.Root, sink)
 
+		// fmt.Println("sink paths:", len(sinkPaths))
+
 		for _, sinkPath := range sinkPaths {
+			// fmt.Println("sink path:", sinkPath)
 			// Ensure the path isn't empty (which can happen?!).
 			//
 			// TODO: ensure returned paths from within searched paths
@@ -121,6 +124,7 @@ func checkPath(path callgraph.Path, sources Sources) (bool, string, ssa.Value) {
 	// TODO: when non-function sinks are supported, we will need to handle
 	//       them differently here.
 	for _, lastCallArg := range lastCallArgs {
+		// fmt.Println(lastCallArg)
 		tainted, src, tv := checkSSAValue(path, sources, lastCallArg, visited)
 		if tainted {
 			return true, src, tv
@@ -180,6 +184,26 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 		paramTypeStr := value.Type().String()
 		if src, ok := sources.includes(paramTypeStr); ok {
 			return true, src, value
+		}
+
+		// Check the parameter's referrers.
+		refs := value.Referrers()
+		if refs != nil {
+			for _, ref := range *refs {
+				refVal, isVal := ref.(ssa.Value)
+				if isVal {
+					tainted, src, tv := checkSSAValue(path, sources, refVal, visited)
+					if tainted {
+						return true, src, tv
+					}
+					continue
+				}
+
+				tainted, src, tv := checkSSAInstruction(path, sources, ref, visited)
+				if tainted {
+					return true, src, tv
+				}
+			}
 		}
 
 		// TODO: consider if we can remove the range with a single
@@ -439,6 +463,30 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 		}
 	case *ssa.ChangeInterface:
 		// Check the value being changed into an interface.
+		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
+		if tainted {
+			return true, src, tv
+		}
+
+		// Check the value's referrers.
+		refs := value.X.Referrers()
+		for _, ref := range *refs {
+			refVal, isVal := ref.(ssa.Value)
+			if isVal {
+				tainted, src, tv := checkSSAValue(path, sources, refVal, visited)
+				if tainted {
+					return true, src, tv
+				}
+				continue
+			}
+
+			tainted, src, tv := checkSSAInstruction(path, sources, ref, visited)
+			if tainted {
+				return true, src, tv
+			}
+		}
+	case *ssa.TypeAssert:
+		// Check the value being type asserted.
 		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
 		if tainted {
 			return true, src, tv

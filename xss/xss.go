@@ -73,6 +73,8 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		return nil, fmt.Errorf("failed to create new callgraph: %w", err)
 	}
 
+	// fmt.Println(cg)
+
 	// Run taint check for user controlled values (sources) ending
 	// up in injectable log functions (sinks).
 	results := taint.Check(cg, userControlledValues, injectableFunctions)
@@ -83,10 +85,17 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		var escaped bool
 		for _, edge := range result.Path {
 			for _, arg := range edge.Site.Common().Args {
-				if checkIfHTMLEscapeString(arg) {
-					escaped = true
-					break
-				}
+				taint.WalkSSA(arg, func(v ssa.Value) error {
+					call, ok := v.(*ssa.Call)
+					if !ok {
+						return nil
+					}
+					if call.Call.Value.String() == "html.EscapeString" {
+						escaped = true
+						return taint.ErrStopWalk
+					}
+					return nil
+				})
 			}
 			if escaped {
 				break
@@ -146,6 +155,8 @@ func checkIfHTMLEscapeString(value ssa.Value) bool {
 		return checkIfHTMLEscapeString(value.X)
 	case *ssa.Slice:
 		return checkIfHTMLEscapeString(value.X)
+	default:
+		// fmt.Printf("unknown type: %T\n", value)
 	}
 
 	return false
