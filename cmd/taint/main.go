@@ -154,7 +154,7 @@ func startShell(ctx context.Context) error {
 
 			parseMode := parser.ParseComments
 
-			ssaMode := ssa.InstantiateGenerics
+			ssaMode := ssa.InstantiateGenerics | ssa.SanityCheckFunctions
 
 			// patterns := []string{dir}
 			patterns := []string{"./..."}
