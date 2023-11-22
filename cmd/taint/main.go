@@ -93,7 +93,7 @@ func startShell(ctx context.Context) error {
 	t.AutoCompleteCallback = func(line string, pos int, key rune) (newLine string, newPos int, ok bool) {
 		// If the user presses tab, then autocomplete the command.
 		if key == '\t' {
-			for _, cmd := range []string{"exit", "clear", "load", "pkgs", "cg", "nodes"} {
+			for _, cmd := range []string{"exit", "clear", "load", "pkgs", "cg", "nodes", "callpath", "check"} {
 				if strings.HasPrefix(cmd, line) {
 					// Return the new line and position, which must come after the
 					// command.
