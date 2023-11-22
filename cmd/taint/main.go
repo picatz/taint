@@ -197,7 +197,7 @@ func startShell(ctx context.Context) error {
 						continue
 					}
 
-					if fn.Object().Name() == "main" {
+					if fn.Object().Name() == "_" {
 						continue
 					}
 
