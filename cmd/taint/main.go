@@ -322,6 +322,37 @@ func startShell(ctx context.Context) error {
 			continue
 		}
 
+		// Check if the user wants to find a callpath to a function.
+		if strings.HasPrefix(input, "callpath") {
+			if cg == nil {
+				bt.WriteString("no callgraph is loaded\n")
+				bt.Flush()
+				continue
+			}
+
+			fields := strings.Fields(input)
+
+			if len(fields) != 2 {
+				bt.WriteString("usage: callpath <function>\n")
+				bt.Flush()
+				continue
+			}
+
+			fn := fields[1]
+
+			path := callgraph.PathSearchCallTo(cg.Root, fn)
+
+			if path == nil {
+				bt.WriteString("no calls to " + fn + "\n")
+				bt.Flush()
+				continue
+			}
+
+			bt.WriteString(path.String() + "\n")
+			bt.Flush()
+			continue
+		}
+
 		// Check if the user wants to run a taint analysis.
 		if strings.HasPrefix(input, "check") {
 			if cg == nil {
