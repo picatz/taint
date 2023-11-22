@@ -28,6 +28,26 @@ var (
 	numberColor = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("69"))
 )
 
+// highlightNode returns a string with the node highlighted, such that
+// `n4:(net/http.ResponseWriter).Write` has the `n4` highlighted as a number,
+// and the rest of the string highlighted as a typical Go identifier.
+func highlightNode(node string) string {
+	// Split the node string on the colon.
+	parts := strings.Split(node, ":")
+
+	// Get the node ID.
+	nodeID := parts[0]
+
+	// Highlight the node ID.
+	nodeID = numberColor.Render(nodeID)
+
+	// Get the rest of the node string.
+	nodeStr := strings.Join(parts[1:], ":")
+
+	// Return the highlighted node.
+	return nodeID + ":" + nodeStr
+}
+
 func startShell(ctx context.Context) error {
 	// Set the terminal to raw mode.
 	oldState, err := term.MakeRaw(0)
@@ -268,7 +288,9 @@ func startShell(ctx context.Context) error {
 				continue
 			}
 
-			bt.WriteString(cg.String())
+			cgStr := strings.ReplaceAll(cg.String(), "→", styleFaint.Render("→"))
+
+			bt.WriteString(cgStr)
 			bt.Flush()
 			continue
 		}
@@ -286,7 +308,7 @@ func startShell(ctx context.Context) error {
 			nodesStrs := make([]string, 0, len(cg.Nodes))
 
 			for _, node := range cg.Nodes {
-				nodesStrs = append(nodesStrs, node.String())
+				nodesStrs = append(nodesStrs, highlightNode(node.String()))
 			}
 
 			sort.SliceStable(nodesStrs, func(i, j int) bool {
@@ -348,7 +370,18 @@ func startShell(ctx context.Context) error {
 				continue
 			}
 
-			bt.WriteString(path.String() + "\n")
+			pathStr := path.String()
+
+			// Split on " → " and highlight each node.
+			parts := strings.Split(pathStr, " → ")
+
+			for i, part := range parts {
+				parts[i] = highlightNode(part)
+			}
+
+			pathStr = strings.Join(parts, styleFaint.Render(" → "))
+
+			bt.WriteString(pathStr + "\n")
 			bt.Flush()
 			continue
 		}
