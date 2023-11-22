@@ -89,11 +89,13 @@ func startShell(ctx context.Context) error {
 
 	cls()
 
+	commands := []string{"exit", "clear", "load", "pkgs", "cg", "nodes", "callpath", "check"}
+
 	// Autocomplete for commands.
 	t.AutoCompleteCallback = func(line string, pos int, key rune) (newLine string, newPos int, ok bool) {
 		// If the user presses tab, then autocomplete the command.
 		if key == '\t' {
-			for _, cmd := range []string{"exit", "clear", "load", "pkgs", "cg", "nodes", "callpath", "check"} {
+			for _, cmd := range commands {
 				if strings.HasPrefix(cmd, line) {
 					// Return the new line and position, which must come after the
 					// command.
@@ -108,8 +110,30 @@ func startShell(ctx context.Context) error {
 
 	// Print welcome message.
 	bt.WriteString(styleBold.Render("Commands") + " " + styleFaint.Render("(tab complete)") + "\n\n")
-	bt.WriteString("- " + styleFaint.Render("clear") + " to clear screen.\n")
-	bt.WriteString("- " + styleFaint.Render("exit") + " to quit.\n\n")
+
+	for _, cmd := range commands {
+		switch cmd {
+		case "exit":
+			bt.WriteString("- " + styleFaint.Render("exit") + " to quit\n")
+		case "clear":
+			bt.WriteString("- " + styleFaint.Render("clear") + " to clear screen\n")
+		case "load":
+			bt.WriteString("- " + styleFaint.Render("load") + " <pattern> to load a program\n")
+		case "pkgs":
+			bt.WriteString("- " + styleFaint.Render("pkgs") + " to list loaded packages\n")
+		case "cg":
+			bt.WriteString("- " + styleFaint.Render("cg") + " to print the callgraph\n")
+		case "nodes":
+			bt.WriteString("- " + styleFaint.Render("nodes") + " to print the callgraph nodes\n")
+		case "callpath":
+			bt.WriteString("- " + styleFaint.Render("callpath") + " <function> to find a callpath to a function\n")
+		case "check":
+			bt.WriteString("- " + styleFaint.Render("check") + " <source> <sink> to run a taint analysis\n")
+		default:
+			bt.WriteString("- " + styleFaint.Render(cmd) + "\n")
+		}
+	}
+	bt.WriteString("\n")
 	bt.Flush()
 
 	var (
@@ -298,7 +322,7 @@ func startShell(ctx context.Context) error {
 		// Check if the user wants to print the CG nodes.
 		if strings.TrimSpace(input) == "nodes" {
 			if cg == nil {
-				bt.WriteString("no callgraph is loaded")
+				bt.WriteString("no callgraph is loaded\n")
 				bt.Flush()
 				continue
 			}
