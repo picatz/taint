@@ -31,7 +31,7 @@ var (
 	styleNumber   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("69"))
 	styleArgument = lipgloss.NewStyle().Foreground(lipgloss.Color("68"))
 	styleFlag     = lipgloss.NewStyle().Foreground(lipgloss.Color("66"))
-	styleCommand  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("55"))
+	styleCommand  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("62"))
 )
 
 var (
@@ -243,7 +243,10 @@ func (c commands) eval(ctx context.Context, bt *bufio.Writer, input string) erro
 		}
 	}
 
-	return fmt.Errorf("unknown command: %q", cmdName)
+	bt.WriteString("unknown command: " + cmdName + "\n")
+	bt.Flush()
+
+	return nil
 }
 
 var builtinCommandExit = &command{
