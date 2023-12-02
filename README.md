@@ -174,6 +174,3 @@ func main() {
 $ xss main.go
 ./xss/testdata/src/example/main.go:9:8: potential XSS
 ```
-
-### `taint`
-
