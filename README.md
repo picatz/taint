@@ -53,13 +53,33 @@ for _, result := range results {
 	if strings.HasPrefix(queryEdge.Site.Value().Call.Value.String(), "Context") {
 		queryArgs = queryArgs[1:]
 	}
+
+	// Get the query function parameter.
+	query := queryArgs[0]
+
+	// Ensure it is a constant (prepared statement), otherwise report
+	// potential SQL injection.
+	if _, isConst := query.(*ssa.Const); !isConst {
+		pass.Reportf(result.SinkValue.Pos(), "potential sql injection")
+	}
 }
 ```
 
+### `taint`
+
+The `taint` CLI is a an interactive tool to find potential security vulnerabilities. Can be used 
+to find potential SQL injections, log injections, and cross-site scripting (XSS) vulnerabilities, 
+among other types of vulnerabilities.
+
+```console
+$ go install github.com/picatz/taint/cmd/taint@latest
+```
+
+![demo](./cmd/taint/vhs/demo.gif)
+
 ### `sqli`
 
-The `sqli` analyzer is a CLI tool that demonstrates usage of the `taint` package to find
-potential SQL injections.
+The `sqli` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer) finds potential SQL injections.
 
 ```console
 $ go install github.com/picatz/taint/cmd/sqli@latest
@@ -100,8 +120,7 @@ $ sqli main.go
 
 ### `logi`
 
-The `logi` analyzer is a CLI tool that demonstrates usage of the `taint` package to find
-potential log injections.
+The `logi` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer) finds potential log injections.
 
 ```console
 $ go install github.com/picatz/taint/cmd/logi@latest
@@ -130,8 +149,7 @@ $ logi main.go
 
 ### `xss`
 
-The `xss` analyzer is a CLI tool that demonstrates usage of the `taint` package to find
-potential cross-site scripting (XSS) vulnerabilities.
+The `xss` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer) finds potential cross-site scripting (XSS) vulnerabilities.
 
 ```console
 $ go install github.com/picatz/taint/cmd/xss@latest

@@ -79,20 +79,22 @@ func Check(cg *callgraph.Graph, sources Sources, sinks Sinks) Results {
 				continue
 			}
 
-			// Check if query used any of the given sources (if it was "tainted").
+			// Check if the last edge (e.g. a SQL query) used any of the given
+			// sources (e.g. user input in an HTTP request) to identify if it
+			// was "tainted".
 			tainted, src, tv := checkPath(sinkPath, sources)
 			if tainted {
-				// Extract the query from the last part of the path
-				// to include in the results.
-				query := sinkPath.Last()
+				// Extract the last edge from the last part of the path
+				// to include the calle as the sink in the result.
+				lastEdge := sinkPath.Last()
 
 				// Add the result to the list of results.
 				results = append(results, Result{
 					Path:        sinkPath,
 					SourceType:  src,
 					SourceValue: tv,
-					SinkType:    query.Callee.String(),
-					SinkValue:   query.Site.Value(),
+					SinkType:    lastEdge.Callee.String(),
+					SinkValue:   lastEdge.Site.Value(),
 				})
 			}
 		}
@@ -124,7 +126,6 @@ func checkPath(path callgraph.Path, sources Sources) (bool, string, ssa.Value) {
 	// TODO: when non-function sinks are supported, we will need to handle
 	//       them differently here.
 	for _, lastCallArg := range lastCallArgs {
-		// fmt.Println(lastCallArg)
 		tainted, src, tv := checkSSAValue(path, sources, lastCallArg, visited)
 		if tainted {
 			return true, src, tv
