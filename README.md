@@ -26,7 +26,7 @@ sources := taint.NewSources(
 	"*net/http.Request",
 )
 
-sinks := taint.NewSources(
+sinks := taint.NewSinks(
 	"(*database/sql.DB).Query",
 	"(*database/sql.DB).QueryContext",
 	"(*database/sql.DB).QueryRow",
