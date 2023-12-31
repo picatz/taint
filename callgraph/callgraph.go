@@ -85,8 +85,22 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 						for i := 0; i < numMethods; i++ {
 							method := argtt.Method(i)
 
+							methodPkg := method.Pkg()
+							if methodPkg == nil {
+								// Universe scope method, such as "error.Error".
+								continue
+							}
+
 							pkg := root.Prog.ImportedPackage(method.Pkg().Path())
-							fn := pkg.Prog.NewFunction(method.Name(), method.Type().(*types.Signature), "callgraph")
+							if pkg == nil {
+								// This is a method from a package that is not imported, so we skip it.
+								continue
+							}
+							fn := pkg.Func(method.Name())
+							if fn == nil {
+								fn = pkg.Prog.NewFunction(method.Name(), method.Type().(*types.Signature), "callgraph")
+							}
+
 							AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(fn))
 
 							switch xType := instrtCallArgt.X.Type().(type) {
@@ -104,7 +118,10 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 
 								methodType := methodSel.Type().(*types.Signature)
 
-								fn2 := pkg2.Prog.NewFunction(method.Name(), methodType, "callgraph")
+								fn2 := pkg2.Func(method.Name())
+								if fn2 == nil {
+									fn2 = pkg2.Prog.NewFunction(method.Name(), methodType, "callgraph")
+								}
 
 								AddEdge(g.CreateNode(fn), instrt, g.CreateNode(fn2))
 							default:
@@ -132,9 +149,20 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 			}
 
 			// TODO: should we share the resulting function?
-			pkg := root.Prog.ImportedPackage(instrt.Call.Method.Pkg().Path())
-			fn := pkg.Prog.NewFunction(instrt.Call.Method.Name(), instrt.Call.Signature(), "callgraph")
-			instrCall = fn
+			instrtCallMethodPkg := instrt.Call.Method.Pkg()
+			if instrtCallMethodPkg == nil {
+				// This is an interface method call from the universe scope, such as "error.Error",
+				// so we return nil to skip this instruction, which we will assume is safe.
+				return nil
+			} else {
+				pkg := root.Prog.ImportedPackage(instrt.Call.Method.Pkg().Path())
+
+				fn := pkg.Func(instrt.Call.Method.Name())
+				if fn == nil {
+					fn = pkg.Prog.NewFunction(instrt.Call.Method.Name(), instrt.Call.Signature(), "callgraph")
+				}
+				instrCall = fn
+			}
 		default:
 			// case *ssa.TypeAssert: ??
 			// fmt.Printf("unknown call type: %v: %[1]T\n", callt)
