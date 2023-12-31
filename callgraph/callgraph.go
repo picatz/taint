@@ -257,7 +257,6 @@ func (g *Graph) String() string {
 
 // A Node represents a node in a call graph.
 type Node struct {
-	sync.RWMutex
 	Func *ssa.Function // the function this node represents
 	ID   int           // 0-based sequence number
 	In   []*Edge       // unordered set of incoming call edges (n.In[*].Callee == n)
@@ -308,36 +307,28 @@ func AddEdge(caller *Node, site ssa.CallInstruction, callee *Node) {
 
 	var existingCalleeEdge bool
 
-	callee.RLock()
 	for _, in := range callee.In {
 		if in.String() == e.String() {
 			existingCalleeEdge = true
 			break
 		}
 	}
-	callee.RUnlock()
 
 	if !existingCalleeEdge {
-		callee.Lock()
 		callee.In = append(callee.In, e)
-		callee.Unlock()
 	}
 
 	var existingCallerEdge bool
 
-	caller.RLock()
 	for _, out := range caller.Out {
 		if out.String() == e.String() {
 			existingCallerEdge = true
 			break
 		}
 	}
-	caller.RUnlock()
 
 	if !existingCallerEdge {
-		caller.Lock()
 		caller.Out = append(caller.Out, e)
-		caller.Unlock()
 	}
 }
 
