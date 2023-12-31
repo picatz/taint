@@ -5,11 +5,15 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
-	"sync"
 
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
 )
+
+// func debug(f string, args ...interface{}) {
+// 	fmt.Printf(f, args...)
+// 	fmt.Printf("\033[1000D")
+// }
 
 // A Graph represents a call graph.
 //
@@ -32,6 +36,8 @@ func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 	allFns := ssautil.AllFunctions(root.Prog)
 
 	for _, srcFn := range srcFns {
+		// debug("adding src function %d/%d: %v\n", i+1, len(srcFns), srcFn)
+
 		err := g.AddFunction(srcFn, allFns)
 		if err != nil {
 			return g, fmt.Errorf("failed to add src function %v: %w", srcFn, err)
@@ -48,6 +54,7 @@ func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 }
 
 func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g *Graph, fn *ssa.Function, instr ssa.Instruction) error {
+	// debug("\tcheckBlockInstruction: %v\n", instr)
 	switch instrt := instr.(type) {
 	case *ssa.Call:
 		var instrCall *ssa.Function
@@ -202,6 +209,8 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 // AddFunction analyzes the given target SSA function, adding information to the call graph.
 // https://cs.opensource.google/go/x/tools/+/master:cmd/guru/callers.go;drc=3e0d083b858b3fdb7d095b5a3deb184aa0a5d35e;bpv=1;bpt=1;l=90
 func (cg *Graph) AddFunction(target *ssa.Function, allFns map[*ssa.Function]bool) error {
+	// debug("\tAddFunction: %v (all funcs %d)\n", target, len(allFns))
+
 	// First check if we have already processed this function.
 	if _, ok := cg.Nodes[target]; ok {
 		return nil
@@ -266,6 +275,8 @@ func (cg *Graph) AddFunction(target *ssa.Function, allFns map[*ssa.Function]bool
 
 // CreateNode returns the Node for fn, creating it if not present.
 func (g *Graph) CreateNode(fn *ssa.Function) *Node {
+	// debug("\tCreateNode: %v\n", fn)
+
 	n, ok := g.Nodes[fn]
 	if !ok {
 		n = &Node{Func: fn, ID: len(g.Nodes)}
@@ -336,6 +347,8 @@ func (e Edge) Pos() token.Pos {
 
 // AddEdge adds the edge (caller, site, callee) to the call graph.
 func AddEdge(caller *Node, site ssa.CallInstruction, callee *Node) {
+	// debug("\tAddEdge(%v): %v → %v\n", site, caller, callee)
+
 	e := &Edge{caller, site, callee}
 
 	var existingCalleeEdge bool
