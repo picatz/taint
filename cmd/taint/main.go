@@ -320,8 +320,11 @@ var builtinCommandLoad = &command{
 			return nil
 		}
 
+
+		ssaBuildMode := ssa.InstantiateGenerics // ssa.SanityCheckFunctions | ssa.GlobalDebug
+
 		// Analyze the package.
-		ssaProg, ssaPkgs = ssautil.Packages(pkgs, ssa.InstantiateGenerics|ssa.SanityCheckFunctions)
+		ssaProg, ssaPkgs = ssautil.Packages(pkgs, ssaBuildMode)
 
 		ssaProg.Build()
 
