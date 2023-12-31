@@ -491,11 +491,11 @@ var builtinCommandNodes = &command{
 
 var builtinCommandsCallpath = &command{
 	name: "callpath",
-	desc: "find a callpath to a function",
+	desc: "find a callpaths to a function",
 	args: []*commandArg{
 		{
 			name: "function",
-			desc: "the function to find a callpath to",
+			desc: "the function to find callpaths to",
 		},
 	},
 	fn: func(ctx context.Context, bt *bufio.Writer, args []string, flags map[string]string) error {
@@ -513,27 +513,29 @@ var builtinCommandsCallpath = &command{
 
 		fn := args[0]
 
-		path := callgraph.PathSearchCallTo(cg.Root, fn)
+		paths := callgraph.PathsSearchCallTo(cg.Root, fn)
 
-		if path == nil {
+		if len(paths) == 0 {
 			bt.WriteString("no calls to " + fn + "\n")
 			bt.Flush()
 			return nil
 		}
 
-		pathStr := path.String()
+		for _, path := range paths {
+			pathStr := path.String()
 
-		// Split on " → " and highlight each node.
-		parts := strings.Split(pathStr, " → ")
+			// Split on " → " and highlight each node.
+			parts := strings.Split(pathStr, " → ")
 
-		for i, part := range parts {
-			parts[i] = highlightNode(part)
+			for i, part := range parts {
+				parts[i] = highlightNode(part)
+			}
+
+			pathStr = strings.Join(parts, styleFaint.Render(" → "))
+
+			bt.WriteString(pathStr + "\n")
+			bt.Flush()
 		}
-
-		pathStr = strings.Join(parts, styleFaint.Render(" → "))
-
-		bt.WriteString(pathStr + "\n")
-		bt.Flush()
 		return nil
 	},
 }
