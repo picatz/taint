@@ -304,9 +304,6 @@ var builtinCommandLoad = &command{
 		patterns := []string{"./..."}
 		// patterns := []string{"all"}
 
-		bt.WriteString(styleFaint.Render("loading packages\n"))
-		bt.Flush()
-
 		pkgs, err = packages.Load(&packages.Config{
 			Mode:    loadMode,
 			Context: ctx,
@@ -322,9 +319,6 @@ var builtinCommandLoad = &command{
 			bt.Flush()
 			return nil
 		}
-
-		bt.WriteString(styleFaint.Render("building packages\n"))
-		bt.Flush()
 
 		ssaBuildMode := ssa.InstantiateGenerics // ssa.SanityCheckFunctions | ssa.GlobalDebug
 
@@ -367,9 +361,6 @@ var builtinCommandLoad = &command{
 			bt.Flush()
 			return nil
 		}
-
-		bt.WriteString(styleFaint.Render("building callgraph\n"))
-		bt.Flush()
 
 		cg, err = callgraph.New(mainFn, srcFns...)
 		if err != nil {
