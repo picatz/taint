@@ -202,6 +202,11 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 // AddFunction analyzes the given target SSA function, adding information to the call graph.
 // https://cs.opensource.google/go/x/tools/+/master:cmd/guru/callers.go;drc=3e0d083b858b3fdb7d095b5a3deb184aa0a5d35e;bpv=1;bpt=1;l=90
 func (cg *Graph) AddFunction(target *ssa.Function, allFns map[*ssa.Function]bool) error {
+	// First check if we have already processed this function.
+	if _, ok := cg.Nodes[target]; ok {
+		return nil
+	}
+
 	targetNode := cg.CreateNode(target)
 
 	// Find receiver type (for methods).
