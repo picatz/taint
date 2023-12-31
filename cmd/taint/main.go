@@ -283,16 +283,29 @@ var builtinCommandLoad = &command{
 			return nil
 		}
 
-		loadMode := packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
-			packages.NeedTypes | packages.NeedTypesSizes | packages.NeedImports |
-			packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedDeps |
-			packages.NeedExportFile | packages.NeedDeps | packages.NeedEmbedPatterns | packages.NeedModule
+		loadMode :=
+			packages.NeedName |
+				packages.NeedDeps |
+				packages.NeedFiles |
+				packages.NeedModule |
+				packages.NeedTypes |
+				packages.NeedImports |
+				packages.NeedSyntax |
+				packages.NeedTypesInfo
+			// packages.NeedTypesSizes |
+			// packages.NeedCompiledGoFiles |
+			// packages.NeedExportFile |
+			// packages.NeedEmbedPatterns
 
-		parseMode := parser.ParseComments
+		// parseMode := parser.ParseComments
+		parseMode := parser.SkipObjectResolution
 
 		// patterns := []string{dir}
 		patterns := []string{"./..."}
 		// patterns := []string{"all"}
+
+		bt.WriteString(styleFaint.Render("loading packages\n"))
+		bt.Flush()
 
 		pkgs, err = packages.Load(&packages.Config{
 			Mode:    loadMode,
@@ -310,8 +323,13 @@ var builtinCommandLoad = &command{
 			return nil
 		}
 
+		bt.WriteString(styleFaint.Render("building packages\n"))
+		bt.Flush()
+
+		ssaBuildMode := ssa.InstantiateGenerics // ssa.SanityCheckFunctions | ssa.GlobalDebug
+
 		// Analyze the package.
-		ssaProg, ssaPkgs = ssautil.Packages(pkgs, ssa.InstantiateGenerics|ssa.SanityCheckFunctions)
+		ssaProg, ssaPkgs = ssautil.Packages(pkgs, ssaBuildMode)
 
 		ssaProg.Build()
 
@@ -349,6 +367,9 @@ var builtinCommandLoad = &command{
 			bt.Flush()
 			return nil
 		}
+
+		bt.WriteString(styleFaint.Render("building callgraph\n"))
+		bt.Flush()
 
 		cg, err = callgraph.New(mainFn, srcFns...)
 		if err != nil {
@@ -431,7 +452,7 @@ var builtinCommandNodes = &command{
 		nodesStrs := make([]string, 0, len(cg.Nodes))
 
 		for _, node := range cg.Nodes {
-			nodesStrs = append(nodesStrs, highlightNode(node.String()))
+			nodesStrs = append(nodesStrs, node.String())
 		}
 
 		sort.SliceStable(nodesStrs, func(i, j int) bool {
@@ -459,7 +480,7 @@ var builtinCommandNodes = &command{
 		})
 
 		for _, nodeStr := range nodesStrs {
-			nodesStr.WriteString(nodeStr + "\n")
+			nodesStr.WriteString(highlightNode(nodeStr) + "\n")
 		}
 
 		bt.WriteString(nodesStr.String())

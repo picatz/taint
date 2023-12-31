@@ -5,11 +5,15 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
-	"sync"
 
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
 )
+
+// func debug(f string, args ...interface{}) {
+// 	fmt.Printf(f, args...)
+// 	fmt.Printf("\033[1000D")
+// }
 
 // A Graph represents a call graph.
 //
@@ -32,6 +36,8 @@ func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 	allFns := ssautil.AllFunctions(root.Prog)
 
 	for _, srcFn := range srcFns {
+		// debug("adding src function %d/%d: %v\n", i+1, len(srcFns), srcFn)
+
 		err := g.AddFunction(srcFn, allFns)
 		if err != nil {
 			return g, fmt.Errorf("failed to add src function %v: %w", srcFn, err)
@@ -48,6 +54,7 @@ func New(root *ssa.Function, srcFns ...*ssa.Function) (*Graph, error) {
 }
 
 func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g *Graph, fn *ssa.Function, instr ssa.Instruction) error {
+	// debug("\tcheckBlockInstruction: %v\n", instr)
 	switch instrt := instr.(type) {
 	case *ssa.Call:
 		var instrCall *ssa.Function
@@ -85,8 +92,22 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 						for i := 0; i < numMethods; i++ {
 							method := argtt.Method(i)
 
+							methodPkg := method.Pkg()
+							if methodPkg == nil {
+								// Universe scope method, such as "error.Error".
+								continue
+							}
+
 							pkg := root.Prog.ImportedPackage(method.Pkg().Path())
-							fn := pkg.Prog.NewFunction(method.Name(), method.Type().(*types.Signature), "callgraph")
+							if pkg == nil {
+								// This is a method from a package that is not imported, so we skip it.
+								continue
+							}
+							fn := pkg.Func(method.Name())
+							if fn == nil {
+								fn = pkg.Prog.NewFunction(method.Name(), method.Type().(*types.Signature), "callgraph")
+							}
+
 							AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(fn))
 
 							switch xType := instrtCallArgt.X.Type().(type) {
@@ -104,7 +125,10 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 
 								methodType := methodSel.Type().(*types.Signature)
 
-								fn2 := pkg2.Prog.NewFunction(method.Name(), methodType, "callgraph")
+								fn2 := pkg2.Func(method.Name())
+								if fn2 == nil {
+									fn2 = pkg2.Prog.NewFunction(method.Name(), methodType, "callgraph")
+								}
 
 								AddEdge(g.CreateNode(fn), instrt, g.CreateNode(fn2))
 							default:
@@ -132,9 +156,20 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 			}
 
 			// TODO: should we share the resulting function?
-			pkg := root.Prog.ImportedPackage(instrt.Call.Method.Pkg().Path())
-			fn := pkg.Prog.NewFunction(instrt.Call.Method.Name(), instrt.Call.Signature(), "callgraph")
-			instrCall = fn
+			instrtCallMethodPkg := instrt.Call.Method.Pkg()
+			if instrtCallMethodPkg == nil {
+				// This is an interface method call from the universe scope, such as "error.Error",
+				// so we return nil to skip this instruction, which we will assume is safe.
+				return nil
+			} else {
+				pkg := root.Prog.ImportedPackage(instrt.Call.Method.Pkg().Path())
+
+				fn := pkg.Func(instrt.Call.Method.Name())
+				if fn == nil {
+					fn = pkg.Prog.NewFunction(instrt.Call.Method.Name(), instrt.Call.Signature(), "callgraph")
+				}
+				instrCall = fn
+			}
 		default:
 			// case *ssa.TypeAssert: ??
 			// fmt.Printf("unknown call type: %v: %[1]T\n", callt)
@@ -174,6 +209,13 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 // AddFunction analyzes the given target SSA function, adding information to the call graph.
 // https://cs.opensource.google/go/x/tools/+/master:cmd/guru/callers.go;drc=3e0d083b858b3fdb7d095b5a3deb184aa0a5d35e;bpv=1;bpt=1;l=90
 func (cg *Graph) AddFunction(target *ssa.Function, allFns map[*ssa.Function]bool) error {
+	// debug("\tAddFunction: %v (all funcs %d)\n", target, len(allFns))
+
+	// First check if we have already processed this function.
+	if _, ok := cg.Nodes[target]; ok {
+		return nil
+	}
+
 	targetNode := cg.CreateNode(target)
 
 	// Find receiver type (for methods).
@@ -233,6 +275,8 @@ func (cg *Graph) AddFunction(target *ssa.Function, allFns map[*ssa.Function]bool
 
 // CreateNode returns the Node for fn, creating it if not present.
 func (g *Graph) CreateNode(fn *ssa.Function) *Node {
+	// debug("\tCreateNode: %v\n", fn)
+
 	n, ok := g.Nodes[fn]
 	if !ok {
 		n = &Node{Func: fn, ID: len(g.Nodes)}
@@ -257,7 +301,6 @@ func (g *Graph) String() string {
 
 // A Node represents a node in a call graph.
 type Node struct {
-	sync.RWMutex
 	Func *ssa.Function // the function this node represents
 	ID   int           // 0-based sequence number
 	In   []*Edge       // unordered set of incoming call edges (n.In[*].Callee == n)
@@ -304,40 +347,34 @@ func (e Edge) Pos() token.Pos {
 
 // AddEdge adds the edge (caller, site, callee) to the call graph.
 func AddEdge(caller *Node, site ssa.CallInstruction, callee *Node) {
+	// debug("\tAddEdge(%v): %v → %v\n", site, caller, callee)
+
 	e := &Edge{caller, site, callee}
 
 	var existingCalleeEdge bool
 
-	callee.RLock()
 	for _, in := range callee.In {
 		if in.String() == e.String() {
 			existingCalleeEdge = true
 			break
 		}
 	}
-	callee.RUnlock()
 
 	if !existingCalleeEdge {
-		callee.Lock()
 		callee.In = append(callee.In, e)
-		callee.Unlock()
 	}
 
 	var existingCallerEdge bool
 
-	caller.RLock()
 	for _, out := range caller.Out {
 		if out.String() == e.String() {
 			existingCallerEdge = true
 			break
 		}
 	}
-	caller.RUnlock()
 
 	if !existingCallerEdge {
-		caller.Lock()
 		caller.Out = append(caller.Out, e)
-		caller.Unlock()
 	}
 }
 
