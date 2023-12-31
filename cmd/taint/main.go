@@ -444,7 +444,7 @@ var builtinCommandNodes = &command{
 		nodesStrs := make([]string, 0, len(cg.Nodes))
 
 		for _, node := range cg.Nodes {
-			nodesStrs = append(nodesStrs, highlightNode(node.String()))
+			nodesStrs = append(nodesStrs, node.String())
 		}
 
 		sort.SliceStable(nodesStrs, func(i, j int) bool {
@@ -472,7 +472,7 @@ var builtinCommandNodes = &command{
 		})
 
 		for _, nodeStr := range nodesStrs {
-			nodesStr.WriteString(nodeStr + "\n")
+			nodesStr.WriteString(highlightNode(nodeStr) + "\n")
 		}
 
 		bt.WriteString(nodesStr.String())
