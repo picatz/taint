@@ -283,12 +283,22 @@ var builtinCommandLoad = &command{
 			return nil
 		}
 
-		loadMode := packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
-			packages.NeedTypes | packages.NeedTypesSizes | packages.NeedImports |
-			packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedDeps |
-			packages.NeedExportFile | packages.NeedDeps | packages.NeedEmbedPatterns | packages.NeedModule
+		loadMode :=
+			packages.NeedName |
+				packages.NeedDeps |
+				packages.NeedFiles |
+				packages.NeedModule |
+				packages.NeedTypes |
+				packages.NeedImports |
+				packages.NeedSyntax |
+				packages.NeedTypesInfo
+			// packages.NeedTypesSizes |
+			// packages.NeedCompiledGoFiles |
+			// packages.NeedExportFile |
+			// packages.NeedEmbedPatterns
 
-		parseMode := parser.ParseComments
+		// parseMode := parser.ParseComments
+		parseMode := parser.SkipObjectResolution
 
 		// patterns := []string{dir}
 		patterns := []string{"./..."}
