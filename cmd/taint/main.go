@@ -347,12 +347,19 @@ var builtinCommandLoad = &command{
 					continue
 				}
 
-				pngFn := pkg.Func(fn.Object().Name())
-				if pngFn == nil {
+				pkgFn := pkg.Func(fn.Object().Name())
+				if pkgFn == nil {
 					continue
 				}
 
-				srcFns = append(srcFns, pngFn)
+				var addAnons func(f *ssa.Function)
+				addAnons = func(f *ssa.Function) {
+					srcFns = append(srcFns, f)
+					for _, anon := range f.AnonFuncs {
+						addAnons(anon)
+					}
+				}
+				addAnons(pkgFn)
 			}
 		}
 
