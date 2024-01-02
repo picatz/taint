@@ -448,14 +448,15 @@ func (p Path) String() string {
 
 type Paths []Path
 
-func PathSearch(start *Node, isEnd func(*Node) bool) Path {
+func PathSearch(start *Node, isMatch func(*Node) bool) Path {
 	stack := make(Path, 0, 32)
 	seen := make(map[*Node]bool)
 	var search func(n *Node) Path
 	search = func(n *Node) Path {
 		if !seen[n] {
+			// debug("searching: %v\n", n)
 			seen[n] = true
-			if isEnd(n) {
+			if isMatch(n) {
 				return stack
 			}
 			for _, e := range n.Out {
@@ -471,16 +472,17 @@ func PathSearch(start *Node, isEnd func(*Node) bool) Path {
 	return search(start)
 }
 
-func PathsSearch(start *Node, isEnd func(*Node) bool) Paths {
+func PathsSearch(start *Node, isMatch func(*Node) bool) Paths {
 	paths := Paths{}
 
 	stack := make(Path, 0, 32)
 	seen := make(map[*Node]bool)
 	var search func(n *Node)
 	search = func(n *Node) {
+		// debug("searching: %v\n", n)
 		if !seen[n] {
 			seen[n] = true
-			if isEnd(n) {
+			if isMatch(n) {
 				paths = append(paths, stack)
 
 				stack = make(Path, 0, 32)
