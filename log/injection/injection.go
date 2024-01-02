@@ -113,7 +113,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// program being analyzed before running the analysis.
 	//
 	// This prevents wasting time analyzing programs that don't log.
-	if !imports(pass, "log") {
+	if !imports(pass, "log") && !imports(pass, "log/slog") {
 		return nil, nil
 	}
 
