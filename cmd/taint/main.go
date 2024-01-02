@@ -489,7 +489,7 @@ var builtinCommandNodes = &command{
 
 var builtinCommandsCallpath = &command{
 	name: "callpath",
-	desc: "find a callpaths to a function",
+	desc: "find callpaths to a function",
 	args: []*commandArg{
 		{
 			name: "function",
