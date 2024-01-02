@@ -726,28 +726,9 @@ func startShell(ctx context.Context) error {
 	}
 }
 
-func interruptContext(ctx context.Context) context.Context {
-	ctx, cancel := context.WithCancel(ctx)
-
-	go func() {
-		defer cancel()
-
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, os.Interrupt)
-
-		select {
-		case <-sig:
-			return
-		case <-ctx.Done():
-			return
-		}
-	}()
-
-	return ctx
-}
-
 func main() {
-	ctx := interruptContext(context.Background())
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
 
 	if err := startShell(ctx); err != nil {
 		if err == io.EOF {
