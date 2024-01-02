@@ -325,6 +325,7 @@ func (e Edge) String() string {
 	return fmt.Sprintf("%s → %s", e.Caller, e.Callee)
 }
 
+// Description returns a human-readable description of the edge.
 func (e Edge) Description() string {
 	var prefix string
 	switch e.Site.(type) {
