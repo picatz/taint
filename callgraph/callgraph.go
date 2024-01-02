@@ -490,16 +490,13 @@ func PathsSearch(start *Node, isMatch func(*Node) bool) Paths {
 				return
 			}
 			for _, e := range n.Out {
-				if e.Caller.Func.Name() != "main" {
-					stack = append(stack, e) // push
-				}
+				// debug("\tout: %v\n", e)
+				stack = append(stack, e) // push
 				search(e.Callee)
 				if len(stack) == 0 {
 					continue
 				}
-				if e.Caller.Func.Name() != "main" {
-					stack = stack[:len(stack)-1] // pop
-				}
+				stack = stack[:len(stack)-1] // pop
 			}
 		}
 	}
