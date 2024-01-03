@@ -43,6 +43,34 @@ var injectableLogFunctions = taint.NewSinks(
 	"(*log.Logger).SetOutput",
 	"(*log.Logger).SetPrefix",
 	"(*log.Logger).Writer",
+
+	// log/slog (structured logging)
+	// https://pkg.go.dev/log/slog
+	"log/slog.Debug",
+	"log/slog.DebugContext",
+	"log/slog.Error",
+	"log/slog.ErrorContext",
+	"log/slog.Info",
+	"log/slog.InfoContext",
+	"log/slog.Warn",
+	"log/slog.WarnContext",
+	"log/slog.Log",
+	"log/slog.LogAttrs",
+	"(*log/slog.Logger).With",
+	"(*log/slog.Logger).Debug",
+	"(*log/slog.Logger).DebugContext",
+	"(*log/slog.Logger).Error",
+	"(*log/slog.Logger).ErrorContext",
+	"(*log/slog.Logger).Info",
+	"(*log/slog.Logger).InfoContext",
+	"(*log/slog.Logger).Warn",
+	"(*log/slog.Logger).WarnContext",
+	"(*log/slog.Logger).Log",
+	"(*log/slog.Logger).LogAttrs",
+	"log/slog.NewRecord",
+	"(*log/slog.Record).Add",
+	"(*log/slog.Record).AddAttrs",
+
 	// TODO: consider adding the following logger packages,
 	//       and the ability to configure this list generically.
 	//
@@ -85,7 +113,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// program being analyzed before running the analysis.
 	//
 	// This prevents wasting time analyzing programs that don't log.
-	if !imports(pass, "log") {
+	if !imports(pass, "log", "log/slog") {
 		return nil, nil
 	}
 

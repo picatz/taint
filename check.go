@@ -530,6 +530,25 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 				}
 			}
 		}
+	case *ssa.MakeMap:
+		refs := value.Referrers()
+		if refs != nil {
+			for _, ref := range *refs {
+				refVal, isVal := ref.(ssa.Value)
+				if isVal {
+					tainted, src, tv := checkSSAValue(path, sources, refVal, visited)
+					if tainted {
+						return true, src, tv
+					}
+					continue
+				}
+
+				tainted, src, tv := checkSSAInstruction(path, sources, ref, visited)
+				if tainted {
+					return true, src, tv
+				}
+			}
+		}
 	default:
 		// fmt.Printf("? check SSA value %s: %[1]T\n", v)
 		return false, "", nil
@@ -565,6 +584,18 @@ func checkSSAInstruction(path callgraph.Path, sources Sources, i ssa.Instruction
 			if tainted {
 				return true, src, tv
 			}
+		}
+	case *ssa.MapUpdate:
+		// Map update instructions need to be checked for both the map being updated,
+		// and the key and value being updated.
+		tainted, src, tv := checkSSAValue(path, sources, instr.Key, visited)
+		if tainted {
+			return true, src, tv
+		}
+
+		tainted, src, tv = checkSSAValue(path, sources, instr.Value, visited)
+		if tainted {
+			return true, src, tv
 		}
 	default:
 		// fmt.Printf("? check SSA instr %s: %[1]T\n", i)
