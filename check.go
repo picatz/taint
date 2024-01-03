@@ -112,24 +112,16 @@ func checkPath(path callgraph.Path, sources Sources) (bool, string, ssa.Value) {
 		return false, "", nil
 	}
 
-	// Extract the last call from the path, along with its arguments,
-	// to check if any of the given sources were used to obtain it.
-	var (
-		lastCall     = path.Last()
-		lastCallArgs = lastCall.Site.Common().Args
-		visited      = valueSet{}
-	)
+	// Value set used to keep track of values which were already visited
+	// during the taint analysis. This prevents cyclic calls from crashing
+	// the program.
+	visited := valueSet{}
 
-	// Check if any of the given sources were used to obtain the last call
-	// in the path. If so, we can assume the path is tainted.
-	//
-	// TODO: when non-function sinks are supported, we will need to handle
-	//       them differently here.
-	for _, lastCallArg := range lastCallArgs {
-		tainted, src, tv := checkSSAValue(path, sources, lastCallArg, visited)
-		if tainted {
-			return true, src, tv
-		}
+	// Start at last call from the path to see if any of the given sources were used
+	// along with it to perform an action (e.g. SQL query).
+	tainted, src, tv := checkSSAValue(path, sources, path.Last().Site.Value(), visited)
+	if tainted {
+		return true, src, tv
 	}
 
 	return false, "", nil
