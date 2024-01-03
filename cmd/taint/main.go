@@ -435,6 +435,22 @@ var builtinCommandCG = &command{
 	},
 }
 
+var builtinCommandRoot = &command{
+	name: "root",
+	desc: "print the callgraph's root",
+	fn: func(ctx context.Context, bt *bufio.Writer, args []string, flags map[string]string) error {
+		if cg == nil {
+			bt.WriteString("no callgraph is loaded\n")
+			bt.Flush()
+			return nil
+		}
+
+		bt.WriteString(cg.Root.String() + "\n")
+		bt.Flush()
+		return nil
+	},
+}
+
 var builtinCommandNodes = &command{
 	name: "nodes",
 	desc: "print the callgraph nodes",
@@ -598,6 +614,7 @@ var builtinCommands = commands{
 	builtinCommandLoad,
 	builtinCommandPkgs,
 	builtinCommandCG,
+	builtinCommandRoot,
 	builtinCommandNodes,
 	builtinCommandsCallpath,
 	builtinCommandCheck,
