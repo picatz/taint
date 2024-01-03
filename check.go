@@ -530,6 +530,12 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 				}
 			}
 		}
+				tainted, src, tv := checkSSAInstruction(path, sources, ref, visited)
+				if tainted {
+					return true, src, tv
+				}
+			}
+		}
 	default:
 		// fmt.Printf("? check SSA value %s: %[1]T\n", v)
 		return false, "", nil
