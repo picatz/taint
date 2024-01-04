@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/picatz/taint"
-	"github.com/picatz/taint/callgraph"
+	"github.com/picatz/taint/callgraphutil"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
@@ -129,7 +129,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// Construct a callgraph, using the main function as the root,
 	// constructed of all other functions. This returns a callgraph
 	// we can use to identify directed paths to logging functions.
-	cg, err := callgraph.New(mainFn, buildSSA.SrcFuncs...)
+	cg, err := callgraphutil.NewCallGraph(mainFn, buildSSA.SrcFuncs...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new callgraph: %w", err)
 	}

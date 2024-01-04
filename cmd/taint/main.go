@@ -18,8 +18,9 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/picatz/taint"
-	"github.com/picatz/taint/callgraph"
+	"github.com/picatz/taint/callgraphutil"
 	"golang.org/x/term"
+	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
@@ -369,7 +370,7 @@ var builtinCommandLoad = &command{
 			return nil
 		}
 
-		cg, err = callgraph.New(mainFn, srcFns...)
+		cg, err = callgraphutil.NewCallGraph(mainFn, srcFns...)
 		if err != nil {
 			bt.WriteString(err.Error() + "\n")
 			bt.Flush()
@@ -427,7 +428,7 @@ var builtinCommandCG = &command{
 			return nil
 		}
 
-		cgStr := strings.ReplaceAll(cg.String(), "→", styleFaint.Render("→"))
+		cgStr := strings.ReplaceAll(callgraphutil.CallGraphString(cg), "→", styleFaint.Render("→"))
 
 		bt.WriteString(cgStr)
 		bt.Flush()
@@ -527,7 +528,7 @@ var builtinCommandsCallpath = &command{
 
 		fn := args[0]
 
-		paths := callgraph.PathsSearchCallTo(cg.Root, fn)
+		paths := callgraphutil.PathsSearchCallTo(cg.Root, fn)
 
 		if len(paths) == 0 {
 			bt.WriteString("no calls to " + fn + "\n")
