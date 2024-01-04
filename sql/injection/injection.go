@@ -119,7 +119,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// Construct a callgraph, using the main function as the root,
 	// constructed of all other functions. This returns a callgraph
 	// we can use to identify directed paths to SQL queries.
-	cg, err := callgraphutil.NewCallGraph(mainFn, buildSSA.SrcFuncs...)
+	cg, err := callgraphutil.NewGraph(mainFn, buildSSA.SrcFuncs...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new callgraph: %w", err)
 	}

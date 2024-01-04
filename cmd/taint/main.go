@@ -370,7 +370,7 @@ var builtinCommandLoad = &command{
 			return nil
 		}
 
-		cg, err = callgraphutil.NewCallGraph(mainFn, srcFns...)
+		cg, err = callgraphutil.NewGraph(mainFn, srcFns...)
 		if err != nil {
 			bt.WriteString(err.Error() + "\n")
 			bt.Flush()
@@ -428,7 +428,7 @@ var builtinCommandCG = &command{
 			return nil
 		}
 
-		cgStr := strings.ReplaceAll(callgraphutil.CallGraphString(cg), "→", styleFaint.Render("→"))
+		cgStr := strings.ReplaceAll(callgraphutil.GraphString(cg), "→", styleFaint.Render("→"))
 
 		bt.WriteString(cgStr)
 		bt.Flush()

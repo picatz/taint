@@ -10,10 +10,10 @@ import (
 	"golang.org/x/tools/go/ssa/ssautil"
 )
 
-// CallGraphString returns a string representation of the call graph,
+// GraphString returns a string representation of the call graph,
 // which is a sequence of nodes separated by newlines, with the
 // callees of each node indented by a tab.
-func CallGraphString(g *callgraph.Graph) string {
+func GraphString(g *callgraph.Graph) string {
 	var buf bytes.Buffer
 
 	for _, n := range g.Nodes {
@@ -27,7 +27,7 @@ func CallGraphString(g *callgraph.Graph) string {
 	return buf.String()
 }
 
-// NewCallGraph returns a new Graph with the specified root node.
+// NewGraph returns a new Graph with the specified root node.
 //
 // Typically, the root node is the main function of the program, and the
 // srcFns are the source functions that are of interest to the caller. But, the root
@@ -39,7 +39,7 @@ func CallGraphString(g *callgraph.Graph) string {
 // edges today, such as stucts containing function fields accessed via slice or map
 // indexing. This is a known limitation, but something we hope to improve in the near future.
 // https://github.com/picatz/taint/issues/23
-func NewCallGraph(root *ssa.Function, srcFns ...*ssa.Function) (*callgraph.Graph, error) {
+func NewGraph(root *ssa.Function, srcFns ...*ssa.Function) (*callgraph.Graph, error) {
 	g := &callgraph.Graph{
 		Nodes: make(map[*ssa.Function]*callgraph.Node),
 	}

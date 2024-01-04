@@ -97,7 +97,7 @@ func TestLoadAndSearch(t *testing.T) {
 		t.Fatal("main function not found")
 	}
 
-	cg, err := callgraphutil.NewCallGraph(mainFn, srcFns...)
+	cg, err := callgraphutil.NewGraph(mainFn, srcFns...)
 	if err != nil {
 		t.Fatal(err)
 	}
