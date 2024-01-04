@@ -825,11 +825,19 @@ func cloneRepository(ctx context.Context, repoURL string) (string, string, error
 		return "", "", fmt.Errorf("%w", err)
 	}
 
-	// Get the directory name.
-	dirName := strings.TrimSuffix(repoURL, u.Path)
+	// Split the path into segments.
+	pathSegments := strings.Split(u.Path, "/")
+
+	// Ensure there are at least 2 segments for owner and repo.
+	if len(pathSegments) < 3 {
+		return "", "", fmt.Errorf("invalid GitHub URL: %s", repoURL)
+	}
+
+	// Get the owner and repo part of the URL.
+	ownerAndRepo := pathSegments[1] + "/" + pathSegments[2]
 
 	// Get the directory path.
-	dir := filepath.Join(os.TempDir(), "taint", dirName)
+	dir := filepath.Join(os.TempDir(), "taint", "github", ownerAndRepo)
 
 	// Check if the directory exists.
 	_, err = os.Stat(dir)
