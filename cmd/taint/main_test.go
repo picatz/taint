@@ -8,7 +8,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/picatz/taint/callgraph"
+	"github.com/picatz/taint/callgraphutil"
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
@@ -97,7 +97,7 @@ func TestLoadAndSearch(t *testing.T) {
 		t.Fatal("main function not found")
 	}
 
-	cg, err := callgraph.New(mainFn, srcFns...)
+	cg, err := callgraphutil.NewGraph(mainFn, srcFns...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestLoadAndSearch(t *testing.T) {
 
 	// t.Log(path)
 
-	paths := callgraph.PathsSearchCallTo(cg.Root, "(*database/sql.DB).Query")
+	paths := callgraphutil.PathsSearchCallTo(cg.Root, "(*database/sql.DB).Query")
 
 	if len(paths) == 0 {
 		t.Fatal("no paths found")

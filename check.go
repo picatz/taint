@@ -1,8 +1,10 @@
 package taint
 
 import (
-	"github.com/picatz/taint/callgraph"
+	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/ssa"
+
+	"github.com/picatz/taint/callgraphutil"
 )
 
 // Result is an individual finding from a taint check.
@@ -13,7 +15,7 @@ import (
 type Result struct {
 	// Path is the specific path within a callgraph
 	// where the source founds its way into a sink.
-	Path callgraph.Path
+	Path callgraphutil.Path
 
 	// Source type information.
 	SourceType string
@@ -65,7 +67,7 @@ func Check(cg *callgraph.Graph, sources Sources, sinks Sinks) Results {
 	// within the callgraph that those sinks can end up as
 	// the final node path (the "sink path").
 	for sink := range sinks {
-		sinkPaths := callgraph.PathsSearchCallTo(cg.Root, sink)
+		sinkPaths := callgraphutil.PathsSearchCallTo(cg.Root, sink)
 
 		// fmt.Println("sink paths:", len(sinkPaths))
 
@@ -106,7 +108,7 @@ func Check(cg *callgraph.Graph, sources Sources, sinks Sinks) Results {
 
 // checkPath implements taint analysis that can be used to identify if the given
 // callgraph path contains information from taintable sources (typically user input).
-func checkPath(path callgraph.Path, sources Sources) (bool, string, ssa.Value) {
+func checkPath(path callgraphutil.Path, sources Sources) (bool, string, ssa.Value) {
 	// Ensure the path isn't empty (which can happen?!).
 	if path.Empty() {
 		return false, "", nil
@@ -134,7 +136,7 @@ func checkPath(path callgraph.Path, sources Sources) (bool, string, ssa.Value) {
 // calls itself (or checkSSAInstruction) as nessecary.
 //
 // It returns true if the given SSA value is tained by any of the given sources.
-func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited valueSet) (bool, string, ssa.Value) {
+func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visited valueSet) (bool, string, ssa.Value) {
 	// First, check if this value has already been visited.
 	//
 	// If so, we can assume it is safe.
@@ -550,7 +552,7 @@ func checkSSAValue(path callgraph.Path, sources Sources, v ssa.Value, visited va
 
 // checkSSAInstruction is used internally by checkSSAValue when it needs to traverse
 // SSA instructions, like the contents of a calling function.
-func checkSSAInstruction(path callgraph.Path, sources Sources, i ssa.Instruction, visited valueSet) (bool, string, ssa.Value) {
+func checkSSAInstruction(path callgraphutil.Path, sources Sources, i ssa.Instruction, visited valueSet) (bool, string, ssa.Value) {
 	// fmt.Printf("! check SSA instr %s: %[1]T\n", i)
 
 	switch instr := i.(type) {

@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/picatz/taint"
-	"github.com/picatz/taint/callgraph"
+	"github.com/picatz/taint/callgraphutil"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
@@ -119,10 +119,41 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// Construct a callgraph, using the main function as the root,
 	// constructed of all other functions. This returns a callgraph
 	// we can use to identify directed paths to SQL queries.
-	cg, err := callgraph.New(mainFn, buildSSA.SrcFuncs...)
+	cg, err := callgraphutil.NewGraph(mainFn, buildSSA.SrcFuncs...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new callgraph: %w", err)
 	}
+
+	// If you'd like to compare the callgraph constructed by the
+	// callgraphutil package to the one constructed by others
+	// (e.g. pointer analysis, rta, cha, static, etc), uncomment the
+	// following lines and compare the output.
+	//
+	// Today, I believe the callgraphutil package is the most
+	// accurate, but I'd love to be proven wrong.
+
+	// Note: this actually panis for testcase b
+	// ptares, err := pointer.Analyze(&pointer.Config{
+	// 	Mains:          []*ssa.Package{buildSSA.Pkg},
+	// 	BuildCallGraph: true,
+	// })
+	// if err != nil {
+	// 	return nil, fmt.Errorf("failed to create new callgraph using pointer analysis: %w", err)
+	// }
+	// cg := ptares.CallGraph
+
+	// cg := rta.Analyze([]*ssa.Function{mainFn}, true).CallGraph
+	// cg := cha.CallGraph(buildSSA.Pkg.Prog)
+	// cg := static.CallGraph(buildSSA.Pkg.Prog)
+
+	// https://github.com/golang/vuln/blob/7335627909c99e391cf911fcd214badcb8aa6d7d/internal/vulncheck/utils.go#L61
+	// cg, err := callgraphutil.NewVulncheckCallGraph(context.Background(), buildSSA.Pkg.Prog, buildSSA.SrcFuncs)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	// cg.Root = cg.CreateNode(mainFn)
+
+	// fmt.Println(callgraphutil.CallGraphString(cg))
 
 	// Run taint check for user controlled values (sources) ending
 	// up in injectable SQL methods (sinks).
