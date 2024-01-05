@@ -22,6 +22,11 @@ func WriteDOT(w io.Writer, g *callgraph.Graph) error {
 
 	edges := []*callgraph.Edge{}
 
+	// Check if root node exists, if so, write it.
+	if g.Root != nil {
+		b.WriteString(fmt.Sprintf("\troot = %d;\n", g.Root.ID))
+	}
+
 	// Write nodes.
 	for _, n := range g.Nodes {
 		b.WriteString(fmt.Sprintf("\t%q [label=%q];\n", fmt.Sprintf("%d", n.ID), n.Func))
