@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/go-git/go-git/v5"
 	"github.com/picatz/taint"
 	"github.com/picatz/taint/callgraphutil"
 	"golang.org/x/term"
@@ -115,8 +117,9 @@ func clearScreen(bt *bufio.Writer) error {
 }
 
 type commandArg struct {
-	name string
-	desc string
+	name     string
+	desc     string
+	optional bool
 }
 
 type commandFlag struct {
@@ -132,12 +135,27 @@ type command struct {
 	fn    commandFn
 }
 
+func (c *command) nRequiredArgs() int {
+	var n int
+	for _, arg := range c.args {
+		if arg.optional {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 func (c *command) help() string {
 	var help strings.Builder
 
 	help.WriteString(styleCommand.Render(c.name) + " ")
 
 	for _, arg := range c.args {
+		if arg.optional {
+			help.WriteString(styleArgument.Render("[") + styleFaint.Render(fmt.Sprintf("<%s>", arg.name)) + styleArgument.Render("] "))
+			continue
+		}
 		help.WriteString(styleArgument.Render(fmt.Sprintf("<%s> ", arg.name)))
 	}
 
@@ -187,6 +205,10 @@ func (c commands) help() string {
 		help.WriteString(styleFaint.Render("- ") + styleCommand.Render(cmd.name) + " ")
 
 		for _, arg := range cmd.args {
+			if arg.optional {
+				help.WriteString(styleArgument.Render("[") + styleFaint.Render(arg.name) + styleArgument.Render("] "))
+				continue
+			}
 			help.WriteString(styleArgument.Render(fmt.Sprintf("<%s> ", arg.name)))
 		}
 
@@ -234,7 +256,8 @@ func (c commands) eval(ctx context.Context, bt *bufio.Writer, input string) erro
 	for _, cmd := range c {
 		if cmd.name == cmdName {
 			// Check there are enough arguments.
-			if len(flagSet.Args()) < len(cmd.args) {
+			if len(flagSet.Args()) < cmd.nRequiredArgs() {
+				bt.WriteString("not enough arguments, expected " + styleNumber.Render(fmt.Sprintf("%d", cmd.nRequiredArgs())) + " but got " + styleNumber.Render(fmt.Sprintf("%d", len(flagSet.Args()))) + "\n")
 				bt.WriteString("usage: " + cmd.help())
 				bt.Flush()
 				return nil
@@ -269,15 +292,50 @@ var builtinCommandLoad = &command{
 	desc: "load a program",
 	args: []*commandArg{
 		{
-			name: "pattern",
-			desc: "the pattern to load",
+			name: "target",
+			desc: "the target to load (directory or github repository)",
+		},
+		{
+			name:     "pattern",
+			desc:     "the pattern to load (default: ./...)",
+			optional: true,
 		},
 	},
 	fn: func(ctx context.Context, bt *bufio.Writer, args []string, flags map[string]string) error {
-		dir := args[0]
+		arg := args[0]
+
+		var (
+			pattern string = "./..."
+
+			dir  string
+			head string
+			err  error
+		)
+
+		if len(args) > 1 {
+			pattern = args[1]
+		}
+
+		// If the argument starts with https://github.com/, then we'll try to
+		// clone the repository and load it.
+		if strings.HasPrefix(arg, "https://github.com/") {
+			// Clone the repository.
+			dir, head, err = cloneRepository(ctx, arg)
+
+			bt.WriteString("cloned " + styleNumber.Render(arg) + " to " + styleNumber.Render(dir) + " at " + styleNumber.Render(head) + "\n")
+			bt.Flush()
+
+			if err != nil {
+				bt.WriteString(err.Error() + "\n")
+				bt.Flush()
+				return nil
+			}
+		} else {
+			dir = arg
+		}
 
 		// Check if the directory exists.
-		_, err := os.Stat(dir)
+		_, err = os.Stat(dir)
 		if os.IsNotExist(err) {
 			bt.WriteString(fmt.Sprintf("directory %q does not exist\n", dir))
 			bt.Flush()
@@ -302,7 +360,7 @@ var builtinCommandLoad = &command{
 		parseMode := parser.SkipObjectResolution
 
 		// patterns := []string{dir}
-		patterns := []string{"./..."}
+		patterns := []string{pattern}
 		// patterns := []string{"all"}
 
 		pkgs, err = packages.Load(&packages.Config{
@@ -756,4 +814,66 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// cloneRepository clones a repository and returns the directory it was cloned
+// to using go-git under the hood, which is a pure Go implementation of Git.
+func cloneRepository(ctx context.Context, repoURL string) (string, string, error) {
+	// Parse the repository URL (e.g. https://github.com/picatz/taint).
+	u, err := url.Parse(repoURL)
+	if err != nil {
+		return "", "", fmt.Errorf("%w", err)
+	}
+
+	// Split the path into segments.
+	pathSegments := strings.Split(u.Path, "/")
+
+	// Ensure there are at least 2 segments for owner and repo.
+	if len(pathSegments) < 3 {
+		return "", "", fmt.Errorf("invalid GitHub URL: %s", repoURL)
+	}
+
+	// Get the owner and repo part of the URL.
+	ownerAndRepo := pathSegments[1] + "/" + pathSegments[2]
+
+	// Get the directory path.
+	dir := filepath.Join(os.TempDir(), "taint", "github", ownerAndRepo)
+
+	// Check if the directory exists.
+	_, err = os.Stat(dir)
+	if err == nil {
+		// If the directory exists, we'll assume it's a valid repository,
+		// and return the directory. Open the directory to
+		repo, err := git.PlainOpen(dir)
+		if err != nil {
+			return dir, "", fmt.Errorf("%w", err)
+		}
+
+		// Get the repository's HEAD.
+		head, err := repo.Head()
+		if err != nil {
+			return dir, "", fmt.Errorf("%w", err)
+		}
+
+		return dir, head.Hash().String(), nil
+	}
+
+	// Clone the repository.
+	repo, err := git.PlainCloneContext(ctx, dir, false, &git.CloneOptions{
+		URL:          repoURL,
+		Depth:        1,
+		Tags:         git.NoTags,
+		SingleBranch: true,
+	})
+	if err != nil {
+		return dir, "", fmt.Errorf("%w", err)
+	}
+
+	// Get the repository's HEAD.
+	head, err := repo.Head()
+	if err != nil {
+		return dir, "", fmt.Errorf("%w", err)
+	}
+
+	return dir, head.Hash().String(), nil
 }
