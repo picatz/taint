@@ -16,8 +16,8 @@ func WriteDOT(w io.Writer, g *callgraph.Graph) error {
 	defer b.Flush()
 
 	b.WriteString("digraph callgraph {\n")
-	b.WriteString("\tgraph [fontname=\"Helvetica\"];\n")
-	b.WriteString("\tnode [fontname=\"Helvetica\"];\n")
+	b.WriteString("\tgraph [fontname=\"Helvetica\", overlap=false normalize=true];\n")
+	b.WriteString("\tnode [fontname=\"Helvetica\" shape=box];\n")
 	b.WriteString("\tedge [fontname=\"Helvetica\"];\n")
 
 	edges := []*callgraph.Edge{}
