@@ -29,7 +29,7 @@ func WriteDOT(w io.Writer, g *callgraph.Graph) error {
 
 	// Write nodes.
 	for _, n := range g.Nodes {
-		b.WriteString(fmt.Sprintf("\t%q [label=%q];\n", fmt.Sprintf("%d", n.ID), n.Func))
+		b.WriteString(fmt.Sprintf("\t%d [label=%q];\n", n.ID, n.Func))
 
 		// Add edges
 		edges = append(edges, n.Out...)
@@ -37,7 +37,7 @@ func WriteDOT(w io.Writer, g *callgraph.Graph) error {
 
 	// Write edges.
 	for _, e := range edges {
-		b.WriteString(fmt.Sprintf("\t%q -> %q [label=%q];\n", fmt.Sprintf("%d", e.Caller.ID), fmt.Sprintf("%d", e.Callee.ID), e.Site))
+		b.WriteString(fmt.Sprintf("\t%d -> %d;\n", e.Caller.ID, e.Callee.ID))
 	}
 
 	b.WriteString("}\n")
