@@ -111,10 +111,31 @@ func loadSSA(ctx context.Context, pkgs []*packages.Package) (mainFn *ssa.Functio
 	// Analyze the package.
 	ssaProg, ssaPkgs := ssautil.Packages(pkgs, ssaBuildMode)
 
+	// It's possible that the ssaProg is nil?
+	if ssaProg == nil {
+		err = fmt.Errorf("failed to create new ssa program")
+		return
+	}
+
 	ssaProg.Build()
 
 	for _, pkg := range ssaPkgs {
+		if pkg == nil {
+			continue
+		}
 		pkg.Build()
+	}
+
+	// Remove nil ssaPkgs by iterating over the slice of packages
+	// and for each nil package, we append the slice up to that
+	// index and then append the slice from the next index to the
+	// end of the slice. This effectively removes the nil package
+	// from the slice without having to allocate a new slice.
+	for i := 0; i < len(ssaPkgs); i++ {
+		if ssaPkgs[i] == nil {
+			ssaPkgs = append(ssaPkgs[:i], ssaPkgs[i+1:]...)
+			i--
+		}
 	}
 
 	mainPkgs := ssautil.MainPackages(ssaPkgs)
