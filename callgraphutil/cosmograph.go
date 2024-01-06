@@ -15,11 +15,11 @@ import (
 // https://cosmograph.app/run/
 func WriteCosmograph(graph, metadata io.Writer, g *callgraph.Graph) error {
 	graphWriter := csv.NewWriter(graph)
-	graphWriter.Comma = ';'
+	graphWriter.Comma = ','
 	defer graphWriter.Flush()
 
 	metadataWriter := csv.NewWriter(metadata)
-	metadataWriter.Comma = ';'
+	metadataWriter.Comma = ','
 	defer metadataWriter.Flush()
 
 	// Write header.
