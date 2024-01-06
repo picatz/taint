@@ -25,56 +25,36 @@ func WriteCSV(w io.Writer, g *callgraph.Graph) error {
 		"source_pkg_origin",
 		"source_func",
 		"source_func_name",
+		"source_func_signature",
 		"target_pkg",
 		"target_pkg_go_version",
 		"target_pkg_origin",
 		"target_func",
 		"target_func_name",
+		"target_func_signature",
 	}); err != nil {
 		return fmt.Errorf("failed to write header: %w", err)
 	}
 
 	// Write edges.
 	for _, n := range g.Nodes {
-
-		var (
-			sourcePkg string
-			targetPkg string
-
-			sourceFunc string
-			targetFunc string
-
-			sourceFuncName string
-			targetFuncName string
-
-			sourcePkgOrigin string = "unknown"
-			targetPkgOrigin string = "unknown"
-
-			runtimeGoVersion   string = runtime.Version()
-			sourcePkgGoVersion string = runtimeGoVersion
-			targetPkgGoVersion string = runtimeGoVersion
-		)
-
-		if n.Func.Pkg != nil {
-			sourcePkg, sourcePkgGoVersion, sourcePkgOrigin, sourceFunc, sourceFuncName = nodeCSVInfo(n)
+		source, err := getNodeInfo(n)
+		if err != nil {
+			return fmt.Errorf("failed to get node info: %w", err)
 		}
 
 		for _, e := range n.Out {
-			targetPkg, targetPkgGoVersion, targetPkgOrigin, targetFunc, targetFuncName = nodeCSVInfo(e.Callee)
+			target, err := getNodeInfo(e.Callee)
+			if err != nil {
+				return fmt.Errorf("failed to get node info: %w", err)
+			}
+
+			record := []string{}
+			record = append(record, source.CSV()...)
+			record = append(record, target.CSV()...)
 
 			// Write edge.
-			if err := cw.Write([]string{
-				sourcePkg,
-				sourcePkgGoVersion,
-				sourcePkgOrigin,
-				sourceFunc,
-				sourceFuncName,
-				targetPkg,
-				targetPkgGoVersion,
-				targetPkgOrigin,
-				targetFunc,
-				targetFuncName,
-			}); err != nil {
+			if err := cw.Write(record); err != nil {
 				return fmt.Errorf("failed to write edge: %w", err)
 			}
 		}
@@ -83,34 +63,52 @@ func WriteCSV(w io.Writer, g *callgraph.Graph) error {
 	return nil
 }
 
-func nodeCSVInfo(n *callgraph.Node) (
-	pkgPath string,
-	pkgGoVersion string,
-	pkgOrigin string,
-	pkgFunc string,
-	pkgFuncName string,
-) {
-	pkgPath = "unknown"
-	pkgGoVersion = runtime.Version()
-	pkgOrigin = "unknown"
-	pkgFunc = n.Func.String()
-	pkgFuncName = n.Func.Name()
+type nodeInfo struct {
+	pkgPath          string
+	pkgGoVersion     string
+	pkgOrigin        string
+	pkgFunc          string
+	pkgFuncName      string
+	pkgFuncSignature string
+}
+
+func (n *nodeInfo) CSV() []string {
+	return []string{
+		n.pkgPath,
+		n.pkgGoVersion,
+		n.pkgOrigin,
+		n.pkgFunc,
+		n.pkgFuncName,
+		n.pkgFuncSignature,
+	}
+}
+
+func getNodeInfo(n *callgraph.Node) (*nodeInfo, error) {
+	info := &nodeInfo{
+		pkgPath:          "unknown",
+		pkgGoVersion:     runtime.Version(),
+		pkgOrigin:        "unknown",
+		pkgFunc:          n.Func.String(),
+		pkgFuncName:      n.Func.Name(),
+		pkgFuncSignature: n.Func.Signature.String(),
+	}
 
 	if n.Func.Pkg != nil {
-		pkgPath = n.Func.Pkg.Pkg.Path()
+		info.pkgPath = n.Func.Pkg.Pkg.Path()
 
 		if goVersion := n.Func.Pkg.Pkg.GoVersion(); goVersion != "" {
-			pkgGoVersion = goVersion
+			info.pkgGoVersion = strings.TrimPrefix(goVersion, "go")
 		}
 	}
 
-	if strings.Contains(pkgPath, ".") {
-		pkgOrigin = strings.Split(pkgPath, "/")[0]
+	if strings.Contains(info.pkgPath, ".") {
+		info.pkgOrigin = strings.Split(info.pkgPath, "/")[0]
 	} else {
-		// If the package path doesn't contain a dot, then it's probably a
-		// standard library package?
-		pkgOrigin = "stdlib"
+		// If the package path doesn't contain a dot, then it's
+		// probably a standard library package? This is a pattern
+		// I've used and seen elsewhere.
+		info.pkgOrigin = "stdlib"
 	}
 
-	return
+	return info, nil
 }
