@@ -97,7 +97,7 @@ func getNodeInfo(n *callgraph.Node) (*nodeInfo, error) {
 		info.pkgPath = n.Func.Pkg.Pkg.Path()
 
 		if goVersion := n.Func.Pkg.Pkg.GoVersion(); goVersion != "" {
-			info.pkgGoVersion = strings.TrimPrefix(goVersion, "go")
+			info.pkgGoVersion = goVersion
 		}
 	}
 
