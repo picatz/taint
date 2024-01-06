@@ -23,7 +23,7 @@ func WriteCosmograph(graph, metadata io.Writer, g *callgraph.Graph) error {
 	defer metadataWriter.Flush()
 
 	// Write header.
-	if err := graphWriter.Write([]string{"source", "target", "site"}); err != nil {
+	if err := graphWriter.Write([]string{"source", "target"}); err != nil {
 		return fmt.Errorf("failed to write header: %w", err)
 	}
 
@@ -58,7 +58,6 @@ func WriteCosmograph(graph, metadata io.Writer, g *callgraph.Graph) error {
 			if err := graphWriter.Write([]string{
 				fmt.Sprintf("%d", n.ID),
 				fmt.Sprintf("%d", e.Callee.ID),
-				fmt.Sprintf("%q", e.Site),
 			}); err != nil {
 				return fmt.Errorf("failed to write edge: %w", err)
 			}
