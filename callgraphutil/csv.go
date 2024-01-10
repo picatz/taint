@@ -63,6 +63,8 @@ func WriteCSV(w io.Writer, g *callgraph.Graph) error {
 	return nil
 }
 
+// nodeInfo is a struct that contains information about a callgraph.Node used
+// to generate CSV output.
 type nodeInfo struct {
 	pkgPath          string
 	pkgGoVersion     string
@@ -72,6 +74,7 @@ type nodeInfo struct {
 	pkgFuncSignature string
 }
 
+// CSV returns single record for the node.
 func (n *nodeInfo) CSV() []string {
 	return []string{
 		n.pkgPath,
@@ -83,6 +86,7 @@ func (n *nodeInfo) CSV() []string {
 	}
 }
 
+// getNodeInfo returns a nodeInfo struct for the given callgraph.Node.
 func getNodeInfo(n *callgraph.Node) (*nodeInfo, error) {
 	info := &nodeInfo{
 		pkgPath:          "unknown",
