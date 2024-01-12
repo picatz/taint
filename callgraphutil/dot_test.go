@@ -24,25 +24,9 @@ func cloneGitHubRepository(ctx context.Context, ownerName, repoName string) (str
 	ownerAndRepo := ownerName + "/" + repoName
 
 	// Get the directory path.
-	dir := filepath.Join(os.TempDir(), "taint", "github", ownerAndRepo)
-
-	// Check if the directory exists.
-	_, err := os.Stat(dir)
-	if err == nil {
-		// If the directory exists, we'll assume it's a valid repository,
-		// and return the directory. Open the directory to
-		repo, err := git.PlainOpen(dir)
-		if err != nil {
-			return dir, "", fmt.Errorf("%w", err)
-		}
-
-		// Get the repository's HEAD.
-		head, err := repo.Head()
-		if err != nil {
-			return dir, "", fmt.Errorf("%w", err)
-		}
-
-		return dir, head.Hash().String(), nil
+	dir, err := os.MkdirTemp(filepath.Join(os.TempDir(), "callgraphutil_csv"), fmt.Sprintf("%s-%s", ownerName, repoName))
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create temp dir: %w", err)
 	}
 
 	// Clone the repository.
