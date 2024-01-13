@@ -8,7 +8,6 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/go-git/go-git/v5"
@@ -24,7 +23,7 @@ func cloneGitHubRepository(ctx context.Context, ownerName, repoName string) (str
 	ownerAndRepo := ownerName + "/" + repoName
 
 	// Get the directory path.
-	dir, err := os.MkdirTemp(filepath.Join(os.TempDir(), "callgraphutil_csv"), fmt.Sprintf("%s-%s", ownerName, repoName))
+	dir, err := os.MkdirTemp(os.TempDir(), fmt.Sprintf("callgraphutil_csv-%s-%s", ownerName, repoName))
 	if err != nil {
 		return "", "", fmt.Errorf("failed to create temp dir: %w", err)
 	}
