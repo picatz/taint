@@ -3,6 +3,7 @@ package callgraphutil
 import (
 	"bytes"
 	"fmt"
+	"go/token"
 	"go/types"
 
 	"golang.org/x/tools/go/callgraph"
@@ -186,6 +187,25 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 				}
 				instrCall = fn
 			}
+		case *ssa.UnOp:
+			// Handle calls through struct field function pointers.
+			// This occurs when a function is stored in a struct field and called
+			// through that field, like: cmd.run(args)
+			// 
+			// In SSA, this is represented as a field access followed by a dereference,
+			// where the field contains a function pointer.
+			if callt.Op == token.MUL {
+				// This is a dereference operation, check if it's dereferencing a field access
+				switch fieldAccess := callt.X.(type) {
+				case *ssa.FieldAddr:
+					// This is a field address access, we need to track what function 
+					// might be stored in this field by looking at assignments to this field
+					instrCall = findFunctionInField(g, fieldAccess, allFns)
+				case *ssa.Field:
+					// This is a field value access
+					instrCall = findFunctionInFieldValue(g, fieldAccess, allFns)
+				}
+			}
 		default:
 			// case *ssa.TypeAssert: ??
 			// fmt.Printf("unknown call type: %v: %[1]T\n", callt)
@@ -304,5 +324,73 @@ func AddFunction(cg *callgraph.Graph, target *ssa.Function, allFns map[*ssa.Func
 		}
 	}
 
+	return nil
+}
+// findFunctionInField attempts to find what function is stored in a struct field
+// by analyzing field assignments throughout the program.
+func findFunctionInField(g *callgraph.Graph, fieldAddr *ssa.FieldAddr, allFns map[*ssa.Function]bool) *ssa.Function {
+	// Get the field index and struct type
+	fieldIndex := fieldAddr.Field
+	structType := fieldAddr.X.Type()
+	
+	// Look through all functions to find assignments to this field
+	for fn := range allFns {
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				// Look for store instructions that assign to this field
+				if store, ok := instr.(*ssa.Store); ok {
+					if fieldAddr, ok := store.Addr.(*ssa.FieldAddr); ok {
+						// Check if this is the same field we're looking for
+						if fieldAddr.Field == fieldIndex && 
+						   types.Identical(fieldAddr.X.Type(), structType) {
+							// Found an assignment to this field, check what's being assigned
+							switch val := store.Val.(type) {
+							case *ssa.Function:
+								return val
+							case *ssa.MakeClosure:
+								if closureFn, ok := val.Fn.(*ssa.Function); ok {
+									return closureFn
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// findFunctionInFieldValue attempts to find what function is stored in a struct field value.
+func findFunctionInFieldValue(g *callgraph.Graph, field *ssa.Field, allFns map[*ssa.Function]bool) *ssa.Function {
+	// For field values, we need to trace back to where the struct was created
+	// and what function was assigned to this field.
+	fieldIndex := field.Field
+	structType := field.X.Type()
+	
+	// Look through all functions to find struct literal creations or field assignments
+	for fn := range allFns {
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				// Look for struct literal creations (alloc + store instructions)
+				// or direct field assignments
+				if store, ok := instr.(*ssa.Store); ok {
+					if fieldAddr, ok := store.Addr.(*ssa.FieldAddr); ok {
+						if fieldAddr.Field == fieldIndex && 
+						   types.Identical(fieldAddr.X.Type(), structType) {
+							switch val := store.Val.(type) {
+							case *ssa.Function:
+								return val
+							case *ssa.MakeClosure:
+								if closureFn, ok := val.Fn.(*ssa.Function); ok {
+									return closureFn
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 	return nil
 }
