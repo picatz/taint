@@ -231,26 +231,28 @@ func imports(pass *analysis.Pass, pkgs ...string) bool {
 	return imported
 }
 
+var supportedSQLPackages = []string{
+	"database/sql",
+	"github.com/mattn/go-sqlite3",
+	"github.com/jinzhu/gorm",
+	"gorm.io/gorm",
+	"github.com/go-gorm/gorm",
+	"github.com/jmoiron/sqlx",
+	"xorm.io/xorm",
+	"github.com/go-xorm/xorm",
+	"github.com/go-pg/pg",
+	"github.com/rqlite/gorqlite",
+	"github.com/raindog308/gorqlite",
+	"github.com/Masterminds/squirrel",
+	"gopkg.in/Masterminds/squirrel.v1",
+	"github.com/lann/squirrel",
+}
+
 func run(pass *analysis.Pass) (interface{}, error) {
 	// Require at least one supported SQL package to be imported before
 	// running the analysis. This avoids wasting time analyzing programs
 	// that do not use SQL.
-	if !imports(pass,
-		"database/sql",
-		"github.com/mattn/go-sqlite3",
-		"github.com/jinzhu/gorm",
-		"gorm.io/gorm",
-		"github.com/go-gorm/gorm",
-		"github.com/jmoiron/sqlx",
-		"xorm.io/xorm",
-		"github.com/go-xorm/xorm",
-		"github.com/go-pg/pg",
-		"github.com/rqlite/gorqlite",
-		"github.com/raindog308/gorqlite",
-		"github.com/Masterminds/squirrel",
-		"gopkg.in/Masterminds/squirrel.v1",
-		"github.com/lann/squirrel",
-	) {
+	if !imports(pass, supportedSQLPackages...) {
 		return nil, nil
 	}
 
@@ -328,7 +330,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 
 		// Skip the context argument, if using a *Context query variant.
-		if strings.HasPrefix(queryEdge.Site.Value().Call.Value.String(), "Context") {
+		if strings.HasSuffix(queryEdge.Site.Value().Call.Value.String(), "Context") {
 			if len(queryArgs) < 2 {
 				continue
 			}
