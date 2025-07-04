@@ -3,6 +3,7 @@ package callgraphutil
 import (
 	"bytes"
 	"fmt"
+	"go/token"
 	"go/types"
 
 	"golang.org/x/tools/go/callgraph"
@@ -48,18 +49,33 @@ func NewGraph(root *ssa.Function, srcFns ...*ssa.Function) (*callgraph.Graph, er
 
 	allFns := ssautil.AllFunctions(root.Prog)
 
-	for _, srcFn := range srcFns {
-		// debug("adding src function %d/%d: %v\n", i+1, len(srcFns), srcFn)
+	visited := make(map[*ssa.Function]bool)
 
-		err := AddFunction(g, srcFn, allFns)
-		if err != nil {
-			return g, fmt.Errorf("failed to add src function %v: %w", srcFn, err)
+	var walkFn func(fn *ssa.Function) error
+	walkFn = func(fn *ssa.Function) error {
+		if visited[fn] {
+			return nil
+		}
+		visited[fn] = true
+
+		if err := AddFunction(g, fn, allFns); err != nil {
+			return fmt.Errorf("failed to add function %v: %w", fn, err)
 		}
 
-		for _, block := range srcFn.DomPreorder() {
+		for _, block := range fn.DomPreorder() {
 			for _, instr := range block.Instrs {
-				checkBlockInstruction(root, allFns, g, srcFn, instr)
+				if err := checkBlockInstruction(root, allFns, g, fn, instr, walkFn); err != nil {
+					return err
+				}
 			}
+		}
+
+		return nil
+	}
+
+	for _, srcFn := range srcFns {
+		if err := walkFn(srcFn); err != nil {
+			return g, err
 		}
 	}
 
@@ -69,7 +85,7 @@ func NewGraph(root *ssa.Function, srcFns ...*ssa.Function) (*callgraph.Graph, er
 // checkBlockInstruction checks the given instruction for any function calls, adding
 // edges to the call graph as needed and recursively adding any new functions to the graph
 // that are discovered during the process (typically via interface methods).
-func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g *callgraph.Graph, fn *ssa.Function, instr ssa.Instruction) error {
+func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g *callgraph.Graph, fn *ssa.Function, instr ssa.Instruction, walkFn func(*ssa.Function) error) error {
 	// debug("\tcheckBlockInstruction: %v\n", instr)
 	switch instrt := instr.(type) {
 	case *ssa.Call:
@@ -159,6 +175,15 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 			case *ssa.Function:
 				instrCall = calltFn
 			}
+		case *ssa.UnOp:
+			if callt.Op == token.MUL {
+				switch fa := callt.X.(type) {
+				case *ssa.FieldAddr:
+					instrCall = findFunctionInField(fa, allFns)
+				case *ssa.Field:
+					instrCall = findFunctionInFieldValue(fa, allFns)
+				}
+			}
 		case *ssa.Parameter:
 			// This is likely a method call, so we need to
 			// get the function from the method receiver which
@@ -202,6 +227,10 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 		err := AddFunction(g, instrCall, allFns)
 		if err != nil {
 			return fmt.Errorf("failed to add function %v from block instr: %w", instrCall, err)
+		}
+
+		if err := walkFn(instrCall); err != nil {
+			return err
 		}
 
 		// attempt to link function arguments that are functions
@@ -304,5 +333,63 @@ func AddFunction(cg *callgraph.Graph, target *ssa.Function, allFns map[*ssa.Func
 		}
 	}
 
+	return nil
+}
+
+// findFunctionInField scans all functions for assignments to the provided
+// struct field address and returns the first discovered function value.
+func findFunctionInField(fieldAddr *ssa.FieldAddr, allFns map[*ssa.Function]bool) *ssa.Function {
+	idx := fieldAddr.Field
+	structType := fieldAddr.X.Type()
+
+	for fn := range allFns {
+		for _, blk := range fn.Blocks {
+			for _, ins := range blk.Instrs {
+				if store, ok := ins.(*ssa.Store); ok {
+					if fa, ok := store.Addr.(*ssa.FieldAddr); ok {
+						if fa.Field == idx && types.Identical(fa.X.Type(), structType) {
+							switch v := store.Val.(type) {
+							case *ssa.Function:
+								return v
+							case *ssa.MakeClosure:
+								if f, ok := v.Fn.(*ssa.Function); ok {
+									return f
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// findFunctionInFieldValue searches for function assignments made to the struct
+// field represented by the given Field value.
+func findFunctionInFieldValue(field *ssa.Field, allFns map[*ssa.Function]bool) *ssa.Function {
+	idx := field.Field
+	structType := field.X.Type()
+
+	for fn := range allFns {
+		for _, blk := range fn.Blocks {
+			for _, ins := range blk.Instrs {
+				if store, ok := ins.(*ssa.Store); ok {
+					if fa, ok := store.Addr.(*ssa.FieldAddr); ok {
+						if fa.Field == idx && types.Identical(fa.X.Type(), structType) {
+							switch v := store.Val.(type) {
+							case *ssa.Function:
+								return v
+							case *ssa.MakeClosure:
+								if f, ok := v.Fn.(*ssa.Function); ok {
+									return f
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 	return nil
 }
