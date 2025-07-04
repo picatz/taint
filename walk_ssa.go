@@ -18,6 +18,10 @@ func WalkSSA(v ssa.Value, visit func(v ssa.Value) error) error {
 }
 
 func walkSSA(v ssa.Value, visit func(v ssa.Value) error, visited valueSet) error {
+	if v == nil {
+		return nil
+	}
+
 	if visited == nil {
 		visited = make(valueSet)
 	}
