@@ -70,11 +70,20 @@ func TestGormV2(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "gormv2")
 }
 
+func TestSqlx(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "sqlx")
+}
+
 func TestXorm(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "xorm")
 }
 
-// TODO: Fix sqlx test - arguments are in different positions
-// func TestSqlx(t *testing.T) {
-// 	analysistest.Run(t, testdata, Analyzer, "sqlx")
+func TestContextual(t *testing.T) {
+	// This test should pass with no diagnostics since no SQL packages are imported
+	analysistest.Run(t, testdata, Analyzer, "contextual")
+}
+
+// TODO: Fix Squirrel test - function call detection needs work
+// func TestSquirrel(t *testing.T) {
+// 	analysistest.Run(t, testdata, Analyzer, "squirrel")
 // }

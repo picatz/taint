@@ -323,16 +323,41 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		// (first argument after context).
 		queryEdge := result.Path[len(result.Path)-1]
 
-		// Get the query arguments, skipping the first element, pointer to the DB.
-		queryArgs := queryEdge.Site.Common().Args[1:]
+		// Determine the method/function being called
+		methodName := queryEdge.Site.Value().Call.Value.String()
+		
+		// Get the query arguments. For methods, skip the first element (receiver).
+		// For functions, start from the beginning.
+		var queryArgs []ssa.Value
+		if strings.Contains(methodName, "(*") { // Method call
+			queryArgs = queryEdge.Site.Common().Args[1:]
+		} else { // Function call
+			queryArgs = queryEdge.Site.Common().Args
+		}
 
 		// Skip the context argument, if using a *Context query variant.
 		if strings.HasPrefix(queryEdge.Site.Value().Call.Value.String(), "Context") {
 			queryArgs = queryArgs[1:]
 		}
 
+		// Determine the query argument position based on the method being called
+		var queryArgIndex int
+		
+		// For sqlx Select and Get methods, the query is the second argument (index 1)
+		if strings.Contains(methodName, "sqlx") && (strings.Contains(methodName, "Select") || strings.Contains(methodName, "Get")) {
+			queryArgIndex = 1
+		} else {
+			// For most other methods, the query is the first argument (index 0)
+			queryArgIndex = 0
+		}
+
+		// Ensure we have enough arguments
+		if len(queryArgs) <= queryArgIndex {
+			continue
+		}
+
 		// Get the query function parameter.
-		query := queryArgs[0]
+		query := queryArgs[queryArgIndex]
 
 		// Ensure it is a constant (prepared statement), otherwise report
 		// potential SQL injection.
