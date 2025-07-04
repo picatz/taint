@@ -2,6 +2,7 @@ package injection
 
 import (
 	"fmt"
+	"go/types"
 	"strings"
 
 	"github.com/picatz/taint"
@@ -216,19 +217,26 @@ var Analyzer = &analysis.Analyzer{
 
 // imports returns true if the package imports any of the given packages.
 func imports(pass *analysis.Pass, pkgs ...string) bool {
-	var imported bool
-	for _, imp := range pass.Pkg.Imports() {
+	visited := make(map[*types.Package]bool)
+	var walk func(*types.Package) bool
+	walk = func(p *types.Package) bool {
+		if visited[p] {
+			return false
+		}
+		visited[p] = true
 		for _, pkg := range pkgs {
-			if strings.HasSuffix(imp.Path(), pkg) {
-				imported = true
-				break
+			if strings.HasSuffix(p.Path(), pkg) {
+				return true
 			}
 		}
-		if imported {
-			break
+		for _, imp := range p.Imports() {
+			if walk(imp) {
+				return true
+			}
 		}
+		return false
 	}
-	return imported
+	return walk(pass.Pkg)
 }
 
 var supportedSQLPackages = []string{

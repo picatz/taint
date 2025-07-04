@@ -97,3 +97,7 @@ func TestT(t *testing.T) {
 func TestU(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "u")
 }
+
+func TestV(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "v")
+}
