@@ -68,8 +68,146 @@ var injectableSQLMethods = taint.NewSinks(
 	"(*github.com/jinzhu/gorm.DB).Raw",
 	"(*github.com/jinzhu/gorm.DB).Exec",
 	"(*github.com/jinzhu/gorm.DB).Order",
-	//
-	// TODO: add more, consider (non-)pointer variants?
+	"(*github.com/jinzhu/gorm.DB).Table",
+	// GORM v2
+	// https://gorm.io/docs/security.html
+	"(*gorm.io/gorm.DB).Where",
+	"(*gorm.io/gorm.DB).Or",
+	"(*gorm.io/gorm.DB).Not",
+	"(*gorm.io/gorm.DB).Group",
+	"(*gorm.io/gorm.DB).Having",
+	"(*gorm.io/gorm.DB).Joins",
+	"(*gorm.io/gorm.DB).Select",
+	"(*gorm.io/gorm.DB).Distinct",
+	"(*gorm.io/gorm.DB).Pluck",
+	"(*gorm.io/gorm.DB).Raw",
+	"(*gorm.io/gorm.DB).Exec",
+	"(*gorm.io/gorm.DB).Order",
+	"(*gorm.io/gorm.DB).Table",
+	// Alternative GORM v2 import path
+	"(*github.com/go-gorm/gorm.DB).Where",
+	"(*github.com/go-gorm/gorm.DB).Or",
+	"(*github.com/go-gorm/gorm.DB).Not",
+	"(*github.com/go-gorm/gorm.DB).Group",
+	"(*github.com/go-gorm/gorm.DB).Having",
+	"(*github.com/go-gorm/gorm.DB).Joins",
+	"(*github.com/go-gorm/gorm.DB).Select",
+	"(*github.com/go-gorm/gorm.DB).Distinct",
+	"(*github.com/go-gorm/gorm.DB).Pluck",
+	"(*github.com/go-gorm/gorm.DB).Raw",
+	"(*github.com/go-gorm/gorm.DB).Exec",
+	"(*github.com/go-gorm/gorm.DB).Order",
+	"(*github.com/go-gorm/gorm.DB).Table",
+	// XORM
+	// https://xorm.io/docs/
+	"(*xorm.io/xorm.Engine).Query",
+	"(*xorm.io/xorm.Engine).Exec",
+	"(*xorm.io/xorm.Engine).QueryString",
+	"(*xorm.io/xorm.Engine).QueryInterface",
+	"(*xorm.io/xorm.Engine).SQL",
+	"(*xorm.io/xorm.Engine).Where",
+	"(*xorm.io/xorm.Engine).And",
+	"(*xorm.io/xorm.Engine).Or",
+	"(*xorm.io/xorm.Engine).Alias",
+	"(*xorm.io/xorm.Engine).NotIn",
+	"(*xorm.io/xorm.Engine).In",
+	"(*xorm.io/xorm.Engine).Select",
+	"(*xorm.io/xorm.Engine).SetExpr",
+	"(*xorm.io/xorm.Engine).OrderBy",
+	"(*xorm.io/xorm.Engine).Having",
+	"(*xorm.io/xorm.Engine).GroupBy",
+	"(*xorm.io/xorm.Engine).Join",
+	"(*xorm.io/xorm.Session).Query",
+	"(*xorm.io/xorm.Session).Exec",
+	"(*xorm.io/xorm.Session).QueryString",
+	"(*xorm.io/xorm.Session).QueryInterface",
+	"(*xorm.io/xorm.Session).SQL",
+	"(*xorm.io/xorm.Session).Where",
+	"(*xorm.io/xorm.Session).And",
+	"(*xorm.io/xorm.Session).Or",
+	"(*xorm.io/xorm.Session).Alias",
+	"(*xorm.io/xorm.Session).NotIn",
+	"(*xorm.io/xorm.Session).In",
+	"(*xorm.io/xorm.Session).Select",
+	"(*xorm.io/xorm.Session).SetExpr",
+	"(*xorm.io/xorm.Session).OrderBy",
+	"(*xorm.io/xorm.Session).Having",
+	"(*xorm.io/xorm.Session).GroupBy",
+	"(*xorm.io/xorm.Session).Join",
+	// Alternative XORM import path
+	"(*github.com/go-xorm/xorm.Engine).Query",
+	"(*github.com/go-xorm/xorm.Engine).Exec",
+	"(*github.com/go-xorm/xorm.Engine).QueryString",
+	"(*github.com/go-xorm/xorm.Engine).QueryInterface",
+	"(*github.com/go-xorm/xorm.Engine).SQL",
+	"(*github.com/go-xorm/xorm.Engine).Where",
+	"(*github.com/go-xorm/xorm.Engine).And",
+	"(*github.com/go-xorm/xorm.Engine).Or",
+	"(*github.com/go-xorm/xorm.Engine).Alias",
+	"(*github.com/go-xorm/xorm.Engine).NotIn",
+	"(*github.com/go-xorm/xorm.Engine).In",
+	"(*github.com/go-xorm/xorm.Engine).Select",
+	"(*github.com/go-xorm/xorm.Engine).SetExpr",
+	"(*github.com/go-xorm/xorm.Engine).OrderBy",
+	"(*github.com/go-xorm/xorm.Engine).Having",
+	"(*github.com/go-xorm/xorm.Engine).GroupBy",
+	"(*github.com/go-xorm/xorm.Engine).Join",
+	"(*github.com/go-xorm/xorm.Session).Query",
+	"(*github.com/go-xorm/xorm.Session).Exec",
+	"(*github.com/go-xorm/xorm.Session).QueryString",
+	"(*github.com/go-xorm/xorm.Session).QueryInterface",
+	"(*github.com/go-xorm/xorm.Session).SQL",
+	"(*github.com/go-xorm/xorm.Session).Where",
+	"(*github.com/go-xorm/xorm.Session).And",
+	"(*github.com/go-xorm/xorm.Session).Or",
+	"(*github.com/go-xorm/xorm.Session).Alias",
+	"(*github.com/go-xorm/xorm.Session).NotIn",
+	"(*github.com/go-xorm/xorm.Session).In",
+	"(*github.com/go-xorm/xorm.Session).Select",
+	"(*github.com/go-xorm/xorm.Session).SetExpr",
+	"(*github.com/go-xorm/xorm.Session).OrderBy",
+	"(*github.com/go-xorm/xorm.Session).Having",
+	"(*github.com/go-xorm/xorm.Session).GroupBy",
+	"(*github.com/go-xorm/xorm.Session).Join",
+	// sqlx
+	// https://github.com/jmoiron/sqlx
+	"(*github.com/jmoiron/sqlx.DB).Select",
+	"(*github.com/jmoiron/sqlx.DB).Get",
+	"(*github.com/jmoiron/sqlx.DB).MustExec",
+	"(*github.com/jmoiron/sqlx.DB).Queryx",
+	"(*github.com/jmoiron/sqlx.DB).NamedExec",
+	"(*github.com/jmoiron/sqlx.DB).NamedQuery",
+	"(*github.com/jmoiron/sqlx.Tx).Select",
+	"(*github.com/jmoiron/sqlx.Tx).Get",
+	"(*github.com/jmoiron/sqlx.Tx).MustExec",
+	"(*github.com/jmoiron/sqlx.Tx).Queryx",
+	"(*github.com/jmoiron/sqlx.Tx).NamedExec",
+	"(*github.com/jmoiron/sqlx.Tx).NamedQuery",
+	// Squirrel query builder
+	// https://github.com/Masterminds/squirrel
+	"github.com/Masterminds/squirrel.Expr",
+	"gopkg.in/Masterminds/squirrel.v1.Expr",
+	"github.com/lann/squirrel.Expr",
+	// go-pg
+	// https://github.com/go-pg/pg
+	"(*github.com/go-pg/pg.DB).Query",
+	"(*github.com/go-pg/pg.DB).QueryOne",
+	"(*github.com/go-pg/pg.DB).Exec",
+	"(*github.com/go-pg/pg.DB).ExecOne",
+	"(*github.com/go-pg/pg.Tx).Query",
+	"(*github.com/go-pg/pg.Tx).QueryOne",
+	"(*github.com/go-pg/pg.Tx).Exec",
+	"(*github.com/go-pg/pg.Tx).ExecOne",
+	// rqlite
+	// https://github.com/rqlite/gorqlite
+	"(*github.com/rqlite/gorqlite.Connection).Query",
+	"(*github.com/rqlite/gorqlite.Connection).QueryOne",
+	"(*github.com/rqlite/gorqlite.Connection).Write",
+	"(*github.com/rqlite/gorqlite.Connection).WriteOne",
+	"(*github.com/raindog308/gorqlite.Connection).Query",
+	"(*github.com/raindog308/gorqlite.Connection).QueryOne",
+	"(*github.com/raindog308/gorqlite.Connection).Write",
+	"(*github.com/raindog308/gorqlite.Connection).WriteOne",
 )
 
 // Analyzer finds potential SQL injection issues to demonstrate
@@ -99,11 +237,26 @@ func imports(pass *analysis.Pass, pkgs ...string) bool {
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
-	// Require the database/sql or GORM v1 packages are imported in the
+	// Require at least one SQL package is imported in the
 	// program being analyzed before running the analysis.
 	//
 	// This prevents wasting time analyzing programs that don't use SQL.
-	if !imports(pass, "database/sql", "github.com/jinzhu/gorm") {
+	sqlPackages := []string{
+		"database/sql",
+		"github.com/jinzhu/gorm",      // GORM v1
+		"gorm.io/gorm",               // GORM v2
+		"github.com/go-gorm/gorm",    // GORM v2 alternative path
+		"xorm.io/xorm",               // XORM
+		"github.com/go-xorm/xorm",    // XORM alternative path
+		"github.com/jmoiron/sqlx",    // sqlx
+		"github.com/Masterminds/squirrel", // Squirrel
+		"gopkg.in/Masterminds/squirrel.v1", // Squirrel v1
+		"github.com/lann/squirrel",   // Squirrel alternative
+		"github.com/go-pg/pg",        // go-pg
+		"github.com/rqlite/gorqlite", // rqlite
+		"github.com/raindog308/gorqlite", // rqlite alternative
+	}
+	if !imports(pass, sqlPackages...) {
 		return nil, nil
 	}
 

@@ -65,3 +65,16 @@ func TestL(t *testing.T) {
 func TestM(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "m")
 }
+
+func TestGormV2(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "gormv2")
+}
+
+func TestXorm(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "xorm")
+}
+
+// TODO: Fix sqlx test - arguments are in different positions
+// func TestSqlx(t *testing.T) {
+// 	analysistest.Run(t, testdata, Analyzer, "sqlx")
+// }
