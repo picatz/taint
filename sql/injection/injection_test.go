@@ -49,3 +49,19 @@ func TestExample(t *testing.T) {
 func TestI(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "i")
 }
+
+func TestJ(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "j")
+}
+
+func TestK(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "k")
+}
+
+func TestL(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "l")
+}
+
+func TestM(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "m")
+}
