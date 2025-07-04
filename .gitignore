@@ -19,3 +19,6 @@
 
 # Go workspace file
 go.work
+
+# Go module cache files in testdata
+**/testdata/pkg/mod/
