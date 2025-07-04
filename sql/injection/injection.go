@@ -2,8 +2,6 @@ package injection
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/picatz/taint"
@@ -11,9 +9,7 @@ import (
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
-	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
-	"golang.org/x/tools/go/ssa/ssautil"
 )
 
 // userControlledValues are the sources of user controlled values that
@@ -102,22 +98,6 @@ func imports(pass *analysis.Pass, pkgs ...string) bool {
 	return imported
 }
 
-// findModuleRoot searches upward from the given directory until a go.mod file is
-// found. If no module file is found, the original directory is returned.
-func findModuleRoot(dir string) string {
-	start := dir
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return start
-		}
-		dir = parent
-	}
-}
-
 func run(pass *analysis.Pass) (interface{}, error) {
 	// Require the database/sql or GORM v1 packages are imported in the
 	// program being analyzed before running the analysis.
@@ -127,40 +107,19 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		return nil, nil
 	}
 
-	_ = pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
+	// Get the built SSA IR.
+	buildSSA := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 
-	// Determine the module root so we can load all packages with source
-	// information. This allows building a complete call graph across
-	// package boundaries.
-	pkgDir := filepath.Dir(pass.Fset.File(pass.Files[0].Pos()).Name())
-	modRoot := findModuleRoot(pkgDir)
-
-	pkgs, err := packages.Load(&packages.Config{Mode: packages.LoadAllSyntax, Dir: modRoot}, "./...")
-	if err != nil {
-		return nil, fmt.Errorf("failed to load packages: %w", err)
-	}
-
-	prog, ssaPkgs := ssautil.Packages(pkgs, ssa.InstantiateGenerics)
-	prog.Build()
-
-	var mainFn *ssa.Function
-	for _, p := range ssautil.MainPackages(ssaPkgs) {
-		if m := p.Func("main"); m != nil {
-			mainFn = m
-			break
-		}
-	}
+	// Identify the main function from the package's SSA IR.
+	mainFn := buildSSA.Pkg.Func("main")
 	if mainFn == nil {
 		return nil, nil
 	}
 
-	var allFns []*ssa.Function
-	for fn := range ssautil.AllFunctions(prog) {
-		allFns = append(allFns, fn)
-	}
-
-	// Construct a call graph using all discovered functions.
-	cg, err := callgraphutil.NewGraph(mainFn, allFns...)
+	// Construct a callgraph, using the main function as the root,
+	// constructed of all other functions. This returns a callgraph
+	// we can use to identify directed paths to SQL queries.
+	cg, err := callgraphutil.NewGraph(mainFn, buildSSA.SrcFuncs...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new callgraph: %w", err)
 	}
