@@ -108,7 +108,7 @@ func imports(pass *analysis.Pass, pkgs ...string) bool {
 	return imported
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	// Require the log package is imported in the
 	// program being analyzed before running the analysis.
 	//

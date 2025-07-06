@@ -260,7 +260,7 @@ var supportedSQLPackages = []string{
 	"github.com/lann/squirrel",
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	// Require at least one supported SQL package to be imported before
 	// running the analysis. This avoids wasting time analyzing programs
 	// that do not use SQL.
