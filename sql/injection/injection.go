@@ -16,17 +16,21 @@ import (
 // userControlledValues are the sources of user controlled values that
 // can be tained and end up in a SQL query.
 var userControlledValues = taint.NewSources(
-	// Function (and method) calls
+	// Function (and method) calls that are user controlled
+	// over the netork. These are all taken into account as
+	// part of *net/http.Request, but are listed here for
+	// demonstration purposes.
+	//
 	// "(net/url.Values).Get",
 	// "(*net/url.URL).Query",
 	// "(*net/url.URL).Redacted",
 	// "(*net/url.URL).EscapedFragment",
 	// "(*net/url.Userinfo).Username",
-	// "(*net/url.Userinfo).Passworde",
+	// "(*net/url.Userinfo).Password",
 	// "(*net/url.Userinfo).String",
 	// "(*net/http.Request).FormFile",
-	"(*net/http.Request).FormValue",
-	"(*net/http.Request).PostFormValue",
+	// "(*net/http.Request).FormValue",
+	// "(*net/http.Request).PostFormValue",
 	// "(*net/http.Request).Referer",
 	// "(*net/http.Request).UserAgent",
 	// "(*net/http.Request).GetBody",
