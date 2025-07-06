@@ -65,3 +65,39 @@ func TestL(t *testing.T) {
 func TestM(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "m")
 }
+
+func TestN(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "n")
+}
+
+func TestO(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "o")
+}
+
+func TestP(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "p")
+}
+
+func TestQ(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "q")
+}
+
+func TestR(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "r")
+}
+
+func TestS(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "s")
+}
+
+func TestT(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "t")
+}
+
+func TestU(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "u")
+}
+
+func TestV(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "v")
+}

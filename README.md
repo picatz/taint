@@ -81,6 +81,20 @@ $ go install github.com/picatz/taint/cmd/taint@latest
 
 The `sqli` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer) finds potential SQL injections.
 
+Supported SQL packages include:
+
+- the standard library `database/sql` package
+- `github.com/jinzhu/gorm` (GORM v1)
+- `gorm.io/gorm` (GORM v2)
+- `github.com/jmoiron/sqlx`
+- `github.com/go-gorm/gorm` (GORM v2 alt)
+- `xorm.io/xorm` and `github.com/go-xorm/xorm`
+- `github.com/go-pg/pg`
+- `github.com/rqlite/gorqlite`
+- `github.com/raindog308/gorqlite`
+- `github.com/Masterminds/squirrel` and variants
+- database drivers like `github.com/mattn/go-sqlite3`
+
 ```console
 $ go install github.com/picatz/taint/cmd/sqli@latest
 ```
