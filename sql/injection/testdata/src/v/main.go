@@ -1,15 +1,21 @@
-package main
+package v
 
 import (
+	"database/sql"
 	"net/http"
-
-	"github.com/sqreen/go-dvwa/vulnerable"
+	"v/nested"
 )
 
 func main() {
-	db, _ := vulnerable.PrepareSQLDB()
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		vulnerable.GetProducts(r.Context(), db, r.FormValue("category"))
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		panic(err)
+	}
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		nested.Run(db, r.URL.Query().Get("name"))
 	})
-	http.ListenAndServe(":8080", nil)
+
+	http.ListenAndServe(":8080", mux)
 }
