@@ -55,3 +55,7 @@ func TestK(t *testing.T) {
 func TestL(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "l")
 }
+
+func TestGRPC(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "grpc")
+}

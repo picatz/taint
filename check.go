@@ -1,6 +1,8 @@
 package taint
 
 import (
+	"go/types"
+
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/ssa"
 
@@ -176,8 +178,15 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 	// (just one step?) to identify what actual value the caller used.
 	case *ssa.Parameter:
 		// Check if the parameter's type is a source.
-		paramTypeStr := value.Type().String()
+		paramType := value.Type()
+		paramTypeStr := paramType.String()
 		if src, ok := sources.includes(paramTypeStr); ok {
+			return true, src, value
+		}
+
+		// Check if the parameter type implements proto.Message when the
+		// caller provided it as a potential source.
+		if ok, src := protoMessageSource(sources, paramType); ok {
 			return true, src, value
 		}
 
@@ -377,6 +386,9 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 			=? "*net/http.Request"
 		*/
 		if src, ok := sources.includes(value.X.Type().String()); ok {
+			return true, src, value
+		}
+		if ok, src := protoMessageSource(sources, value.X.Type()); ok {
 			return true, src, value
 		}
 
@@ -596,4 +608,43 @@ func checkSSAInstruction(path callgraphutil.Path, sources Sources, i ssa.Instruc
 		return false, "", nil
 	}
 	return false, "", nil
+}
+
+// protoMessageSource checks if the given type implements proto.Message when that
+// type is present in the provided sources list. It returns true with the source
+// string if so.
+func protoMessageSource(sources Sources, t types.Type) (bool, string) {
+	if src, ok := sources.includes("google.golang.org/protobuf/proto.Message"); ok {
+		if hasProtoMessageMethod(t) {
+			return true, src
+		}
+	}
+	return false, ""
+}
+
+// hasProtoMessageMethod reports if the given type implements a ProtoMessage method
+// with no parameters and no results, which is used to identify protobuf message
+// types commonly used with gRPC services.
+func hasProtoMessageMethod(t types.Type) bool {
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = ptr.Elem()
+	}
+
+	named, ok := t.(*types.Named)
+	if !ok {
+		return false
+	}
+
+	for i := 0; i < named.NumMethods(); i++ {
+		m := named.Method(i)
+		if m.Name() != "ProtoMessage" {
+			continue
+		}
+		if sig, ok := m.Type().(*types.Signature); ok {
+			if sig.Params().Len() == 0 && sig.Results().Len() == 0 {
+				return true
+			}
+		}
+	}
+	return false
 }

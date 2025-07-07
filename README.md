@@ -23,7 +23,8 @@ sources reach the given sinks.
 cg, _ := callgraph.New(mainFn, buildSSA.SrcFuncs...)
 
 sources := taint.NewSources(
-	"*net/http.Request",
+        "*net/http.Request",
+        "google.golang.org/protobuf/proto.Message", // gRPC request types
 )
 
 sinks := taint.NewSinks(
