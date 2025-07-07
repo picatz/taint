@@ -14,6 +14,7 @@ import (
 
 var userControlledValues = taint.NewSources(
 	"*net/http.Request",
+	"google.golang.org/protobuf/proto.Message",
 )
 
 var injectableFunctions = taint.NewSinks(

@@ -101,3 +101,7 @@ func TestU(t *testing.T) {
 func TestV(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "v")
 }
+
+func TestGRPC(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "grpc")
+}

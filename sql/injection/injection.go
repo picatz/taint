@@ -39,6 +39,7 @@ var userControlledValues = taint.NewSources(
 	//
 	// Types (and fields)
 	"*net/http.Request",
+	"google.golang.org/protobuf/proto.Message",
 	//
 	// "google.golang.org/grpc/metadata.MD", ?
 	//
