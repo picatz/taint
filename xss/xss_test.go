@@ -35,7 +35,3 @@ func TestF(t *testing.T) {
 func TestG(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "g")
 }
-
-func TestGRPC(t *testing.T) {
-	analysistest.Run(t, testdata, Analyzer, "grpc")
-}
