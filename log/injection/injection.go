@@ -166,7 +166,7 @@ func imports(pass *analysis.Pass, pkgs ...string) bool {
 		}
 		visited[p] = true
 		for _, pkg := range pkgs {
-			if strings.HasSuffix(p.Path(), pkg) {
+			if p.Path() == pkg || strings.HasPrefix(p.Path(), pkg+"/") {
 				return true
 			}
 		}
