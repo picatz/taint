@@ -2,6 +2,7 @@ package injection
 
 import (
 	"fmt"
+	"go/types"
 	"strings"
 
 	"github.com/picatz/taint"
@@ -71,16 +72,80 @@ var injectableLogFunctions = taint.NewSinks(
 	"(*log/slog.Record).Add",
 	"(*log/slog.Record).AddAttrs",
 
-	// TODO: consider adding the following logger packages,
-	//       and the ability to configure this list generically.
-	//
-	// https://pkg.go.dev/golang.org/x/exp/slog
-	// https://pkg.go.dev/github.com/golang/glog
-	// https://pkg.go.dev/github.com/hashicorp/go-hclog
-	// https://pkg.go.dev/github.com/sirupsen/logrus
-	// https://pkg.go.dev/go.uber.org/zap
-	// ...
+	// github.com/golang/glog
+	"github.com/golang/glog.Infof",
+	"github.com/golang/glog.Infoln",
+	"github.com/golang/glog.Info",
+	"github.com/golang/glog.Warningf",
+	"github.com/golang/glog.Warningln",
+	"github.com/golang/glog.Warning",
+	"github.com/golang/glog.Errorf",
+	"github.com/golang/glog.Errorln",
+	"github.com/golang/glog.Error",
+	"github.com/golang/glog.Fatalf",
+	"github.com/golang/glog.Fatalln",
+	"github.com/golang/glog.Fatal",
+
+	// github.com/golang/glog.Verbose methods for V-style logging
+	"(github.com/golang/glog.Verbose).Info",
+	"(github.com/golang/glog.Verbose).Infoln",
+	"(github.com/golang/glog.Verbose).Infof",
+	"(github.com/golang/glog.Verbose).InfoDepth",
+	"(github.com/golang/glog.Verbose).InfoDepthf",
+	"(github.com/golang/glog.Verbose).InfoContext",
+	"(github.com/golang/glog.Verbose).InfoContextf",
+	"(github.com/golang/glog.Verbose).InfoContextDepth",
+	"(github.com/golang/glog.Verbose).InfoContextDepthf",
+
+	// github.com/hashicorp/go-hclog
+	"(*github.com/hashicorp/go-hclog.Logger).Trace",
+	"(*github.com/hashicorp/go-hclog.Logger).Debug",
+	"(*github.com/hashicorp/go-hclog.Logger).Info",
+	"(*github.com/hashicorp/go-hclog.Logger).Warn",
+	"(*github.com/hashicorp/go-hclog.Logger).Error",
+	"(*github.com/hashicorp/go-hclog.Logger).Named",
+
+	// github.com/sirupsen/logrus
+	"github.com/sirupsen/logrus.Debug",
+	"github.com/sirupsen/logrus.Info",
+	"github.com/sirupsen/logrus.Warn",
+	"github.com/sirupsen/logrus.Error",
+	"github.com/sirupsen/logrus.Fatal",
+	"github.com/sirupsen/logrus.Panic",
+	"(*github.com/sirupsen/logrus.Logger).Debug",
+	"(*github.com/sirupsen/logrus.Logger).Info",
+	"(*github.com/sirupsen/logrus.Logger).Warn",
+	"(*github.com/sirupsen/logrus.Logger).Error",
+	"(*github.com/sirupsen/logrus.Logger).Fatal",
+	"(*github.com/sirupsen/logrus.Logger).Panic",
+
+	// go.uber.org/zap
+	"(*go.uber.org/zap.Logger).Debug",
+	"(*go.uber.org/zap.Logger).Info",
+	"(*go.uber.org/zap.Logger).Warn",
+	"(*go.uber.org/zap.Logger).Error",
+	"(*go.uber.org/zap.Logger).DPanic",
+	"(*go.uber.org/zap.Logger).Panic",
+	"(*go.uber.org/zap.Logger).Fatal",
+	"(*go.uber.org/zap.SugaredLogger).Debug",
+	"(*go.uber.org/zap.SugaredLogger).Info",
+	"(*go.uber.org/zap.SugaredLogger).Warn",
+	"(*go.uber.org/zap.SugaredLogger).Error",
+	"(*go.uber.org/zap.SugaredLogger).DPanic",
+	"(*go.uber.org/zap.SugaredLogger).Panic",
+	"(*go.uber.org/zap.SugaredLogger).Fatal",
+
+// TODO: support configuring additional logging packages here as needed.
 )
+
+var supportedLogPackages = []string{
+	"log",
+	"log/slog",
+	"github.com/golang/glog",
+	"github.com/hashicorp/go-hclog",
+	"github.com/sirupsen/logrus",
+	"go.uber.org/zap",
+}
 
 // Analyzer finds potential log injection issues to demonstrate
 // the github.com/picatz/taint package.
@@ -93,19 +158,26 @@ var Analyzer = &analysis.Analyzer{
 
 // imports returns true if the package imports any of the given packages.
 func imports(pass *analysis.Pass, pkgs ...string) bool {
-	var imported bool
-	for _, imp := range pass.Pkg.Imports() {
+	visited := make(map[*types.Package]bool)
+	var walk func(*types.Package) bool
+	walk = func(p *types.Package) bool {
+		if visited[p] {
+			return false
+		}
+		visited[p] = true
 		for _, pkg := range pkgs {
-			if strings.HasSuffix(imp.Path(), pkg) {
-				imported = true
-				break
+			if strings.HasSuffix(p.Path(), pkg) {
+				return true
 			}
 		}
-		if imported {
-			break
+		for _, imp := range p.Imports() {
+			if walk(imp) {
+				return true
+			}
 		}
+		return false
 	}
-	return imported
+	return walk(pass.Pkg)
 }
 
 func run(pass *analysis.Pass) (any, error) {
@@ -113,7 +185,7 @@ func run(pass *analysis.Pass) (any, error) {
 	// program being analyzed before running the analysis.
 	//
 	// This prevents wasting time analyzing programs that don't log.
-	if !imports(pass, "log", "log/slog") {
+	if !imports(pass, supportedLogPackages...) {
 		return nil, nil
 	}
 
@@ -138,10 +210,7 @@ func run(pass *analysis.Pass) (any, error) {
 	// up in injectable log functions (sinks).
 	results := taint.Check(cg, userControlledValues, injectableLogFunctions)
 
-	// For each result, check if a prepared statement is providing
-	// a mitigation for the user controlled value.
-	//
-	// TODO: ensure this makes sense for all the GORM usage?
+	// Report each tainted log call discovered.
 	for _, result := range results {
 		pass.Reportf(result.SinkValue.Pos(), "potential log injection")
 	}

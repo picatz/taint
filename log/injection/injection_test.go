@@ -35,3 +35,23 @@ func TestF(t *testing.T) {
 func TestG(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "g")
 }
+
+func TestH(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "h")
+}
+
+func TestI(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "i")
+}
+
+func TestJ(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "j")
+}
+
+func TestK(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "k")
+}
+
+func TestL(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "l")
+}
