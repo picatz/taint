@@ -51,7 +51,7 @@ for _, result := range results {
 	queryArgs := queryEdge.Site.Common().Args[1:]
 
 	// Skip the context argument, if using a *Context query variant.
-	if strings.HasPrefix(queryEdge.Site.Value().Call.Value.String(), "Context") {
+	if strings.HasSuffix(queryEdge.Site.Value().Call.Value.String(), "Context") {
 		queryArgs = queryArgs[1:]
 	}
 
@@ -68,7 +68,7 @@ for _, result := range results {
 
 ### `taint`
 
-The `taint` CLI is a an interactive tool to find potential security vulnerabilities. Can be used 
+The `taint` CLI is an interactive tool to find potential security vulnerabilities. It can be used
 to find potential SQL injections, log injections, and cross-site scripting (XSS) vulnerabilities, 
 among other types of vulnerabilities.
 
@@ -159,7 +159,7 @@ func main() {
         http.ListenAndServe(":8080", nil)
 }
 $ logi main.go
-./log/injection/testdata/src/example/main.go:10:14: potential log injection
+./log/injection/testdata/src/a/main.go:10:14: potential log injection
 ```
 
 ### `xss`
@@ -187,5 +187,5 @@ func main() {
 	http.ListenAndServe(":8080", nil)
 }
 $ xss main.go
-./xss/testdata/src/example/main.go:9:8: potential XSS
+./xss/testdata/src/a/main.go:9:10: potential XSS
 ```
