@@ -186,10 +186,8 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 
 		// Check if the parameter type implements proto.Message when the
 		// caller provided it as a potential source.
-		if src, ok := sources.includes("google.golang.org/protobuf/proto.Message"); ok {
-			if hasProtoMessageMethod(paramType) {
-				return true, src, value
-			}
+		if ok, src := protoMessageSource(sources, paramType); ok {
+			return true, src, value
 		}
 
 		// Check the parameter's referrers.
@@ -390,10 +388,8 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 		if src, ok := sources.includes(value.X.Type().String()); ok {
 			return true, src, value
 		}
-		if src, ok := sources.includes("google.golang.org/protobuf/proto.Message"); ok {
-			if hasProtoMessageMethod(value.X.Type()) {
-				return true, src, value
-			}
+		if ok, src := protoMessageSource(sources, value.X.Type()); ok {
+			return true, src, value
 		}
 
 		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
@@ -612,6 +608,18 @@ func checkSSAInstruction(path callgraphutil.Path, sources Sources, i ssa.Instruc
 		return false, "", nil
 	}
 	return false, "", nil
+}
+
+// protoMessageSource checks if the given type implements proto.Message when that
+// type is present in the provided sources list. It returns true with the source
+// string if so.
+func protoMessageSource(sources Sources, t types.Type) (bool, string) {
+	if src, ok := sources.includes("google.golang.org/protobuf/proto.Message"); ok {
+		if hasProtoMessageMethod(t) {
+			return true, src
+		}
+	}
+	return false, ""
 }
 
 // hasProtoMessageMethod reports if the given type implements a ProtoMessage method
