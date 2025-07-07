@@ -134,7 +134,7 @@ $ sqli main.go
 
 ### `logi`
 
-The `logi` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer) finds potential log injections.
+The `logi` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer) finds potential log injections. It understands common logging packages, including `log`, `log/slog`, `github.com/golang/glog`, `github.com/hashicorp/go-hclog`, `github.com/sirupsen/logrus`, and `go.uber.org/zap`.
 
 ```console
 $ go install github.com/picatz/taint/cmd/logi@latest
