@@ -2,8 +2,11 @@ package callgraphutil
 
 import (
 	"bytes"
+	"fmt"
+	"strings"
 
 	"golang.org/x/tools/go/callgraph"
+	"golang.org/x/tools/go/ssa"
 )
 
 // Path is a sequence of callgraph.Edges, where each edge
@@ -148,18 +151,22 @@ func PathsSearch(start *callgraph.Node, isMatch func(*callgraph.Node) bool) Path
 			return
 		}
 
-		// debug("searching: %v\n", n)
+		// Debug output to understand the search
+		// fmt.Printf("DEBUG: searching node: %v\n", n)
 		if !seen[n] {
 			seen[n] = true
 			if isMatch(n) {
-				paths = append(paths, stack)
-
-				stack = make(Path, 0, 32)
-				seen = make(map[*callgraph.Node]bool)
-				return
+				// Make a copy of the current path to preserve it
+				pathCopy := make(Path, len(stack))
+				copy(pathCopy, stack)
+				paths = append(paths, pathCopy)
+				// Debug output when match is found
+				// fmt.Printf("DEBUG: found match at node: %v, path length: %d\n", n, len(pathCopy))
+				// Don't return here - continue searching for more paths
 			}
 			for _, e := range n.Out {
-				// debug("\tout: %v\n", e)
+				// Debug output for traversal
+				// fmt.Printf("DEBUG: traversing edge: %v -> %v\n", e.Caller, e.Callee)
 				stack = append(stack, e) // push
 				search(e.Callee)
 				if len(stack) == 0 {
@@ -193,4 +200,80 @@ func PathsSearchCallTo(start *callgraph.Node, fn string) Paths {
 		fnStr := n.Func.String()
 		return fnStr == fn
 	})
+}
+
+// PathsSearchCallToPartial returns the paths that call functions containing the given substring.
+// This is a legacy function that provides simple substring matching. Consider using
+// PathsSearchCallToAdvancedAllNodes with "fuzzy:pattern" for more comprehensive matching
+// that handles disconnected callgraphs better.
+func PathsSearchCallToPartial(start *callgraph.Node, partialName string) Paths {
+	return PathsSearch(start, func(n *callgraph.Node) bool {
+		if n == nil || n.Func == nil {
+			return false
+		}
+		fnStr := n.Func.String()
+		return strings.Contains(fnStr, partialName)
+	})
+}
+
+// CreateMultiRootCallGraph creates a callgraph for library packages by using multiple
+// potential entry points. It creates a callgraph by trying different entry points
+// and selecting the one that produces the most semantically meaningful analysis.
+func CreateMultiRootCallGraph(prog *ssa.Program, srcFns []*ssa.Function) (*callgraph.Graph, *ssa.Function, error) {
+	// Find potential entry points, prioritizing main functions and then exported functions
+	var entryPoints []*ssa.Function
+
+	for _, fn := range srcFns {
+		if fn == nil || fn.Object() == nil {
+			continue
+		}
+
+		name := fn.Object().Name()
+
+		if name == "main" {
+			// Main functions get highest priority
+			entryPoints = append([]*ssa.Function{fn}, entryPoints...)
+		} else if fn.Object().Exported() {
+			// All exported functions are potential entry points
+			entryPoints = append(entryPoints, fn)
+		}
+	}
+
+	if len(entryPoints) == 0 {
+		// Last resort: use non-utility functions
+		for _, fn := range srcFns {
+			if fn != nil && fn.Object() != nil {
+				entryPoints = append(entryPoints, fn)
+			}
+		}
+	}
+
+	// Try each entry point and find the best one based on connectivity
+	var bestRoot *ssa.Function
+	var bestGraph *callgraph.Graph
+	maxNodes := 0
+
+	for _, entry := range entryPoints {
+		if entry == nil {
+			continue
+		}
+
+		graph, err := NewGraph(entry, srcFns...)
+		if err != nil {
+			continue // Try next entry point
+		}
+
+		// Pick the graph with the most nodes (most connected)
+		if len(graph.Nodes) > maxNodes {
+			maxNodes = len(graph.Nodes)
+			bestGraph = graph
+			bestRoot = entry
+		}
+	}
+
+	if bestGraph == nil {
+		return nil, nil, fmt.Errorf("could not create callgraph from any entry point")
+	}
+
+	return bestGraph, bestRoot, nil
 }

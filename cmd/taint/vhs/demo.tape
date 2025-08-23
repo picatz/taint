@@ -1,3 +1,12 @@
+###############################################
+# taint CLI showcase
+# - Pastel adaptive theming & semantic coloring
+# - Multi-root analysis (xss)
+# - Rich navigation: pkgs, cg, nodes, root
+# - Call path discovery: exact, fuzzy, glob, regex
+# - Taint checking across packages
+# - Screen clearing + autocomplete exit
+###############################################
 Output ./vhs/demo.gif
 
 Set Margin 20
@@ -6,70 +15,65 @@ Set BorderRadius 10
 
 Set FontSize 20
 Set Width 1200
-Set Height 600
+Set Height 640
 
+# Launch interactive shell
 Type "taint"
-
-Sleep 500ms
-
+Sleep 400ms
 Enter
+Sleep 1500ms
 
-Sleep 3s
-
-Type "load ./example"
-
-Sleep 500ms
-
+# Load full example (HTTP handler + DB usage)
+Type "load ./cmd/taint/example"
+Sleep 300ms
 Enter
+Sleep 2600ms
 
-Sleep 2s
-
-Type "n"
-
-Tab@500ms 2
-
-Sleep 500ms
-
-Enter
-
-Sleep 2s
-
-Type "p"
-
-Tab@500ms 2
-
-Enter
-
-Sleep 5s
-
+# Show its callgraph
 Type "cg"
-
-Sleep 1s
-
+Sleep 250ms
 Enter
+Sleep 2300ms
 
-Sleep 5s
-
-Type "callpath (*database/sql.DB).Query"
-
-Sleep 500ms
-
+# Show nodes & current analysis root
+Type "nodes"
+Sleep 250ms
 Enter
+Sleep 1200ms
 
-Sleep 3s
+Type "root"
+Sleep 250ms
+Enter
+Sleep 900ms
 
+# Fuzzy search for handler business logic
+Type "callpath fuzzy:business"
+Sleep 250ms
+Enter
+Sleep 1400ms
+
+# Taint check: request -> DB query (potential SQL injection path)
 Type "check *net/http.Request (*database/sql.DB).Query"
-
-Sleep 500ms
-
+Sleep 300ms
 Enter
+Sleep 2400ms
 
-Sleep 5s
+# Alternate source: URL.Query -> DB Query
+Type "check (*net/url.URL).Query (*database/sql.DB).Query"
+Sleep 300ms
+Enter
+Sleep 2400ms
 
+# Demonstrate screen clear before exit
+Type "clear"
+Sleep 250ms
+Enter
+Sleep 800ms
+
+# Exit via autocomplete (type prefix then Tab)
 Type "ex"
-
-Tab@500ms 2
-
+Sleep 300ms
+Tab
+Sleep 300ms
 Enter
-
-Sleep 5s
+Sleep 1000ms

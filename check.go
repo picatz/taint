@@ -1,6 +1,7 @@
 package taint
 
 import (
+	"fmt"
 	"go/types"
 
 	"golang.org/x/tools/go/callgraph"
@@ -9,8 +10,31 @@ import (
 	"github.com/picatz/taint/callgraphutil"
 )
 
-// Result is an individual finding from a taint check.
-//
+// findAllCallSitePaths finds all paths that end with a call to the specified sink function.
+// Unlike PathsSearchCallTo which finds paths to the function node, this finds paths to
+// individual call sites (edges) that call the function.
+func findAllCallSitePaths(cg *callgraph.Graph, sinkFunc string) callgraphutil.Paths {
+	var paths callgraphutil.Paths
+
+	// Find all nodes that have outgoing edges calling the sink function
+	for _, node := range cg.Nodes {
+		for _, edge := range node.Out {
+			if edge.Callee.Func.String() == sinkFunc {
+				// Found a call edge to the sink function
+				// Now find all paths from root to this node (caller)
+				rootPaths := callgraphutil.PathsSearchCallTo(cg.Root, node.Func.String())
+
+				// For each path to the caller, extend it with the edge to the sink
+				for _, rootPath := range rootPaths {
+					extendedPath := append(rootPath, edge)
+					paths = append(paths, extendedPath)
+				}
+			}
+		}
+	}
+
+	return paths
+} // Result is an individual finding from a taint check.
 // It contains the path within the callgraph where the source
 // found its way into the sink, along with the source and sink
 // type information and SSA values.
@@ -65,19 +89,19 @@ func Check(cg *callgraph.Graph, sources Sources, sinks Sinks) Results {
 	// The results of the taint check.
 	results := Results{}
 
+	// Track seen positions to avoid duplicate results for same call site
+	seenPositions := make(map[string]bool)
+
 	// For each sink given, identify the individual paths from
 	// within the callgraph that those sinks can end up as
 	// the final node path (the "sink path").
 	for sink := range sinks {
-		sinkPaths := callgraphutil.PathsSearchCallTo(cg.Root, sink)
-
-		// fmt.Println("sink paths:", len(sinkPaths))
+		// Find all call edges that call the sink function
+		sinkPaths := findAllCallSitePaths(cg, sink)
 
 		for _, sinkPath := range sinkPaths {
-			// fmt.Println("sink path:", sinkPath)
 			// Ensure the path isn't empty (which can happen?!).
 			//
-			// TODO: ensure returned paths from within searched paths
 			//       are never empty. That's just silly.
 			if sinkPath.Empty() {
 				continue
@@ -87,19 +111,38 @@ func Check(cg *callgraph.Graph, sources Sources, sinks Sinks) Results {
 			// sources (e.g. user input in an HTTP request) to identify if it
 			// was "tainted".
 			tainted, src, tv := checkPath(sinkPath, sources)
+
 			if tainted {
 				// Extract the last edge from the last part of the path
 				// to include the calle as the sink in the result.
 				lastEdge := sinkPath.Last()
 
-				// Add the result to the list of results.
-				results = append(results, Result{
-					Path:        sinkPath,
-					SourceType:  src,
-					SourceValue: tv,
-					SinkType:    lastEdge.Callee.String(),
-					SinkValue:   lastEdge.Site.Value(),
-				})
+				// Create a unique key based on sink position, source position, and the first call site in the path
+				sinkPos := lastEdge.Site.Pos()
+				srcPos := tv.Pos()
+
+				// Use the first call site as the primary path identifier
+				// This ensures that paths starting from different call sites are treated separately
+				firstCallSite := ""
+				if len(sinkPath) > 0 && sinkPath[0].Site != nil {
+					firstCallSite = fmt.Sprintf("%d", sinkPath[0].Site.Pos())
+				}
+
+				positionKey := fmt.Sprintf("%d|%d|%s", sinkPos, srcPos, firstCallSite)
+
+				// Only add if we haven't seen this exact sink+source combination
+				if !seenPositions[positionKey] {
+					seenPositions[positionKey] = true
+
+					// Add the result to the list of results.
+					results = append(results, Result{
+						Path:        sinkPath,
+						SourceType:  src,
+						SourceValue: tv,
+						SinkType:    lastEdge.Callee.String(),
+						SinkValue:   lastEdge.Site.Value(),
+					})
+				}
 			}
 		}
 	}
@@ -210,25 +253,29 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 			}
 		}
 
-		// TODO: consider if we can remove the range with a single
-		//       step backwards?
 		for _, edge := range path {
-			// Find the caller that used the function parameter's parent (the function).
-			if edge.Callee.Func == v.Parent() {
-				// Inspect the instructions of the caller's function to identify
-				// the relevant call using the function parameter.
-				for _, block := range edge.Caller.Func.DomPreorder() {
-					for _, instr := range block.Instrs {
-						callInstr, ok := instr.(*ssa.Call)
-						if !ok {
+			if edge.Callee.Func != v.Parent() || edge.Site == nil {
+				continue
+			}
+			if sig, ok := edge.Callee.Func.Type().(*types.Signature); ok {
+				if params := sig.Params(); params != nil {
+					for pi := 0; pi < params.Len(); pi++ {
+						if params.At(pi).Name() != value.Name() {
 							continue
 						}
-						if callInstr.Call.Value.Pos() == edge.Callee.Func.Pos() {
-							tainted, src, tv := checkSSAInstruction(path, sources, instr, visited)
-							if tainted {
+						common := edge.Site.Common()
+						if common != nil && pi < len(common.Args) {
+							arg := common.Args[pi]
+							ta, src, tv := checkSSAValue(path, sources, arg, visited)
+							if ta {
 								return true, src, tv
 							}
+							// Also check if the argument expression derives from a source via operand chains.
+							if src, base := isExpressionDerivedFromSource(arg, sources); src != "" {
+								return true, src, base
+							}
 						}
+						break
 					}
 				}
 			}
@@ -242,6 +289,47 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 		callTypeStr := value.Call.Value.String()
 		if src, ok := sources.includes(callTypeStr); ok {
 			return true, src, value.Call.Value
+		}
+
+		// General receiver propagation: if the call has a receiver (method call) and
+		// the receiver base object (recursively) derives from a source, mark call result tainted.
+		if value.Call.Signature() != nil && value.Call.Signature().Recv() != nil && len(value.Call.Args) > 0 {
+			recv := value.Call.Args[0]
+			if src, ok := sources.includes(recv.Type().String()); ok {
+				return true, src, recv
+			}
+			if ok, src := protoMessageSource(sources, recv.Type()); ok {
+				return true, src, recv
+			}
+			if src, base := derivedFromSource(recv, sources); src != "" {
+				return true, src, base
+			}
+			// Also check if receiver operand expression derives from source.
+			if src, base := isExpressionDerivedFromSource(recv, sources); src != "" {
+				return true, src, base
+			}
+		}
+
+		// Special propagation: fmt.Sprintf inherits taint if any non-format argument is tainted.
+		if callTypeStr == "fmt.Sprintf" {
+			for i, arg := range value.Call.Args {
+				// First argument usually the format string constant; still check all to be safe.
+				_ = i
+				tainted, src, tv := checkSSAValue(path, sources, arg, visited)
+				if tainted {
+					return true, src, tv
+				}
+			}
+		}
+
+		// Special propagation: io.ReadAll – if the reader argument is tainted, result is tainted.
+		if callTypeStr == "io.ReadAll" {
+			for _, arg := range value.Call.Args {
+				tainted, src, tv := checkSSAValue(path, sources, arg, visited)
+				if tainted {
+					return true, src, tv
+				}
+			}
 		}
 		// 2. Handle the arguments of the call.
 		for _, arg := range value.Call.Args {
@@ -385,11 +473,17 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 			value.X.Type().String()
 			=? "*net/http.Request"
 		*/
+		// If the base of the field address is a source (directly or via proto message),
+		// then any field access derived from it is also tainted.
 		if src, ok := sources.includes(value.X.Type().String()); ok {
 			return true, src, value
 		}
 		if ok, src := protoMessageSource(sources, value.X.Type()); ok {
 			return true, src, value
+		}
+		// Also check if the base expression derives from a source via operand chains.
+		if src, base := isExpressionDerivedFromSource(value.X, sources); src != "" {
+			return true, src, base
 		}
 
 		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
@@ -647,4 +741,122 @@ func hasProtoMessageMethod(t types.Type) bool {
 		}
 	}
 	return false
+}
+
+// derivedFromSource attempts to walk backwards from v following common address/field/index chains
+// to find a base value whose static type matches a declared source. Returns the source string and
+// the base value if found.
+func derivedFromSource(v ssa.Value, sources Sources) (string, ssa.Value) {
+	seen := map[ssa.Value]struct{}{}
+	var work []ssa.Value
+	work = append(work, v)
+	for len(work) > 0 {
+		cur := work[len(work)-1]
+		work = work[:len(work)-1]
+		if _, ok := seen[cur]; ok {
+			continue
+		}
+		seen[cur] = struct{}{}
+		if src, ok := sources.includes(cur.Type().String()); ok {
+			return src, cur
+		}
+		switch c := cur.(type) {
+		case *ssa.FieldAddr:
+			work = append(work, c.X)
+		case *ssa.IndexAddr:
+			work = append(work, c.X)
+		case *ssa.Slice:
+			work = append(work, c.X)
+		case *ssa.UnOp:
+			work = append(work, c.X)
+		case *ssa.MakeInterface:
+			work = append(work, c.X)
+		case *ssa.TypeAssert:
+			work = append(work, c.X)
+		case *ssa.Convert:
+			work = append(work, c.X)
+		case *ssa.Extract:
+			work = append(work, c.Tuple)
+		}
+		// Also inspect referrers to chase allocations storing the base.
+		if refs := cur.Referrers(); refs != nil {
+			for _, r := range *refs {
+				if rv, ok := r.(ssa.Value); ok {
+					if _, done := seen[rv]; !done {
+						work = append(work, rv)
+					}
+				}
+			}
+		}
+	}
+	return "", nil
+}
+
+// isExpressionDerivedFromSource performs a comprehensive traversal of the operand graph
+// starting from the given SSA value to determine if any sub-expression ultimately derives
+// from a source type. Unlike derivedFromSource which follows referrer chains outward,
+// this function follows operand chains inward.
+func isExpressionDerivedFromSource(v ssa.Value, sources Sources) (string, ssa.Value) {
+	seen := map[ssa.Value]struct{}{}
+	var work []ssa.Value
+	work = append(work, v)
+
+	for len(work) > 0 {
+		cur := work[len(work)-1]
+		work = work[:len(work)-1]
+
+		if _, ok := seen[cur]; ok {
+			continue
+		}
+		seen[cur] = struct{}{}
+
+		// Check if this value's type is a source.
+		if src, ok := sources.includes(cur.Type().String()); ok {
+			return src, cur
+		}
+
+		// Check proto message sources.
+		if ok, src := protoMessageSource(sources, cur.Type()); ok {
+			return src, cur
+		}
+
+		// Traverse operands based on SSA value type.
+		switch c := cur.(type) {
+		case *ssa.Call:
+			for _, arg := range c.Call.Args {
+				work = append(work, arg)
+			}
+			work = append(work, c.Call.Value)
+		case *ssa.FieldAddr:
+			work = append(work, c.X)
+		case *ssa.IndexAddr:
+			work = append(work, c.X)
+			work = append(work, c.Index)
+		case *ssa.Slice:
+			work = append(work, c.X)
+			if c.Low != nil {
+				work = append(work, c.Low)
+			}
+			if c.High != nil {
+				work = append(work, c.High)
+			}
+		case *ssa.BinOp:
+			work = append(work, c.X, c.Y)
+		case *ssa.UnOp:
+			work = append(work, c.X)
+		case *ssa.MakeInterface:
+			work = append(work, c.X)
+		case *ssa.TypeAssert:
+			work = append(work, c.X)
+		case *ssa.Convert:
+			work = append(work, c.X)
+		case *ssa.Extract:
+			work = append(work, c.Tuple)
+		case *ssa.Lookup:
+			work = append(work, c.X)
+			work = append(work, c.Index)
+		}
+	}
+
+	return "", nil
 }

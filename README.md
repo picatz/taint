@@ -78,6 +78,92 @@ $ go install github.com/picatz/taint/cmd/taint@latest
 
 ![demo](./cmd/taint/vhs/demo.gif)
 
+#### Interactive Commands
+
+The `taint` tool provides several interactive commands for exploring callgraphs and analyzing code:
+
+**`load <target> [pattern] [--full]`** - Load a Go program or package for analysis
+
+Targets can be local directories or GitHub URLs. When providing a GitHub URL you may optionally
+append a subdirectory or specific file path to restrict loading. This helps when large
+repositories contain many commands / `main` packages and you only want
+to look at a single entry point.
+
+* `load ./myproject` loads the local module using pattern `./...` (recursive) by default.
+* `load https://github.com/user/repo` clones (shallow) and loads only the root package (`.`) by default, not the whole repo.
+* `load https://github.com/user/repo/cmd/tool` clones and loads `./cmd/tool` (pattern defaults to `.` under that path).
+
+**`callpath <function>`** - Find call paths to functions with flexible matching strategies:
+
+```console
+> callpath fmt.Printf                    # Exact match
+> callpath fuzzy:Printf                  # Substring/fuzzy matching  
+> callpath glob:fmt.*                    # Shell-style glob patterns
+> callpath regex:.*\.(Exec|Query)$       # Regular expressions
+```
+
+**Example output:**
+```console
+> load xss
+✓ loaded 1 packages, creating 1 SSA packages
+✓ created multi-root callgraph with 3 potential roots
+
+> callpath fuzzy:Check
+✓ found 1 path(s) using fuzzy matching for: fuzzy:Check
+1: n0:github.com/picatz/taint/xss.run → n8:github.com/picatz/taint.Check
+
+> callpath fuzzy:run  
+✓ found 2 path(s) using fuzzy matching for: fuzzy:run
+1: n0:github.com/picatz/taint/xss.run (root node)
+2: n0:github.com/picatz/taint/xss.run → n9:github.com/picatz/taint.WalkSSA → n10:github.com/picatz/taint/xss.run$1
+```
+
+**`check <source> <sink>`** - Perform taint analysis between source and sink functions
+
+```console
+> load ./cmd/taint/example
+✓ loaded 1 packages, creating 1 SSA packages
+  building SSA package 0: main
+✓ found main function, using as callgraph root
+✓ loaded 1 packages
+> cg
+n0:github.com/picatz/taint/cmd/taint/example.main
+   → n4:database/sql.Open
+   → n5:net/http.NewServeMux
+   → n6:(*net/http.ServeMux).HandleFunc
+   → n8:net/http.ListenAndServe
+
+n1:github.com/picatz/taint/cmd/taint/example.handle
+   → n3:(*database/sql.DB).Query
+
+n2:github.com/picatz/taint/cmd/taint/example.business
+   → n1:github.com/picatz/taint/cmd/taint/example.handle
+
+n3:(*database/sql.DB).Query
+
+n4:database/sql.Open
+
+n5:net/http.NewServeMux
+
+n6:(*net/http.ServeMux).HandleFunc
+   → n7:github.com/picatz/taint/cmd/taint/example.main$1
+
+n7:github.com/picatz/taint/cmd/taint/example.main$1
+   → n9:(*net/url.URL).Query
+   → n2:github.com/picatz/taint/cmd/taint/example.business
+
+n8:net/http.ListenAndServe
+
+n9:(*net/url.URL).Query
+
+> check *net/http.Request (*database/sql.DB).Query
+n0:github.com/picatz/taint/cmd/taint/example.main → n6:(*net/http.ServeMux).HandleFunc → n7:github.com/picatz/taint/cmd/taint/example.main$1 → n2:github.com/picatz/taint/cmd/taint/example.business → n1:github.com/picatz/taint/cmd/taint/example.handle → n3:(*database/sql.DB).Query
+> check (*net/url.URL).Query (*database/sql.DB).Query
+n0:github.com/picatz/taint/cmd/taint/example.main → n6:(*net/http.ServeMux).HandleFunc → n7:github.com/picatz/taint/cmd/taint/example.main$1 → n2:github.com/picatz/taint/cmd/taint/example.business → n1:github.com/picatz/taint/cmd/taint/example.handle → n3:(*database/sql.DB).Query
+```
+
+**Other commands:** `cg` (show callgraph), `nodes` (list nodes), `pkgs` (list packages), `root` (show root), `clear`, `exit`
+
 ### `sqli`
 
 The `sqli` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer) finds potential SQL injections.

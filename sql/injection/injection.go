@@ -16,37 +16,11 @@ import (
 // userControlledValues are the sources of user controlled values that
 // can be tained and end up in a SQL query.
 var userControlledValues = taint.NewSources(
-	// Function (and method) calls that are user controlled
-	// over the netork. These are all taken into account as
-	// part of *net/http.Request, but are listed here for
-	// demonstration purposes.
-	//
-	// "(net/url.Values).Get",
-	// "(*net/url.URL).Query",
-	// "(*net/url.URL).Redacted",
-	// "(*net/url.URL).EscapedFragment",
-	// "(*net/url.Userinfo).Username",
-	// "(*net/url.Userinfo).Password",
-	// "(*net/url.Userinfo).String",
-	// "(*net/http.Request).FormFile",
-	// "(*net/http.Request).FormValue",
-	// "(*net/http.Request).PostFormValue",
-	// "(*net/http.Request).Referer",
-	// "(*net/http.Request).UserAgent",
-	// "(*net/http.Request).GetBody",
-	// "(net/http.Header).Get",
-	// "(net/http.Header).Values",
-	//
-	// Types (and fields)
+	// Only high-level source types are enumerated. All method/field/data derived
+	// from these types (e.g., r.URL.Query().Get, r.FormValue, headers, body reads)
+	// is tainted via generalized propagation in the taint engine.
 	"*net/http.Request",
 	"google.golang.org/protobuf/proto.Message",
-	//
-	// "google.golang.org/grpc/metadata.MD", ?
-	//
-	// TODO: add more, consider pointer variants and specific fields on types
-	// TODO: consider support for protobuf defined *Request types...
-	// TODO: consider support for gRPC request metadata (HTTP2 headers)
-	// TODO: consider support for msgpack-rpc?
 )
 
 var injectableSQLMethods = taint.NewSinks(
@@ -320,6 +294,11 @@ func run(pass *analysis.Pass) (any, error) {
 	// Run taint check for user controlled values (sources) ending
 	// up in injectable SQL methods (sinks).
 	results := taint.Check(cg, userControlledValues, injectableSQLMethods)
+
+	// fmt.Printf("DEBUG: Found %d taint results\n", len(results))
+	// for i, result := range results {
+	// 	fmt.Printf("DEBUG: Result %d: %s -> %s\n", i, result.SourceType, result.SinkType)
+	// }
 
 	// For each result, check if a prepared statement is providing
 	// a mitigation for the user controlled value.
