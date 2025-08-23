@@ -50,6 +50,8 @@ func NewGraph(root *ssa.Function, srcFns ...*ssa.Function) (*callgraph.Graph, er
 	allFns := ssautil.AllFunctions(root.Prog)
 
 	visited := make(map[*ssa.Function]bool)
+	// Cache AddFunction results to avoid redundant work
+	addFunctionProcessed := make(map[*ssa.Function]bool)
 
 	var walkFn func(fn *ssa.Function) error
 	walkFn = func(fn *ssa.Function) error {
@@ -58,13 +60,17 @@ func NewGraph(root *ssa.Function, srcFns ...*ssa.Function) (*callgraph.Graph, er
 		}
 		visited[fn] = true
 
-		if err := AddFunction(g, fn, allFns); err != nil {
-			return fmt.Errorf("failed to add function %v: %w", fn, err)
+		// Only call AddFunction if we haven't processed this function yet
+		if !addFunctionProcessed[fn] {
+			if err := AddFunction(g, fn, allFns); err != nil {
+				return fmt.Errorf("failed to add function %v: %w", fn, err)
+			}
+			addFunctionProcessed[fn] = true
 		}
 
 		for _, block := range fn.DomPreorder() {
 			for _, instr := range block.Instrs {
-				if err := checkBlockInstruction(root, allFns, g, fn, instr, walkFn); err != nil {
+				if err := checkBlockInstruction(root, allFns, g, fn, instr, walkFn, addFunctionProcessed); err != nil {
 					return err
 				}
 			}
@@ -79,13 +85,43 @@ func NewGraph(root *ssa.Function, srcFns ...*ssa.Function) (*callgraph.Graph, er
 		}
 	}
 
+	// Remove duplicate edges once at the end - much more efficient than doing it
+	// on every instruction
+	removeDuplicateEdges(g)
+
 	return g, nil
+}
+
+// removeDuplicateEdges efficiently removes duplicate edges from the call graph.
+// This is done once at the end instead of on every instruction for better performance.
+func removeDuplicateEdges(g *callgraph.Graph) {
+	for _, node := range g.Nodes {
+		if len(node.Out) <= 1 {
+			continue // No duplicates possible
+		}
+
+		// Use a map to track unique callees for efficient deduplication
+		seen := make(map[*callgraph.Node]bool, len(node.Out))
+		uniqueEdges := make([]*callgraph.Edge, 0, len(node.Out))
+
+		for _, edge := range node.Out {
+			if !seen[edge.Callee] {
+				seen[edge.Callee] = true
+				uniqueEdges = append(uniqueEdges, edge)
+			}
+		}
+
+		// Only update if we found duplicates
+		if len(uniqueEdges) < len(node.Out) {
+			node.Out = uniqueEdges
+		}
+	}
 }
 
 // checkBlockInstruction checks the given instruction for any function calls, adding
 // edges to the call graph as needed and recursively adding any new functions to the graph
 // that are discovered during the process (typically via interface methods).
-func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g *callgraph.Graph, fn *ssa.Function, instr ssa.Instruction, walkFn func(*ssa.Function) error) error {
+func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g *callgraph.Graph, fn *ssa.Function, instr ssa.Instruction, walkFn func(*ssa.Function) error, addFunctionProcessed map[*ssa.Function]bool) error {
 	// debug("\tcheckBlockInstruction: %v\n", instr)
 	switch instrt := instr.(type) {
 	case *ssa.Call:
@@ -224,9 +260,13 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 
 		callgraph.AddEdge(g.CreateNode(fn), instrt, g.CreateNode(instrCall))
 
-		err := AddFunction(g, instrCall, allFns)
-		if err != nil {
-			return fmt.Errorf("failed to add function %v from block instr: %w", instrCall, err)
+		// Only call AddFunction if we haven't processed this function yet
+		if !addFunctionProcessed[instrCall] {
+			err := AddFunction(g, instrCall, allFns)
+			if err != nil {
+				return fmt.Errorf("failed to add function %v from block instr: %w", instrCall, err)
+			}
+			addFunctionProcessed[instrCall] = true
 		}
 
 		if err := walkFn(instrCall); err != nil {
@@ -244,21 +284,6 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 				switch argtFn := argt.Fn.(type) {
 				case *ssa.Function:
 					callgraph.AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(argtFn))
-				}
-			}
-		}
-	}
-
-	// Delete duplicate edges that may have been added, which is a responsibility of the caller
-	// when using the callgraph.AddEdge function directly.
-	for _, n := range g.Nodes {
-		// debug("checking node %v\n", n)
-		for i := 0; i < len(n.Out); i++ {
-			for j := i + 1; j < len(n.Out); j++ {
-				if n.Out[i].Callee == n.Out[j].Callee {
-					// debug("deleting duplicate edge %v\n", n.Out[j])
-					n.Out = append(n.Out[:j], n.Out[j+1:]...)
-					j--
 				}
 			}
 		}
@@ -293,9 +318,10 @@ func AddFunction(cg *callgraph.Graph, target *ssa.Function, allFns map[*ssa.Func
 
 	// Find all direct calls to function,
 	// or a place where its address is taken.
-	for progFn := range allFns {
-		var space [32]*ssa.Value // preallocate
+	// Pre-allocate space for operands to avoid repeated allocations
+	var space [32]*ssa.Value
 
+	for progFn := range allFns {
 		for _, block := range progFn.DomPreorder() {
 			for _, instr := range block.Instrs {
 				// Is this a method (T).f of a concrete type T
@@ -306,7 +332,6 @@ func AddFunction(cg *callgraph.Graph, target *ssa.Function, allFns map[*ssa.Func
 				if recvType != nil {
 					if mi, ok := instr.(*ssa.MakeInterface); ok {
 						if types.Identical(mi.X.Type(), recvType) {
-
 							return nil // T is address-taken
 						}
 						if ptr, ok := mi.X.Type().(*types.Pointer); ok &&
