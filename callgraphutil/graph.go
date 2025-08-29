@@ -1,46 +1,75 @@
 package callgraphutil
 
 import (
-	"bytes"
-	"context"
-	"fmt"
-	"go/token"
-	"go/types"
-	"sync"
+    "bytes"
+    "context"
+    "fmt"
+    "go/token"
+    "go/types"
+    "sync"
 
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
 )
 
-// Global cache for AllFunctions results to avoid repeated expensive computation
+// Global caches with lock-free reads and per-key initialization
+type allFunctionsEntry struct {
+    once  sync.Once
+    value map[*ssa.Function]bool
+}
+
+type syntheticMethodEntry struct {
+    once sync.Once
+    fn   *ssa.Function
+}
+
 var (
-	allFunctionsCache = make(map[*ssa.Program]map[*ssa.Function]bool)
-	allFunctionsMutex sync.RWMutex
+    // Cache of ssautil.AllFunctions(prog) results keyed by *ssa.Program
+    // Uses sync.Map for lock-free reads; each entry initializes once.
+    allFunctionsCache sync.Map // map[*ssa.Program]*allFunctionsEntry
+
+    // Cache of synthetic method functions keyed by receiver+method string
+    // Ensures only one synthetic *ssa.Function is created per key.
+    syntheticMethodCache sync.Map // map[string]*syntheticMethodEntry
 )
 
 // getAllFunctionsCached returns cached AllFunctions result for significant performance boost.
 // AllFunctions is expensive (6+ms on large codebases) but result is identical for same program.
 func getAllFunctionsCached(prog *ssa.Program) map[*ssa.Function]bool {
-	allFunctionsMutex.RLock()
-	if cached, exists := allFunctionsCache[prog]; exists {
-		allFunctionsMutex.RUnlock()
-		return cached
-	}
-	allFunctionsMutex.RUnlock()
+    // Fast-path: try to load existing entry
+    if v, ok := allFunctionsCache.Load(prog); ok {
+        e := v.(*allFunctionsEntry)
+        e.once.Do(func() { /* already initialized or will be */ })
+        return e.value
+    }
 
-	// Cache miss - compute and store
-	allFunctionsMutex.Lock()
-	defer allFunctionsMutex.Unlock()
+    // Create an entry placeholder; LoadOrStore to avoid races
+    e := &allFunctionsEntry{}
+    actual, _ := allFunctionsCache.LoadOrStore(prog, e)
+    entry := actual.(*allFunctionsEntry)
+    entry.once.Do(func() {
+        entry.value = ssautil.AllFunctions(prog)
+    })
+    return entry.value
+}
 
-	// Double-check after acquiring write lock
-	if cached, exists := allFunctionsCache[prog]; exists {
-		return cached
-	}
+// getOrCreateSyntheticMethod returns a stable synthetic method function for a
+// given key, creating it exactly once per key.
+func getOrCreateSyntheticMethod(prog *ssa.Program, key, methodName string, sig *types.Signature) *ssa.Function {
+    if v, ok := syntheticMethodCache.Load(key); ok {
+        e := v.(*syntheticMethodEntry)
+        e.once.Do(func() { /* already initialized or will be */ })
+        return e.fn
+    }
 
-	result := ssautil.AllFunctions(prog)
-	allFunctionsCache[prog] = result
-	return result
+    e := &syntheticMethodEntry{}
+    actual, _ := syntheticMethodCache.LoadOrStore(key, e)
+    entry := actual.(*syntheticMethodEntry)
+    entry.once.Do(func() {
+        entry.fn = prog.NewFunction(methodName, sig, "synthetic")
+    })
+    return entry.fn
 }
 
 // GraphString returns a string representation of the call graph,
@@ -408,28 +437,20 @@ func checkBlockInstructionOptimized(root *ssa.Function, allFns map[*ssa.Function
 				instrCall = calltFn
 			}
 
-		case *ssa.Parameter:
-			// Method calls via interface - more complex case
-			if !cc.IsInvoke() || cc.Method == nil {
-				return nil
-			}
+    case *ssa.Parameter:
+        // Method calls via interface - more complex case
+        if !cc.IsInvoke() || cc.Method == nil {
+            return nil
+        }
 
-			methodPkg := cc.Method.Pkg()
-			if methodPkg == nil {
-				// Universe scope method like error.Error - skip early
-				return nil
-			}
-
-			pkg := root.Prog.ImportedPackage(methodPkg.Path())
-			if pkg == nil {
-				return nil
-			}
-
-			fn := pkg.Func(cc.Method.Name())
-			if fn == nil {
-				fn = pkg.Prog.NewFunction(cc.Method.Name(), cc.Signature(), "callgraph")
-			}
-			instrCall = fn
+        // Create or reuse a synthetic function for the invoked method to avoid duplicates
+        recv := cc.Signature().Recv()
+        if recv == nil {
+            return nil
+        }
+        recvStr := types.TypeString(recv.Type(), nil)
+        key := fmt.Sprintf("(%s).%s", recvStr, cc.Method.Name())
+        instrCall = getOrCreateSyntheticMethod(root.Prog, key, cc.Method.Name(), cc.Signature())
 
 		case *ssa.UnOp:
 			// Dereference operations - less common
@@ -523,28 +544,18 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 			}
 		}
 
-	case *ssa.Parameter:
-		// Handle method calls with early exits for performance
-		if !cc.IsInvoke() || cc.Method == nil {
-			return nil
-		}
-
-		methodPkg := cc.Method.Pkg()
-		if methodPkg == nil {
-			// Universe scope method like error.Error - skip
-			return nil
-		}
-
-		pkg := root.Prog.ImportedPackage(methodPkg.Path())
-		if pkg == nil {
-			return nil
-		}
-
-		fn := pkg.Func(cc.Method.Name())
-		if fn == nil {
-			fn = pkg.Prog.NewFunction(cc.Method.Name(), cc.Signature(), "callgraph")
-		}
-		instrCall = fn
+    case *ssa.Parameter:
+        // Handle method calls with early exits for performance
+        if !cc.IsInvoke() || cc.Method == nil {
+            return nil
+        }
+        recv := cc.Signature().Recv()
+        if recv == nil {
+            return nil
+        }
+        recvStr := types.TypeString(recv.Type(), nil)
+        key := fmt.Sprintf("(%s).%s", recvStr, cc.Method.Name())
+        instrCall = getOrCreateSyntheticMethod(root.Prog, key, cc.Method.Name(), cc.Signature())
 	}
 
 	// Early exit if no function was determined

@@ -934,55 +934,92 @@ var builtinCommandPkgs = &command{
 }
 
 var builtinCommandCG = &command{
-	name: "cg",
-	desc: "print the callgraph",
-	fn: func(ctx context.Context, bt *bufio.Writer, args []string, flags map[string]string) error {
-		if cg == nil {
-			bt.WriteString("no callgraph is loaded\n")
-			bt.Flush()
-			return nil
-		}
+    name: "cg",
+    desc: "print the callgraph",
+    fn: func(ctx context.Context, bt *bufio.Writer, args []string, flags map[string]string) error {
+        if cg == nil {
+            bt.WriteString("no callgraph is loaded\n")
+            bt.Flush()
+            return nil
+        }
 
-		type nodeLine struct {
-			id   string
-			text string
-			outs []string
-		}
-		lines := make([]nodeLine, 0, len(cg.Nodes))
-		for _, node := range cg.Nodes {
-			if node == nil || node.Func == nil {
-				continue
-			}
-			id := strings.SplitN(node.String(), ":", 2)[0]
-			base := highlightNode(node.String())
-			var outs []string
-			for _, e := range node.Out {
-				outs = append(outs, highlightNode(e.Callee.String()))
-			}
-			lines = append(lines, nodeLine{id: id, text: base, outs: outs})
-		}
-		sort.Slice(lines, func(i, j int) bool {
-			ai, _ := strconv.Atoi(strings.TrimPrefix(lines[i].id, "n"))
-			aj, _ := strconv.Atoi(strings.TrimPrefix(lines[j].id, "n"))
-			return ai < aj
-		})
+        // Aggregate nodes by function identity string to avoid duplicate blocks in output.
+        type aggNode struct {
+            display string
+            count   int
+            outs    map[string]int
+        }
+        nodes := make(map[string]*aggNode)
+        for _, n := range cg.Nodes {
+            if n == nil || n.Func == nil {
+                continue
+            }
+            key := n.Func.String()
+            an, ok := nodes[key]
+            if !ok {
+                an = &aggNode{display: n.String(), count: 0, outs: make(map[string]int)}
+                nodes[key] = an
+            }
+            an.count++
+            for _, e := range n.Out {
+                if e == nil || e.Callee == nil || e.Callee.Func == nil {
+                    continue
+                }
+                ckey := e.Callee.Func.String()
+                an.outs[ckey]++
+            }
+        }
 
-		arrow := styleArrow.Render(" → ")
-		for idx, ln := range lines {
-			bt.WriteString(ln.text + "\n")
-			for _, o := range ln.outs {
-				bt.WriteString("  " + arrow + o + "\n")
-			}
-			// Always put a blank line after each node block for consistent spacing.
-			bt.WriteString("\n")
-			// Optional: extra separation after root (first) block.
-			if idx == 0 && len(lines) > 1 {
-				// keep just single blank already added
-			}
-		}
-		bt.Flush()
-		return nil
-	},
+        // Turn into a sorted list by display id
+        type nodeLine struct {
+            id   int
+            text string
+            outs [][2]string // [calleeDisplay, countStr]
+        }
+        lines := make([]nodeLine, 0, len(nodes))
+        for _, an := range nodes {
+            // extract numeric id prefix from display (e.g., n123:...)
+            idStr := strings.SplitN(an.display, ":", 2)[0]
+            idNum, _ := strconv.Atoi(strings.TrimPrefix(idStr, "n"))
+            // build outs list
+            var outs [][2]string
+            for callee, cnt := range an.outs {
+                // find any node for callee to get a similar display string
+                // fallback to callee Func.String()
+                disp := callee
+                // highlight
+                disp = highlightNode(disp)
+                cntStr := ""
+                if cnt > 1 {
+                    cntStr = " " + styleFaint.Render(fmt.Sprintf("(×%d)", cnt))
+                }
+                outs = append(outs, [2]string{disp, cntStr})
+            }
+            sort.Slice(outs, func(i, j int) bool { return outs[i][0] < outs[j][0] })
+            // append count to node display if >1
+            text := highlightNode(an.display)
+            if an.count > 1 {
+                text += " " + styleFaint.Render(fmt.Sprintf("(×%d)", an.count))
+            }
+            lines = append(lines, nodeLine{id: idNum, text: text, outs: outs})
+        }
+
+        sort.Slice(lines, func(i, j int) bool { return lines[i].id < lines[j].id })
+
+        arrow := styleArrow.Render(" → ")
+        for idx, ln := range lines {
+            bt.WriteString(ln.text + "\n")
+            for _, o := range ln.outs {
+                bt.WriteString("  " + arrow + o[0] + o[1] + "\n")
+            }
+            bt.WriteString("\n")
+            if idx == 0 && len(lines) > 1 {
+                // keep just single blank already added
+            }
+        }
+        bt.Flush()
+        return nil
+    },
 }
 
 var builtinCommandRoot = &command{
@@ -1011,13 +1048,24 @@ var builtinCommandNodes = &command{
 			return nil
 		}
 
-		var nodesStr strings.Builder
+        // Deduplicate by function identity to avoid overwhelming output
+        type nodeEntry struct{ text string; count int }
+        dedup := make(map[string]*nodeEntry)
+        for _, node := range cg.Nodes {
+            if node == nil || node.Func == nil { continue }
+            key := node.Func.String()
+            if e, ok := dedup[key]; ok { e.count++; continue }
+            dedup[key] = &nodeEntry{text: node.String(), count: 1}
+        }
 
-		nodesStrs := make([]string, 0, len(cg.Nodes))
-
-		for _, node := range cg.Nodes {
-			nodesStrs = append(nodesStrs, node.String())
-		}
+        nodesStrs := make([]string, 0, len(dedup))
+        for _, e := range dedup {
+            if e.count > 1 {
+                nodesStrs = append(nodesStrs, e.text+" "+styleFaint.Render(fmt.Sprintf("(×%d)", e.count)))
+            } else {
+                nodesStrs = append(nodesStrs, e.text)
+            }
+        }
 
 		sort.SliceStable(nodesStrs, func(i, j int) bool {
 			// Parse node ID to int.
@@ -1043,11 +1091,9 @@ var builtinCommandNodes = &command{
 			return iN < jN
 		})
 
-		for _, nodeStr := range nodesStrs {
-			nodesStr.WriteString(highlightNode(nodeStr) + "\n")
-		}
-
-		bt.WriteString(nodesStr.String())
+        for _, nodeStr := range nodesStrs {
+            bt.WriteString(highlightNode(nodeStr) + "\n")
+        }
 		bt.Flush()
 		return nil
 	},
@@ -1112,8 +1158,46 @@ var builtinCommandsCallpath = &command{
 		}
 
 		bt.WriteString("✓ " + styleSuccess.Render(fmt.Sprintf("found %d path(s)", len(paths))) + styleSubtle.Render(" using ") + styleInfo.Render(strategy.String()) + styleSubtle.Render(" matching for: ") + styleArgument.Render(pattern) + "\n")
-		for i, path := range paths {
-			pathStr := path.String()
+        for i, path := range paths {
+            // Build a collapsed, human-friendly path string that removes trivial method-wrapper hops
+            // such as (*T).M → (T).M where only receiver pointer-ness differs.
+            var partsRaw []string
+            if len(path) > 0 {
+                // start with caller of first edge
+                if path[0] != nil && path[0].Caller != nil && path[0].Caller.Func != nil {
+                    partsRaw = append(partsRaw, path[0].Caller.Func.String())
+                }
+                for _, e := range path {
+                    if e != nil && e.Callee != nil && e.Callee.Func != nil {
+                        partsRaw = append(partsRaw, e.Callee.Func.String())
+                    }
+                }
+            }
+
+            // collapse adjacent method identities that differ only by receiver pointer-ness
+            var partsCollapsed []string
+            prevNorm := ""
+            for _, p := range partsRaw {
+                norm := p
+                // Normalize method identity: (pkg.Type).M and (*pkg.Type).M → (pkg.Type).M
+                if strings.HasPrefix(norm, "(") {
+                    // find ")" then a dot for method.
+                    if idx := strings.Index(norm, ")"); idx > 1 {
+                        recv := norm[1:idx] // inside parens
+                        if strings.HasPrefix(recv, "*") {
+                            recv = recv[1:]
+                        }
+                        norm = "(" + recv + ")" + norm[idx+1:]
+                    }
+                }
+                if norm == prevNorm {
+                    continue
+                }
+                partsCollapsed = append(partsCollapsed, p) // keep original display text
+                prevNorm = norm
+            }
+
+            pathStr := strings.Join(partsCollapsed, " → ")
 
 			if pathStr == "" { // direct match (node itself), not necessarily root
 				matchedName := pattern
@@ -1146,7 +1230,7 @@ var builtinCommandsCallpath = &command{
 				continue
 			}
 
-			parts := strings.Split(pathStr, " → ")
+            parts := strings.Split(pathStr, " → ")
 			for j, part := range parts {
 				parts[j] = highlightNode(part)
 			}
@@ -1190,31 +1274,59 @@ var builtinCommandCheck = &command{
 
 		results := taint.Check(cg, taint.NewSources(source), taint.NewSinks(sink))
 
-		var resultsStr strings.Builder
+        var out []string
+        seen := make(map[string]struct{})
 
-		for _, result := range results {
-			resultPathStr := result.Path.String()
+        for _, result := range results {
+            // Build display parts (with node ids) and normalization identities (function strings)
+            var dispParts []string
+            var normParts []string
+            if len(result.Path) > 0 {
+                if result.Path[0] != nil && result.Path[0].Caller != nil && result.Path[0].Caller.Func != nil {
+                    dispParts = append(dispParts, result.Path[0].Caller.String())
+                    normParts = append(normParts, result.Path[0].Caller.Func.String())
+                }
+                for _, e := range result.Path {
+                    if e != nil && e.Callee != nil && e.Callee.Func != nil {
+                        dispParts = append(dispParts, e.Callee.String())
+                        normParts = append(normParts, e.Callee.Func.String())
+                    }
+                }
+            }
+            // Collapse adjacent pointer/value receiver wrapper hops using normParts
+            var dispCollapsed []string
+            prevNorm := ""
+            for i := range dispParts {
+                norm := normParts[i]
+                if strings.HasPrefix(norm, "(") {
+                    if rp := strings.Index(norm, ")"); rp > 1 {
+                        recv := norm[1:rp]
+                        if strings.HasPrefix(recv, "*") { recv = recv[1:] }
+                        norm = "(" + recv + ")" + norm[rp+1:]
+                    }
+                }
+                if norm == prevNorm { continue }
+                dispCollapsed = append(dispCollapsed, highlightNode(dispParts[i]))
+                prevNorm = norm
+            }
+            pathStr := strings.Join(dispCollapsed, styleFaint.Render(" → "))
+            if _, ok := seen[pathStr]; ok { continue }
+            seen[pathStr] = struct{}{}
+            out = append(out, pathStr)
+        }
 
-			parts := strings.Split(resultPathStr, " → ")
+        if len(out) == 0 {
+            bt.WriteString("✗ no taint flows found\n")
+            bt.Flush()
+            return nil
+        }
 
-			for i, part := range parts {
-				parts[i] = highlightNode(part)
-			}
-
-			resultPathStr = strings.Join(parts, styleFaint.Render(" → "))
-
-			resultsStr.WriteString(resultPathStr + "\n")
-		}
-
-		if resultsStr.Len() == 0 {
-			bt.WriteString("✗ no taint flows found\n")
-			bt.Flush()
-			return nil
-		}
-
-		bt.WriteString(resultsStr.String())
-		bt.Flush()
-		return nil
+        bt.WriteString("✓ " + styleSuccess.Render(fmt.Sprintf("found %d path(s)", len(out))) + "\n")
+        for i, s := range out {
+            bt.WriteString(styleNumber.Render(fmt.Sprintf("%d", i+1)) + ": " + s + "\n")
+        }
+        bt.Flush()
+        return nil
 	},
 }
 
