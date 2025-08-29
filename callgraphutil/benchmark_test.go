@@ -47,7 +47,7 @@ func loadPackages(ctx context.Context, dir, pattern string) ([]*packages.Package
 	return pkgs, nil
 }
 
-func loadSSA(ctx context.Context, pkgs []*packages.Package) (mainFn *ssa.Function, srcFns []*ssa.Function, err error) {
+func loadSSA(_ context.Context, pkgs []*packages.Package) (mainFn *ssa.Function, srcFns []*ssa.Function, err error) {
 	ssaBuildMode := ssa.InstantiateGenerics
 
 	ssaProg, ssaPkgs := ssautil.Packages(pkgs, ssaBuildMode)

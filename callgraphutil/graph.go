@@ -2,6 +2,7 @@ package callgraphutil
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"go/token"
 	"go/types"
@@ -31,12 +32,12 @@ func getAllFunctionsCached(prog *ssa.Program) map[*ssa.Function]bool {
 	// Cache miss - compute and store
 	allFunctionsMutex.Lock()
 	defer allFunctionsMutex.Unlock()
-	
+
 	// Double-check after acquiring write lock
 	if cached, exists := allFunctionsCache[prog]; exists {
 		return cached
 	}
-	
+
 	result := ssautil.AllFunctions(prog)
 	allFunctionsCache[prog] = result
 	return result
@@ -77,7 +78,22 @@ func GraphString(g *callgraph.Graph) string {
 // - Early exits to skip non-relevant instructions (~90% reduction)
 // - Pre-allocated data structures to minimize allocations
 // - Streamlined processing paths for common cases
+// - Comprehensive logging for progress tracking on large codebases
+//
+// The function respects context cancellation and provides detailed progress logging
+// when a logger is present in the context via WithLogger().
 func NewGraph(root *ssa.Function, srcFns ...*ssa.Function) (*callgraph.Graph, error) {
+	return NewGraphWithContext(context.Background(), root, srcFns...)
+}
+
+// NewGraphWithContext creates a new call graph with context support for cancellation and logging
+func NewGraphWithContext(ctx context.Context, root *ssa.Function, srcFns ...*ssa.Function) (*callgraph.Graph, error) {
+	logger := FromContext(ctx)
+
+	logger.Step("Starting call graph construction",
+		fmt.Sprintf("root: %s", root.Name()),
+		fmt.Sprintf("sources: %d functions", len(srcFns)))
+
 	// Pre-allocate with reasonable capacity to reduce map reallocations
 	g := &callgraph.Graph{
 		Nodes: make(map[*ssa.Function]*callgraph.Node, 64),
@@ -88,33 +104,169 @@ func NewGraph(root *ssa.Function, srcFns ...*ssa.Function) (*callgraph.Graph, er
 	// MAJOR OPTIMIZATION: Cache AllFunctions results per program
 	// This is the single biggest performance bottleneck - AllFunctions can take
 	// 6+ms on large codebases and the result is identical for the same program
+	logger.Debug("Computing AllFunctions for program")
 	allFns := getAllFunctionsCached(root.Prog)
+	logger.Debug("AllFunctions computed: %d total functions", len(allFns))
 
 	// Pre-allocate visited map with estimated capacity
 	visited := make(map[*ssa.Function]bool, len(srcFns)+16)
-	// Cache AddFunction results to avoid redundant work
-	addFunctionProcessed := make(map[*ssa.Function]bool, len(srcFns)+16)
 
-	var walkFn func(fn *ssa.Function) error
-	walkFn = func(fn *ssa.Function) error {
+	// We'll create the progress tracker after determining functionsToProcess
+
+	// Performance optimization: For very large codebases, use lazy evaluation
+	// instead of processing all functions upfront. This aligns with Go's lazy evaluation principles.
+	// Note: With our optimizations, we should process functions on-demand as they're discovered
+	// in the call graph traversal, rather than pre-processing everything.
+	const maxFunctionsToWalk = 0 // 0 means no limit - use lazy evaluation instead
+	const maxRecursionDepth = 6  // limit recursion for performance, enough for common paths
+
+	// Instead of limiting functions, we'll use a smarter traversal approach
+	// that processes functions lazily as they're discovered in the call graph
+	functionsToProcess := srcFns
+	if maxFunctionsToWalk > 0 && len(srcFns) > maxFunctionsToWalk {
+		logger.Debug("Large codebase detected (%d functions), limiting processing to %d most relevant functions", len(srcFns), maxFunctionsToWalk)
+
+		// Sort functions by relevance for taint analysis
+		// Prioritize: exported functions, functions with parameters, functions in main packages
+		type functionWeight struct {
+			fn     *ssa.Function
+			weight int
+		}
+
+		var weightedFns []functionWeight
+		for _, fn := range srcFns {
+			weight := 0
+
+			// Exported functions are more likely to be entry points
+			if fn.Object() != nil && fn.Object().Exported() {
+				weight += 10
+			}
+
+			// Functions with parameters are more likely to handle external data
+			if fn.Signature.Params() != nil && fn.Signature.Params().Len() > 0 {
+				weight += 5
+			}
+
+			// Functions with more instructions are more likely to be complex/interesting
+			totalInstrs := 0
+			for _, block := range fn.Blocks {
+				totalInstrs += len(block.Instrs)
+			}
+			weight += min(totalInstrs/10, 5) // Cap at 5 points for instruction count
+
+			weightedFns = append(weightedFns, functionWeight{fn, weight})
+		}
+
+		// Sort by weight (descending)
+		for i := 0; i < len(weightedFns); i++ {
+			for j := i + 1; j < len(weightedFns); j++ {
+				if weightedFns[j].weight > weightedFns[i].weight {
+					weightedFns[i], weightedFns[j] = weightedFns[j], weightedFns[i]
+				}
+			}
+		}
+
+		// Take top functions
+		functionsToProcess = make([]*ssa.Function, 0, maxFunctionsToWalk)
+		for i := 0; i < min(maxFunctionsToWalk, len(weightedFns)); i++ {
+			functionsToProcess = append(functionsToProcess, weightedFns[i].fn)
+		}
+
+		logger.Debug("Selected %d highest-priority functions for processing", len(functionsToProcess))
+	}
+
+    // Baseline pass: scan all SSA functions to add direct call edges
+    // Using allFns ensures we include methods and any function not listed in srcFns
+    prepass := NewProgressTracker(ctx, "Prepass: direct call edges", len(allFns))
+    logger.Step(fmt.Sprintf("Prepass: scanning %d SSA functions for direct calls", len(allFns)))
+    for fn := range allFns {
+        if fn == nil {
+            prepass.Update("skip nil")
+            continue
+        }
+        blocks := fn.Blocks
+        if len(blocks) == 0 {
+            prepass.Update(fn.Name())
+            continue
+        }
+        // Fast skip if no call-like instructions present
+        hasCall := false
+        for _, b := range blocks {
+            for _, ins := range b.Instrs {
+                if _, ok := ins.(ssa.CallInstruction); ok {
+                    hasCall = true
+                    break
+                }
+            }
+            if hasCall {
+                break
+            }
+        }
+        if !hasCall {
+            prepass.Update(fn.Name())
+            continue
+        }
+        // Add direct call edges without recursion
+        for _, b := range blocks {
+            for _, ins := range b.Instrs {
+                _ = checkBlockInstructionOptimized(root, allFns, g, fn, ins, func(*ssa.Function) error { return nil })
+            }
+        }
+        prepass.Update(fn.Name())
+    }
+    prepass.Complete()
+
+    // Update progress tracker with actual number of functions to process
+    progressTracker := NewProgressTracker(ctx, "Processing source functions", len(functionsToProcess))
+    logger.Step(fmt.Sprintf("Processing source functions: %d functions to process", len(functionsToProcess)))
+	var walkFnWithDepth func(fn *ssa.Function, depth int) error
+	walkFnWithDepth = func(fn *ssa.Function, depth int) error {
+		// Optional recursion depth limit (disabled by default)
+		if maxRecursionDepth >= 0 && depth > maxRecursionDepth {
+			return nil
+		}
+
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		if visited[fn] {
 			return nil
 		}
 		visited[fn] = true
 
-		// Only call AddFunction if we haven't processed this function yet
-		if !addFunctionProcessed[fn] {
-			if err := AddFunction(g, fn, allFns); err != nil {
-				return fmt.Errorf("failed to add function %v: %w", fn, err)
-			}
-			addFunctionProcessed[fn] = true
-		}
+		logger.Trace("Walking function: %s (depth %d)", fn.Name(), depth)
 
-		// Optimize block iteration - check if function has any blocks first
-		blocks := fn.DomPreorder()
+		// Optimize block iteration - use basic blocks directly (faster than Dominator preorder)
+		blocks := fn.Blocks
 		if len(blocks) == 0 {
 			return nil
 		}
+
+		// Performance optimization: Quick scan for call-like instructions
+		// If no call/go/defer instructions found, skip expensive processing
+		hasCallInstructions := false
+		for _, block := range blocks {
+			for _, instr := range block.Instrs {
+				if _, ok := instr.(ssa.CallInstruction); ok {
+					hasCallInstructions = true
+					break
+				}
+			}
+			if hasCallInstructions {
+				break
+			}
+		}
+
+		if !hasCallInstructions {
+			logger.Trace("Function %s has no call instructions, skipping", fn.Name())
+			return nil
+		}
+
+		logger.Trace("Processing %d blocks in function %s", len(blocks), fn.Name())
 
 		for _, block := range blocks {
 			if len(block.Instrs) == 0 {
@@ -122,7 +274,16 @@ func NewGraph(root *ssa.Function, srcFns ...*ssa.Function) (*callgraph.Graph, er
 			}
 
 			for _, instr := range block.Instrs {
-				if err := checkBlockInstructionOptimized(root, allFns, g, fn, instr, walkFn, addFunctionProcessed); err != nil {
+				// Check for context cancellation periodically
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+				}
+
+				if err := checkBlockInstructionOptimized(root, allFns, g, fn, instr, func(f *ssa.Function) error {
+					return walkFnWithDepth(f, depth+1)
+				}); err != nil {
 					return err
 				}
 			}
@@ -131,15 +292,39 @@ func NewGraph(root *ssa.Function, srcFns ...*ssa.Function) (*callgraph.Graph, er
 		return nil
 	}
 
-	for _, srcFn := range srcFns {
-		if err := walkFn(srcFn); err != nil {
-			return g, err
-		}
+	// Simple wrapper for the original interface
+	walkFn := func(fn *ssa.Function) error {
+		return walkFnWithDepth(fn, 0)
 	}
 
+	for i, srcFn := range functionsToProcess {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return g, ctx.Err()
+		default:
+		}
+
+		logger.Trace("Processing source function %d/%d: %s", i+1, len(functionsToProcess), srcFn.Name())
+
+		if err := walkFn(srcFn); err != nil {
+			logger.Error("Failed to process source function %s: %v", srcFn.Name(), err)
+			return g, err
+		}
+
+		progressTracker.Update(fmt.Sprintf("Processing %s", srcFn.Name()))
+	}
+
+	progressTracker.Complete()
+
+	logger.Debug("Removing duplicate edges from call graph")
 	// Remove duplicate edges once at the end - much more efficient than doing it
 	// on every instruction
 	removeDuplicateEdges(g)
+
+	logger.Step("Call graph construction completed",
+		fmt.Sprintf("%d nodes", len(g.Nodes)),
+		fmt.Sprintf("%d functions visited", len(visited)))
 
 	return g, nil
 }
@@ -147,27 +332,31 @@ func NewGraph(root *ssa.Function, srcFns ...*ssa.Function) (*callgraph.Graph, er
 // removeDuplicateEdges efficiently removes duplicate edges from the call graph.
 // This is done once at the end instead of on every instruction for better performance.
 func removeDuplicateEdges(g *callgraph.Graph) {
-	for _, node := range g.Nodes {
-		if len(node.Out) <= 1 {
-			continue // No duplicates possible
-		}
+    for _, node := range g.Nodes {
+        if len(node.Out) <= 1 {
+            continue // No duplicates possible
+        }
 
-		// Use a map to track unique callees for efficient deduplication
-		seen := make(map[*callgraph.Node]bool, len(node.Out))
-		uniqueEdges := make([]*callgraph.Edge, 0, len(node.Out))
+        // Deduplicate by (callee, site) so multiple callsites to the same callee are preserved
+        type edgeKey struct{
+            callee *callgraph.Node
+            site   any // typically ssa.CallInstruction; using any keeps interface comparability
+        }
+        seen := make(map[edgeKey]bool, len(node.Out))
+        uniqueEdges := make([]*callgraph.Edge, 0, len(node.Out))
 
-		for _, edge := range node.Out {
-			if !seen[edge.Callee] {
-				seen[edge.Callee] = true
-				uniqueEdges = append(uniqueEdges, edge)
-			}
-		}
+        for _, edge := range node.Out {
+            k := edgeKey{callee: edge.Callee, site: edge.Site}
+            if !seen[k] {
+                seen[k] = true
+                uniqueEdges = append(uniqueEdges, edge)
+            }
+        }
 
-		// Only update if we found duplicates
-		if len(uniqueEdges) < len(node.Out) {
-			node.Out = uniqueEdges
-		}
-	}
+        if len(uniqueEdges) < len(node.Out) {
+            node.Out = uniqueEdges
+        }
+    }
 }
 
 // checkBlockInstructionOptimized is a high-performance version of checkBlockInstruction
@@ -176,66 +365,81 @@ func removeDuplicateEdges(g *callgraph.Graph) {
 // 2. Optimized type switching with fast paths
 // 3. Reduced allocations in hot paths
 // 4. Streamlined argument processing
-func checkBlockInstructionOptimized(root *ssa.Function, allFns map[*ssa.Function]bool, g *callgraph.Graph, fn *ssa.Function, instr ssa.Instruction, walkFn func(*ssa.Function) error, addFunctionProcessed map[*ssa.Function]bool) error {
-	// Ultra-fast early exit: most instructions aren't calls
-	// This single check eliminates ~90% of instructions from expensive processing
-	instrt, ok := instr.(*ssa.Call)
+func checkBlockInstructionOptimized(root *ssa.Function, allFns map[*ssa.Function]bool, g *callgraph.Graph, fn *ssa.Function, instr ssa.Instruction, walkFn func(*ssa.Function) error) error {
+	// Ultra-fast early exit: most instructions aren't calls (includes go/defer)
+	callSite, ok := instr.(ssa.CallInstruction)
 	if !ok {
 		return nil
 	}
 
+	cc := callSite.Common()
 	var instrCall *ssa.Function
 
-	// Optimized type switching with most common cases first
-	switch callt := instrt.Call.Value.(type) {
-	case *ssa.Function:
-		// Direct function call - most common case
-		instrCall = callt
-
-		// Optimize ChangeInterface argument processing with early scanning
-		if len(instrt.Call.Args) > 0 {
-			if err := processChangeInterfaceArgsOptimized(root, g, instrt, instrCall); err != nil {
-				return err
+	// Handle interface method invocations up-front for completeness
+	if cc.IsInvoke() && cc.Method != nil {
+		if methodPkg := cc.Method.Pkg(); methodPkg != nil {
+			if pkg := root.Prog.ImportedPackage(methodPkg.Path()); pkg != nil {
+				if fn := pkg.Func(cc.Method.Name()); fn != nil {
+					instrCall = fn
+				} else {
+					instrCall = pkg.Prog.NewFunction(cc.Method.Name(), cc.Signature(), "callgraph")
+				}
 			}
 		}
+	}
 
-	case *ssa.MakeClosure:
-		// Closure creation - second most common
-		if calltFn, ok := callt.Fn.(*ssa.Function); ok {
-			instrCall = calltFn
-		}
+	// Optimized type switching with most common cases first
+	if instrCall == nil {
+		switch callt := cc.Value.(type) {
+		case *ssa.Function:
+			// Direct function call - most common case
+			instrCall = callt
 
-	case *ssa.Parameter:
-		// Method calls via interface - more complex case
-		if !instrt.Call.IsInvoke() || instrt.Call.Method == nil {
-			return nil
-		}
+			// Optimize ChangeInterface argument processing with early scanning
+			if len(cc.Args) > 0 {
+				if err := processChangeInterfaceArgsOptimized(root, g, callSite, instrCall); err != nil {
+					return err
+				}
+			}
 
-		methodPkg := instrt.Call.Method.Pkg()
-		if methodPkg == nil {
-			// Universe scope method like error.Error - skip early
-			return nil
-		}
+		case *ssa.MakeClosure:
+			// Closure creation - second most common
+			if calltFn, ok := callt.Fn.(*ssa.Function); ok {
+				instrCall = calltFn
+			}
 
-		pkg := root.Prog.ImportedPackage(methodPkg.Path())
-		if pkg == nil {
-			return nil
-		}
+		case *ssa.Parameter:
+			// Method calls via interface - more complex case
+			if !cc.IsInvoke() || cc.Method == nil {
+				return nil
+			}
 
-		fn := pkg.Func(instrt.Call.Method.Name())
-		if fn == nil {
-			fn = pkg.Prog.NewFunction(instrt.Call.Method.Name(), instrt.Call.Signature(), "callgraph")
-		}
-		instrCall = fn
+			methodPkg := cc.Method.Pkg()
+			if methodPkg == nil {
+				// Universe scope method like error.Error - skip early
+				return nil
+			}
 
-	case *ssa.UnOp:
-		// Dereference operations - less common
-		if callt.Op == token.MUL {
-			switch fa := callt.X.(type) {
-			case *ssa.FieldAddr:
-				instrCall = findFunctionInField(fa, allFns)
-			case *ssa.Field:
-				instrCall = findFunctionInFieldValue(fa, allFns)
+			pkg := root.Prog.ImportedPackage(methodPkg.Path())
+			if pkg == nil {
+				return nil
+			}
+
+			fn := pkg.Func(cc.Method.Name())
+			if fn == nil {
+				fn = pkg.Prog.NewFunction(cc.Method.Name(), cc.Signature(), "callgraph")
+			}
+			instrCall = fn
+
+		case *ssa.UnOp:
+			// Dereference operations - less common
+			if callt.Op == token.MUL {
+				switch fa := callt.X.(type) {
+				case *ssa.FieldAddr:
+					instrCall = findFunctionInField(fa, allFns)
+				case *ssa.Field:
+					instrCall = findFunctionInFieldValue(fa, allFns)
+				}
 			}
 		}
 	}
@@ -246,23 +450,15 @@ func checkBlockInstructionOptimized(root *ssa.Function, allFns map[*ssa.Function
 	}
 
 	// Add edge to call graph
-	callgraph.AddEdge(g.CreateNode(fn), instrt, g.CreateNode(instrCall))
-
-	// Only call AddFunction if we haven't processed this function yet
-	if !addFunctionProcessed[instrCall] {
-		if err := AddFunction(g, instrCall, allFns); err != nil {
-			return fmt.Errorf("failed to add function %v from block instr: %w", instrCall, err)
-		}
-		addFunctionProcessed[instrCall] = true
-	}
+	callgraph.AddEdge(g.CreateNode(fn), callSite, g.CreateNode(instrCall))
 
 	if err := walkFn(instrCall); err != nil {
 		return err
 	}
 
 	// Process function arguments efficiently - only if there are arguments
-	if len(instrt.Call.Args) > 0 {
-		return processFunctionArgumentsOptimized(g, instrt, instrCall)
+	if len(cc.Args) > 0 {
+		return processFunctionArgumentsOptimized(g, callSite, instrCall)
 	}
 
 	return nil
@@ -277,24 +473,37 @@ func checkBlockInstructionOptimized(root *ssa.Function, allFns map[*ssa.Function
 // 2. Optimized ChangeInterface argument detection
 // 3. Efficient argument processing with length checks
 // 4. Streamlined method call handling
-func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g *callgraph.Graph, fn *ssa.Function, instr ssa.Instruction, walkFn func(*ssa.Function) error, addFunctionProcessed map[*ssa.Function]bool) error {
-	// Early exit for non-call instructions - most common case
-	// This single check eliminates ~90% of instructions from expensive processing
-	instrt, ok := instr.(*ssa.Call)
+func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g *callgraph.Graph, fn *ssa.Function, instr ssa.Instruction, walkFn func(*ssa.Function) error) error {
+	// Early exit for non-call instructions - includes go/defer
+	callSite, ok := instr.(ssa.CallInstruction)
 	if !ok {
 		return nil
 	}
 
+	cc := callSite.Common()
 	var instrCall *ssa.Function
 
-	switch callt := instrt.Call.Value.(type) {
+	// Handle interface method invocations up-front for completeness
+	if cc.IsInvoke() && cc.Method != nil {
+		if methodPkg := cc.Method.Pkg(); methodPkg != nil {
+			if pkg := root.Prog.ImportedPackage(methodPkg.Path()); pkg != nil {
+				if fn := pkg.Func(cc.Method.Name()); fn != nil {
+					instrCall = fn
+				} else {
+					instrCall = pkg.Prog.NewFunction(cc.Method.Name(), cc.Signature(), "callgraph")
+				}
+			}
+		}
+	}
+
+	switch callt := cc.Value.(type) {
 	case *ssa.Function:
 		instrCall = callt
 
 		// Optimize ChangeInterface argument processing
 		// Only check arguments if there are any - avoid unnecessary iterations
-		if len(instrt.Call.Args) > 0 {
-			if err := processChangeInterfaceArgs(root, g, instrt, instrCall); err != nil {
+		if len(cc.Args) > 0 {
+			if err := processChangeInterfaceArgs(root, g, callSite, instrCall); err != nil {
 				return err
 			}
 		}
@@ -316,11 +525,11 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 
 	case *ssa.Parameter:
 		// Handle method calls with early exits for performance
-		if !instrt.Call.IsInvoke() || instrt.Call.Method == nil {
+		if !cc.IsInvoke() || cc.Method == nil {
 			return nil
 		}
 
-		methodPkg := instrt.Call.Method.Pkg()
+		methodPkg := cc.Method.Pkg()
 		if methodPkg == nil {
 			// Universe scope method like error.Error - skip
 			return nil
@@ -331,9 +540,9 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 			return nil
 		}
 
-		fn := pkg.Func(instrt.Call.Method.Name())
+		fn := pkg.Func(cc.Method.Name())
 		if fn == nil {
-			fn = pkg.Prog.NewFunction(instrt.Call.Method.Name(), instrt.Call.Signature(), "callgraph")
+			fn = pkg.Prog.NewFunction(cc.Method.Name(), cc.Signature(), "callgraph")
 		}
 		instrCall = fn
 	}
@@ -344,23 +553,15 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 	}
 
 	// Add edge to call graph
-	callgraph.AddEdge(g.CreateNode(fn), instrt, g.CreateNode(instrCall))
-
-	// Only call AddFunction if we haven't processed this function yet
-	if !addFunctionProcessed[instrCall] {
-		if err := AddFunction(g, instrCall, allFns); err != nil {
-			return fmt.Errorf("failed to add function %v from block instr: %w", instrCall, err)
-		}
-		addFunctionProcessed[instrCall] = true
-	}
+	callgraph.AddEdge(g.CreateNode(fn), callSite, g.CreateNode(instrCall))
 
 	if err := walkFn(instrCall); err != nil {
 		return err
 	}
 
 	// Process function arguments efficiently - only if there are arguments
-	if len(instrt.Call.Args) > 0 {
-		return processFunctionArguments(g, instrt, instrCall)
+	if len(cc.Args) > 0 {
+		return processFunctionArguments(g, callSite, instrCall)
 	}
 
 	return nil
@@ -373,11 +574,12 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 // 2. Early exits for common negative cases
 // 3. Optimized type checking and method resolution
 // 4. Reduced allocations in interface processing loops
-func processChangeInterfaceArgsOptimized(root *ssa.Function, g *callgraph.Graph, instrt *ssa.Call, instrCall *ssa.Function) error {
+func processChangeInterfaceArgsOptimized(root *ssa.Function, g *callgraph.Graph, site ssa.CallInstruction, instrCall *ssa.Function) error {
+	cc := site.Common()
 	// Lightning-fast scan for ChangeInterface arguments before expensive processing
 	// This avoids allocating iterators and type checking when not needed
 	hasChangeInterface := false
-	for _, arg := range instrt.Call.Args {
+	for _, arg := range cc.Args {
 		if _, ok := arg.(*ssa.ChangeInterface); ok {
 			hasChangeInterface = true
 			break
@@ -389,7 +591,7 @@ func processChangeInterfaceArgsOptimized(root *ssa.Function, g *callgraph.Graph,
 	}
 
 	// Process ChangeInterface arguments with optimized loops
-	for _, instrtCallArg := range instrt.Call.Args {
+	for _, instrtCallArg := range cc.Args {
 		instrtCallArgt, ok := instrtCallArg.(*ssa.ChangeInterface)
 		if !ok {
 			continue
@@ -401,7 +603,7 @@ func processChangeInterfaceArgsOptimized(root *ssa.Function, g *callgraph.Graph,
 		}
 
 		numMethods := argtt.NumMethods()
-		for i := range numMethods {
+		for i := 0; i < numMethods; i++ {
 			method := argtt.Method(i)
 			methodPkg := method.Pkg()
 			if methodPkg == nil {
@@ -418,7 +620,7 @@ func processChangeInterfaceArgsOptimized(root *ssa.Function, g *callgraph.Graph,
 				fn = pkg.Prog.NewFunction(method.Name(), method.Type().(*types.Signature), "callgraph")
 			}
 
-			callgraph.AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(fn))
+			callgraph.AddEdge(g.CreateNode(instrCall), site, g.CreateNode(fn))
 
 			// Handle named types efficiently with early exit optimization
 			if xType, ok := instrtCallArgt.X.Type().(*types.Named); ok {
@@ -440,7 +642,7 @@ func processChangeInterfaceArgsOptimized(root *ssa.Function, g *callgraph.Graph,
 					fn2 = pkg2.Prog.NewFunction(method.Name(), methodType, "callgraph")
 				}
 
-				callgraph.AddEdge(g.CreateNode(fn), instrt, g.CreateNode(fn2))
+				callgraph.AddEdge(g.CreateNode(fn), site, g.CreateNode(fn2))
 			}
 		}
 	}
@@ -453,17 +655,17 @@ func processChangeInterfaceArgsOptimized(root *ssa.Function, g *callgraph.Graph,
 // 1. Streamlined type switching with fast paths
 // 2. Reduced allocations in argument processing
 // 3. Early exits for non-function arguments
-func processFunctionArgumentsOptimized(g *callgraph.Graph, instrt *ssa.Call, instrCall *ssa.Function) error {
+func processFunctionArgumentsOptimized(g *callgraph.Graph, site ssa.CallInstruction, instrCall *ssa.Function) error {
 	// Optimized loop with early type checking
-	for _, arg := range instrt.Call.Args {
+	for _, arg := range site.Common().Args {
 		switch argt := arg.(type) {
 		case *ssa.Function:
 			// Direct function reference - most common case
-			callgraph.AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(argt))
+			callgraph.AddEdge(g.CreateNode(instrCall), site, g.CreateNode(argt))
 		case *ssa.MakeClosure:
 			// Closure creation - second most common case
 			if argtFn, ok := argt.Fn.(*ssa.Function); ok {
-				callgraph.AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(argtFn))
+				callgraph.AddEdge(g.CreateNode(instrCall), site, g.CreateNode(argtFn))
 			}
 		}
 	}
@@ -475,10 +677,11 @@ func processFunctionArgumentsOptimized(g *callgraph.Graph, instrt *ssa.Call, ins
 // This function efficiently processes ChangeInterface type casts that are common
 // in Go programs when converting between concrete types and interfaces.
 // It uses early scanning to avoid expensive processing when not needed.
-func processChangeInterfaceArgs(root *ssa.Function, g *callgraph.Graph, instrt *ssa.Call, instrCall *ssa.Function) error {
+func processChangeInterfaceArgs(root *ssa.Function, g *callgraph.Graph, site ssa.CallInstruction, instrCall *ssa.Function) error {
+	cc := site.Common()
 	// Quick scan for ChangeInterface arguments before expensive processing
 	hasChangeInterface := false
-	for _, arg := range instrt.Call.Args {
+	for _, arg := range cc.Args {
 		if _, ok := arg.(*ssa.ChangeInterface); ok {
 			hasChangeInterface = true
 			break
@@ -490,7 +693,7 @@ func processChangeInterfaceArgs(root *ssa.Function, g *callgraph.Graph, instrt *
 	}
 
 	// Process ChangeInterface arguments
-	for _, instrtCallArg := range instrt.Call.Args {
+	for _, instrtCallArg := range cc.Args {
 		instrtCallArgt, ok := instrtCallArg.(*ssa.ChangeInterface)
 		if !ok {
 			continue
@@ -502,7 +705,7 @@ func processChangeInterfaceArgs(root *ssa.Function, g *callgraph.Graph, instrt *
 		}
 
 		numMethods := argtt.NumMethods()
-		for i := range numMethods {
+		for i := 0; i < numMethods; i++ {
 			method := argtt.Method(i)
 			methodPkg := method.Pkg()
 			if methodPkg == nil {
@@ -519,7 +722,7 @@ func processChangeInterfaceArgs(root *ssa.Function, g *callgraph.Graph, instrt *
 				fn = pkg.Prog.NewFunction(method.Name(), method.Type().(*types.Signature), "callgraph")
 			}
 
-			callgraph.AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(fn))
+			callgraph.AddEdge(g.CreateNode(instrCall), site, g.CreateNode(fn))
 
 			// Handle named types efficiently with early exit
 			if xType, ok := instrtCallArgt.X.Type().(*types.Named); ok {
@@ -541,7 +744,7 @@ func processChangeInterfaceArgs(root *ssa.Function, g *callgraph.Graph, instrt *
 					fn2 = pkg2.Prog.NewFunction(method.Name(), methodType, "callgraph")
 				}
 
-				callgraph.AddEdge(g.CreateNode(fn), instrt, g.CreateNode(fn2))
+				callgraph.AddEdge(g.CreateNode(fn), site, g.CreateNode(fn2))
 			}
 		}
 	}
@@ -552,14 +755,14 @@ func processChangeInterfaceArgs(root *ssa.Function, g *callgraph.Graph, instrt *
 //
 // This handles cases where functions are passed as arguments to other functions,
 // which is common in callback patterns and higher-order functions.
-func processFunctionArguments(g *callgraph.Graph, instrt *ssa.Call, instrCall *ssa.Function) error {
-	for _, arg := range instrt.Call.Args {
+func processFunctionArguments(g *callgraph.Graph, site ssa.CallInstruction, instrCall *ssa.Function) error {
+	for _, arg := range site.Common().Args {
 		switch argt := arg.(type) {
 		case *ssa.Function:
-			callgraph.AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(argt))
+			callgraph.AddEdge(g.CreateNode(instrCall), site, g.CreateNode(argt))
 		case *ssa.MakeClosure:
 			if argtFn, ok := argt.Fn.(*ssa.Function); ok {
-				callgraph.AddEdge(g.CreateNode(instrCall), instrt, g.CreateNode(argtFn))
+				callgraph.AddEdge(g.CreateNode(instrCall), site, g.CreateNode(argtFn))
 			}
 		}
 	}

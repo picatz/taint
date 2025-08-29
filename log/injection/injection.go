@@ -1,9 +1,11 @@
 package injection
 
 import (
-	"fmt"
-	"go/types"
-	"strings"
+    "fmt"
+    "go/types"
+    "strings"
+    "flag"
+    "os"
 
 	"github.com/picatz/taint"
 	"github.com/picatz/taint/callgraphutil"
@@ -151,10 +153,27 @@ var supportedLogPackages = []string{
 // Analyzer finds potential log injection issues to demonstrate
 // the github.com/picatz/taint package.
 var Analyzer = &analysis.Analyzer{
-	Name:     "logi",
-	Doc:      "finds potential log injection issues",
-	Run:      run,
-	Requires: []*analysis.Analyzer{buildssa.Analyzer},
+    Name:     "logi",
+    Doc:      "finds potential log injection issues",
+    Run:      run,
+    Requires: []*analysis.Analyzer{buildssa.Analyzer},
+}
+
+var debugLogI bool
+
+func init() {
+    fs := flag.NewFlagSet("logi", flag.ContinueOnError)
+    fs.BoolVar(&debugLogI, "debug", false, "enable debug logging for log injection analyzer")
+    Analyzer.Flags = *fs
+    if os.Getenv("LOGI_DEBUG") != "" {
+        debugLogI = true
+    }
+}
+
+func dbg(format string, args ...interface{}) {
+    if debugLogI {
+        fmt.Fprintf(os.Stderr, "[logi-debug] "+format+"\n", args...)
+    }
 }
 
 // imports returns true if the package imports any of the given packages.
@@ -207,14 +226,24 @@ func run(pass *analysis.Pass) (any, error) {
 		return nil, fmt.Errorf("failed to create new callgraph: %w", err)
 	}
 
-	// Run taint check for user controlled values (sources) ending
-	// up in injectable log functions (sinks).
-	results := taint.Check(cg, userControlledValues, injectableLogFunctions)
+    // Run taint check for user controlled values (sources) ending
+    // up in injectable log functions (sinks).
+    results := taint.Check(cg, userControlledValues, injectableLogFunctions)
+    dbg("results=%d", len(results))
 
-	// Report each tainted log call discovered.
-	for _, result := range results {
-		pass.Reportf(result.SinkValue.Pos(), "potential log injection")
-	}
+    // Report each tainted log call discovered at the concrete callsite if available.
+    for _, result := range results {
+        if debugLogI {
+            dbg("path=%s", callgraphutil.Path(result.Path).String())
+        }
+        reportPos := result.SinkValue.Pos()
+        if len(result.Path) > 0 {
+            if last := result.Path[len(result.Path)-1]; last != nil && last.Site != nil {
+                reportPos = last.Site.Pos()
+            }
+        }
+        pass.Reportf(reportPos, "potential log injection")
+    }
 
 	return nil, nil
 }

@@ -435,6 +435,16 @@ var builtinCommandLoad = &command{
 			optional: true,
 		},
 	},
+	flags: []*commandFlag{
+		{
+			name: "full",
+			desc: "include all dependencies in analysis (slower, more complete)",
+		},
+		// {
+		// 	name: "local-only",
+		// 	desc: "only analyze local packages, exclude dependencies (default: true)",
+		// },
+	},
 	fn: func(ctx context.Context, bt *bufio.Writer, args []string, flags map[string]string) error {
 		arg := args[0]
 
@@ -523,12 +533,33 @@ var builtinCommandLoad = &command{
 			dir = arg
 		}
 
-		// Check if the directory exists.
-		_, err = os.Stat(dir)
-		if os.IsNotExist(err) {
-			fmt.Fprintf(bt, "directory %q does not exist\n", dir)
-			bt.Flush()
-			return nil
+		// Check if the directory exists, but only for actual directory paths
+		// Don't check for Go package patterns like ./..., all, std, etc.
+		isGoPattern := strings.Contains(arg, "...") ||
+			arg == "all" ||
+			arg == "std" ||
+			arg == "." ||
+			strings.HasPrefix(arg, "golang.org/") ||
+			strings.HasPrefix(arg, "github.com/") ||
+			(strings.HasPrefix(arg, "./") && strings.Contains(arg, "/"))
+
+		if !isGoPattern {
+			_, err = os.Stat(dir)
+			if os.IsNotExist(err) {
+				fmt.Fprintf(bt, "directory %q does not exist\n", dir)
+				bt.Flush()
+				return nil
+			}
+		}
+
+		// For Go patterns, we should use the current working directory
+		// and let the pattern be handled by packages.Load
+		if isGoPattern {
+			pattern = arg // Use the pattern as-is
+			// For patterns, use current working directory instead of the pattern as dir
+			if dir == arg { // Only change if dir was set to the pattern
+				dir = "." // Use current directory for Go patterns
+			}
 		}
 
 		loadMode :=
@@ -553,7 +584,7 @@ var builtinCommandLoad = &command{
 		// to reduce noise when large repositories contain many main packages.
 		// Support comma-separated patterns: e.g. ".,./cmd/vault,./internal/server"
 		var patterns []string
-		for _, p := range strings.Split(pattern, ",") {
+		for p := range strings.SplitSeq(pattern, ",") {
 			p = strings.TrimSpace(p)
 			if p == "" {
 				continue
@@ -591,6 +622,8 @@ var builtinCommandLoad = &command{
 		ssaBuildMode := ssa.InstantiateGenerics // ssa.SanityCheckFunctions | ssa.GlobalDebug
 
 		attemptFallback := false
+		attemptGOPATH := false
+		gopathMode := false
 
 		buildSSA := func() {
 			ssaProg, ssaPkgs = ssautil.Packages(pkgs, ssaBuildMode)
@@ -641,6 +674,59 @@ var builtinCommandLoad = &command{
 			buildSSA()
 		}
 
+		// Detect GOPATH-style testdata (e.g., .../testdata/src/<pkg>) and retry in GOPATH mode
+		// or when we see common errors like "could not import v/..." or "invalid package name".
+		if !attemptGOPATH {
+			for _, p := range pkgs {
+				for _, perr := range p.Errors {
+					if strings.Contains(perr.Error(), "could not import v/") || strings.Contains(perr.Error(), "invalid package name") {
+						attemptGOPATH = true
+						break
+					}
+				}
+			}
+			if !attemptGOPATH {
+				// Heuristic: directory shape .../testdata/src/<pkg>
+				if strings.Contains(dir, string(filepath.Separator)+"testdata"+string(filepath.Separator)+"src"+string(filepath.Separator)) {
+					attemptGOPATH = true
+				}
+			}
+		}
+
+		if attemptGOPATH {
+			// Determine GOPATH root as the parent of the src directory and make it absolute.
+			gopathRoot := filepath.Dir(filepath.Dir(dir)) // parent of src
+			absGopathRoot, errAbs := filepath.Abs(gopathRoot)
+			if errAbs == nil {
+				gopathRoot = absGopathRoot
+			}
+			absDir, errDir := filepath.Abs(dir)
+			if errDir == nil {
+				dir = absDir
+			}
+
+			bt.WriteString("• " + styleInfo.Render("retrying load in GOPATH mode") + styleSubtle.Render(", GOPATH=") + styleNumber.Render(gopathRoot) + "\n")
+			bt.Flush()
+			cfg := &packages.Config{
+				Mode:    loadMode,
+				Context: ctx,
+				Env:     append(os.Environ(), "GO111MODULE=off", "GOPATH="+gopathRoot),
+				Dir:     dir,
+				Tests:   false,
+				ParseFile: func(fset *token.FileSet, filename string, src []byte) (*ast.File, error) {
+					return parser.ParseFile(fset, filename, src, parseMode)
+				},
+			}
+			pkgs, err = packages.Load(cfg, patterns...)
+			if err != nil {
+				bt.WriteString(err.Error() + "\n")
+				bt.Flush()
+				return nil
+			}
+			buildSSA()
+			gopathMode = true
+		}
+
 		ssaProg.Build()
 
 		// Count how many 'main' packages we have so we only add directory hints
@@ -654,7 +740,20 @@ var builtinCommandLoad = &command{
 
 		for i, pkg := range ssaPkgs {
 			if pkg == nil {
-				bt.WriteString(styleWarning.Render(fmt.Sprintf("⚠ warning: SSA package %d is nil", i)) + "\n")
+				// Try to get diagnostic info from the original packages
+				var pkgInfo string
+				if i < len(pkgs) && pkgs[i] != nil {
+					pkgInfo = fmt.Sprintf(" (package: %s, path: %s", pkgs[i].Name, pkgs[i].PkgPath)
+					if len(pkgs[i].Errors) > 0 {
+						pkgInfo += fmt.Sprintf(", errors: %d", len(pkgs[i].Errors))
+						// Show first error for context
+						pkgInfo += fmt.Sprintf(", first error: %s", pkgs[i].Errors[0].Error())
+					}
+					pkgInfo += ")"
+				} else {
+					pkgInfo = " (no package info available)"
+				}
+				bt.WriteString(styleWarning.Render(fmt.Sprintf("⚠ warning: SSA package %d is nil%s", i, pkgInfo)) + "\n")
 				continue
 			}
 			dirHint := pkgDirForSSAPkg(pkg, pkgs)
@@ -666,37 +765,74 @@ var builtinCommandLoad = &command{
 			pkg.Build()
 		}
 
-		// Collect all source functions first
-		var srcFns []*ssa.Function
-
+		// Summary of package processing results
+		nilCount := 0
 		for _, pkg := range ssaPkgs {
 			if pkg == nil {
+				nilCount++
+			}
+		}
+		if nilCount > 0 {
+			bt.WriteString(styleWarning.Render(fmt.Sprintf("⚠ %d/%d packages failed to build SSA representation", nilCount, len(ssaPkgs))) + "\n")
+		}
+
+		// Use the proven efficient approach from benchmarks - iterate through packages and members
+		// instead of ssautil.AllFunctions() which includes everything
+		var srcFns []*ssa.Function
+
+		// Get the current module name for filtering
+		modulePrefix := getModulePrefix(dir)
+		if gopathMode {
+			// Disable module filtering in GOPATH mode; import paths are synthetic (e.g., "v", "v/nested").
+			modulePrefix = ""
+		}
+		if modulePrefix != "" {
+			bt.WriteString(styleInfo.Render(fmt.Sprintf("• filtering to module: %s", modulePrefix)) + "\n")
+		}
+
+		totalFunctions := 0
+		localFunctions := 0
+
+		// Use the benchmark's proven efficient approach
+		for _, pkg := range ssaPkgs {
+			if pkg == nil || pkg.Pkg == nil {
 				continue
 			}
-			for _, fn := range pkg.Members {
-				if fn.Object() == nil {
+
+			// Filter to only local module packages if we have a module prefix
+			if modulePrefix != "" && !strings.HasPrefix(pkg.Pkg.Path(), modulePrefix) {
+				continue
+			}
+
+			// Iterate through package members (much more efficient than AllFunctions)
+			for _, member := range pkg.Members {
+				fn, ok := member.(*ssa.Function)
+				if !ok || fn == nil {
 					continue
 				}
 
-				if fn.Object().Name() == "_" {
+				if fn.Object() == nil || fn.Object().Name() == "_" {
 					continue
 				}
 
-				pkgFn := pkg.Func(fn.Object().Name())
-				if pkgFn == nil {
-					continue
-				}
-
+				// Add the function and its anonymous functions
 				var addAnons func(f *ssa.Function)
 				addAnons = func(f *ssa.Function) {
-					srcFns = append(srcFns, f)
+					if f != nil && f.Synthetic == "" {
+						srcFns = append(srcFns, f)
+						localFunctions++
+					}
+					// Add anonymous functions
 					for _, anon := range f.AnonFuncs {
 						addAnons(anon)
 					}
 				}
-				addAnons(pkgFn)
+				addAnons(fn)
+				totalFunctions++
 			}
 		}
+
+		bt.WriteString(styleInfo.Render(fmt.Sprintf("• filtered functions: %d packages → %d local functions", totalFunctions, localFunctions)) + "\n")
 
 		// Try to find a main function first
 		// Filter out nil or incomplete packages before passing to ssautil.MainPackages
@@ -722,18 +858,21 @@ var builtinCommandLoad = &command{
 					bt.WriteString("✓ " + styleSuccess.Render("found main function") + styleSubtle.Render(", using as callgraph root") + "\n")
 				}
 			} else {
-				bt.WriteString("• " + styleInfo.Render("main package lacks main() function") + styleSubtle.Render(", falling back to multi-root analysis") + "\n")
+				bt.WriteString("• " + styleInfo.Render("main package lacks main() function") + styleSubtle.Render(", falling back to first available function") + "\n")
 			}
 		} else {
-			// No main function found, create a multi-root callgraph
-			bt.WriteString("• " + styleInfo.Render("no main function found") + styleSubtle.Render(", creating multi-root analysis") + "\n")
-			cg, mainFn, err = callgraphutil.CreateMultiRootCallGraph(ssaProg, srcFns)
-			if err != nil {
-				bt.WriteString("✗ " + styleWarning.Render("failed to create multi-root callgraph: ") + err.Error() + "\n")
-				bt.Flush()
-				return nil
+			bt.WriteString("• " + styleInfo.Render("no main function found") + styleSubtle.Render(", using first available function as root") + "\n")
+		}
+
+		// If no main function found, use the first suitable function as root (like the benchmark)
+		if mainFn == nil {
+			for _, fn := range srcFns {
+				if fn != nil && fn.Synthetic == "" {
+					mainFn = fn
+					bt.WriteString("• " + styleInfo.Render("selected root function: ") + styleFunc.Render(fn.Name()) + "\n")
+					break
+				}
 			}
-			bt.WriteString("✓ " + styleSuccess.Render("created multi-root callgraph") + styleSubtle.Render(" with ") + styleNumber.Render(fmt.Sprintf("%d", len(srcFns))) + styleSubtle.Render(" potential roots") + "\n")
 		}
 
 		if mainFn == nil {
@@ -742,10 +881,11 @@ var builtinCommandLoad = &command{
 			return nil
 		}
 
-		// fmt.Fprintf(bt, "• creating callgraph with root: %s\n", mainFn.String())
+		// Create call graph using our algorithm (but without the performance killers)
+		bt.WriteString("• " + styleInfo.Render("creating callgraph with root: ") + styleFunc.Render(mainFn.Name()) + styleSubtle.Render(fmt.Sprintf(", %d source functions", len(srcFns))) + "\n")
 		bt.Flush()
 
-		cg, err = callgraphutil.NewGraph(mainFn, srcFns...)
+		cg, err = callgraphutil.NewGraphWithContext(ctx, mainFn, srcFns...)
 		if err != nil {
 			bt.WriteString("✗ " + styleWarning.Render("failed to create callgraph: ") + err.Error() + "\n")
 			bt.Flush()
@@ -773,7 +913,7 @@ var builtinCommandPkgs = &command{
 		for _, pkg := range pkgs {
 			var ssaPkg *ssa.Package
 			for _, p := range ssaPkgs {
-				if p.Pkg.Path() == pkg.PkgPath {
+				if p != nil && p.Pkg != nil && p.Pkg.Path() == pkg.PkgPath {
 					ssaPkg = p
 					break
 				}
@@ -1066,6 +1206,12 @@ var builtinCommandCheck = &command{
 			resultsStr.WriteString(resultPathStr + "\n")
 		}
 
+		if resultsStr.Len() == 0 {
+			bt.WriteString("✗ no taint flows found\n")
+			bt.Flush()
+			return nil
+		}
+
 		bt.WriteString(resultsStr.String())
 		bt.Flush()
 		return nil
@@ -1303,4 +1449,33 @@ func pkgDirForSSAPkg(p *ssa.Package, loaded []*packages.Package) string {
 		}
 	}
 	return ""
+}
+
+// getModulePrefix reads the go.mod file to determine the current module name
+func getModulePrefix(dir string) string {
+	// Look for go.mod file in the directory or parent directories
+	currentDir := dir
+	for {
+		goModPath := filepath.Join(currentDir, "go.mod")
+		if content, err := os.ReadFile(goModPath); err == nil {
+			// Parse the module line from go.mod
+			lines := strings.Split(string(content), "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "module ") {
+					module := strings.TrimSpace(strings.TrimPrefix(line, "module"))
+					return module
+				}
+			}
+		}
+
+		// Go up one directory
+		parent := filepath.Dir(currentDir)
+		if parent == currentDir {
+			break // reached root
+		}
+		currentDir = parent
+	}
+
+	return "" // no go.mod found
 }

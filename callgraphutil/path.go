@@ -40,17 +40,20 @@ func (p Path) Last() *callgraph.Edge {
 //
 // Intended to be used while debugging.
 func (p Path) String() string {
-	var buf bytes.Buffer
-	for i, e := range p {
-		if i == 0 {
-			buf.WriteString(e.Caller.String())
-		}
-
-		buf.WriteString(" → ")
-
-		buf.WriteString(e.Callee.String())
-	}
-	return buf.String()
+    var buf bytes.Buffer
+    firstPrinted := false
+    for _, e := range p {
+        if e == nil || e.Caller == nil || e.Callee == nil {
+            continue
+        }
+        if !firstPrinted {
+            buf.WriteString(e.Caller.String())
+            firstPrinted = true
+        }
+        buf.WriteString(" → ")
+        buf.WriteString(e.Callee.String())
+    }
+    return buf.String()
 }
 
 // Paths is a collection of paths, which may be logically grouped
