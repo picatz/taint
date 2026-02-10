@@ -4,7 +4,7 @@ go 1.24.4
 
 require (
 	github.com/charmbracelet/lipgloss v1.1.0
-	github.com/go-git/go-git/v5 v5.16.2
+	github.com/go-git/go-git/v5 v5.16.5
 	golang.org/x/term v0.37.0
 	golang.org/x/tools v0.34.0
 )
