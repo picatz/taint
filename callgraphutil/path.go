@@ -3,6 +3,7 @@ package callgraphutil
 import (
 	"bytes"
 	"fmt"
+	"go/types"
 	"strings"
 
 	"golang.org/x/tools/go/callgraph"
@@ -40,20 +41,20 @@ func (p Path) Last() *callgraph.Edge {
 //
 // Intended to be used while debugging.
 func (p Path) String() string {
-    var buf bytes.Buffer
-    firstPrinted := false
-    for _, e := range p {
-        if e == nil || e.Caller == nil || e.Callee == nil {
-            continue
-        }
-        if !firstPrinted {
-            buf.WriteString(e.Caller.String())
-            firstPrinted = true
-        }
-        buf.WriteString(" → ")
-        buf.WriteString(e.Callee.String())
-    }
-    return buf.String()
+	var buf bytes.Buffer
+	firstPrinted := false
+	for _, e := range p {
+		if e == nil || e.Caller == nil || e.Callee == nil {
+			continue
+		}
+		if !firstPrinted {
+			buf.WriteString(e.Caller.String())
+			firstPrinted = true
+		}
+		buf.WriteString(" → ")
+		buf.WriteString(e.Callee.String())
+	}
+	return buf.String()
 }
 
 // Paths is a collection of paths, which may be logically grouped
@@ -154,34 +155,52 @@ func PathsSearch(start *callgraph.Node, isMatch func(*callgraph.Node) bool) Path
 			return
 		}
 
-		// Debug output to understand the search
-		// fmt.Printf("DEBUG: searching node: %v\n", n)
-		if !seen[n] {
-			seen[n] = true
-			if isMatch(n) {
-				// Make a copy of the current path to preserve it
-				pathCopy := make(Path, len(stack))
-				copy(pathCopy, stack)
-				paths = append(paths, pathCopy)
-				// Debug output when match is found
-				// fmt.Printf("DEBUG: found match at node: %v, path length: %d\n", n, len(pathCopy))
-				// Don't return here - continue searching for more paths
+		if seen[n] {
+			return
+		}
+		seen[n] = true
+		defer delete(seen, n)
+
+		if isMatch(n) {
+			pathCopy := make(Path, len(stack))
+			copy(pathCopy, stack)
+			paths = append(paths, pathCopy)
+			return
+		}
+
+		for _, e := range n.Out {
+			if e == nil || e.Callee == nil {
+				continue
 			}
-			for _, e := range n.Out {
-				// Debug output for traversal
-				// fmt.Printf("DEBUG: traversing edge: %v -> %v\n", e.Caller, e.Callee)
-				stack = append(stack, e) // push
-				search(e.Callee)
-				if len(stack) == 0 {
-					continue
-				}
-				stack = stack[:len(stack)-1] // pop
-			}
+			stack = append(stack, e)
+			search(e.Callee)
+			stack = stack[:len(stack)-1]
 		}
 	}
 	search(start)
 
 	return paths
+}
+
+// ReachableNodes returns the nodes reachable from start using simple-path cycle
+// prevention. The returned set includes start when it is non-nil.
+func ReachableNodes(start *callgraph.Node) map[*callgraph.Node]bool {
+	reachable := make(map[*callgraph.Node]bool)
+	var visit func(*callgraph.Node)
+	visit = func(n *callgraph.Node) {
+		if n == nil || reachable[n] {
+			return
+		}
+		reachable[n] = true
+		for _, edge := range n.Out {
+			if edge == nil {
+				continue
+			}
+			visit(edge.Callee)
+		}
+	}
+	visit(start)
+	return reachable
 }
 
 // PathSearchCallTo returns the first path found from the start node
@@ -219,64 +238,65 @@ func PathsSearchCallToPartial(start *callgraph.Node, partialName string) Paths {
 	})
 }
 
-// CreateMultiRootCallGraph creates a callgraph for library packages by using multiple
-// potential entry points. It creates a callgraph by trying different entry points
-// and selecting the one that produces the most semantically meaningful analysis.
+// CreateMultiRootCallGraph creates a callgraph for library packages by using a
+// synthetic root connected to package entry points.
 func CreateMultiRootCallGraph(prog *ssa.Program, srcFns []*ssa.Function) (*callgraph.Graph, *ssa.Function, error) {
-	// Find potential entry points, prioritizing main functions and then exported functions
-	var entryPoints []*ssa.Function
-
-	for _, fn := range srcFns {
-		if fn == nil || fn.Object() == nil {
-			continue
-		}
-
-		name := fn.Object().Name()
-
-		if name == "main" {
-			// Main functions get highest priority
-			entryPoints = append([]*ssa.Function{fn}, entryPoints...)
-		} else if fn.Object().Exported() {
-			// All exported functions are potential entry points
-			entryPoints = append(entryPoints, fn)
-		}
+	if prog == nil {
+		return nil, nil, fmt.Errorf("nil SSA program")
 	}
 
+	entryPoints := callgraphEntryPoints(srcFns)
 	if len(entryPoints) == 0 {
-		// Last resort: use non-utility functions
-		for _, fn := range srcFns {
-			if fn != nil && fn.Object() != nil {
-				entryPoints = append(entryPoints, fn)
-			}
-		}
+		return nil, nil, fmt.Errorf("could not create callgraph without entry points")
 	}
 
-	// Try each entry point and find the best one based on connectivity
-	var bestRoot *ssa.Function
-	var bestGraph *callgraph.Graph
-	maxNodes := 0
+	sig := types.NewSignatureType(nil, nil, nil, types.NewTuple(), types.NewTuple(), false)
+	root := prog.NewFunction("root", sig, "synthetic")
+	graph, err := NewGraph(root, srcFns...)
+	if err != nil {
+		return nil, nil, err
+	}
 
+	rootNode := graph.CreateNode(root)
+	graph.Root = rootNode
 	for _, entry := range entryPoints {
 		if entry == nil {
 			continue
 		}
-
-		graph, err := NewGraph(entry, srcFns...)
-		if err != nil {
-			continue // Try next entry point
-		}
-
-		// Pick the graph with the most nodes (most connected)
-		if len(graph.Nodes) > maxNodes {
-			maxNodes = len(graph.Nodes)
-			bestGraph = graph
-			bestRoot = entry
-		}
+		callgraph.AddEdge(rootNode, nil, graph.CreateNode(entry))
 	}
+	DeduplicateEdges(graph)
+	// Re-canonicalize: dedup may have shuffled In slices and the synthetic
+	// root edges added above were not present when NewGraph canonicalized.
+	Canonicalize(graph)
 
-	if bestGraph == nil {
-		return nil, nil, fmt.Errorf("could not create callgraph from any entry point")
+	return graph, root, nil
+}
+
+func callgraphEntryPoints(srcFns []*ssa.Function) []*ssa.Function {
+	var mains []*ssa.Function
+	var exported []*ssa.Function
+	var fallback []*ssa.Function
+	for _, fn := range srcFns {
+		if fn == nil || fn.Object() == nil {
+			continue
+		}
+		name := fn.Object().Name()
+		if name == "main" {
+			mains = append(mains, fn)
+			continue
+		}
+		if fn.Object().Exported() {
+			exported = append(exported, fn)
+			continue
+		}
+		fallback = append(fallback, fn)
 	}
-
-	return bestGraph, bestRoot, nil
+	if len(mains) > 0 {
+		return dedupeFunctions(mains)
+	}
+	if len(exported) > 0 {
+		return dedupeFunctions(exported)
+	}
+	return dedupeFunctions(fallback)
 }

@@ -1,12 +1,13 @@
 package callgraphutil
 
 import (
-    "bytes"
-    "context"
-    "fmt"
-    "go/token"
-    "go/types"
-    "sync"
+	"bytes"
+	"context"
+	"fmt"
+	"go/token"
+	"go/types"
+	"sort"
+	"sync"
 
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/ssa"
@@ -15,61 +16,51 @@ import (
 
 // Global caches with lock-free reads and per-key initialization
 type allFunctionsEntry struct {
-    once  sync.Once
-    value map[*ssa.Function]bool
+	once  sync.Once
+	value map[*ssa.Function]bool
+}
+
+type syntheticMethodKey struct {
+	prog *ssa.Program
+	key  string
 }
 
 type syntheticMethodEntry struct {
-    once sync.Once
-    fn   *ssa.Function
+	once sync.Once
+	fn   *ssa.Function
 }
 
 var (
-    // Cache of ssautil.AllFunctions(prog) results keyed by *ssa.Program
-    // Uses sync.Map for lock-free reads; each entry initializes once.
-    allFunctionsCache sync.Map // map[*ssa.Program]*allFunctionsEntry
+	// Cache of ssautil.AllFunctions(prog) results keyed by *ssa.Program
+	// Uses sync.Map for lock-free reads; each entry initializes once.
+	allFunctionsCache sync.Map // map[*ssa.Program]*allFunctionsEntry
 
-    // Cache of synthetic method functions keyed by receiver+method string
-    // Ensures only one synthetic *ssa.Function is created per key.
-    syntheticMethodCache sync.Map // map[string]*syntheticMethodEntry
+	// Cache of synthetic method functions keyed by program+receiver+method string.
+	// Ensures only one synthetic *ssa.Function is created per key.
+	syntheticMethodCache sync.Map // map[syntheticMethodKey]*syntheticMethodEntry
 )
 
 // getAllFunctionsCached returns cached AllFunctions result for significant performance boost.
 // AllFunctions is expensive (6+ms on large codebases) but result is identical for same program.
 func getAllFunctionsCached(prog *ssa.Program) map[*ssa.Function]bool {
-    // Fast-path: try to load existing entry
-    if v, ok := allFunctionsCache.Load(prog); ok {
-        e := v.(*allFunctionsEntry)
-        e.once.Do(func() { /* already initialized or will be */ })
-        return e.value
-    }
-
-    // Create an entry placeholder; LoadOrStore to avoid races
-    e := &allFunctionsEntry{}
-    actual, _ := allFunctionsCache.LoadOrStore(prog, e)
-    entry := actual.(*allFunctionsEntry)
-    entry.once.Do(func() {
-        entry.value = ssautil.AllFunctions(prog)
-    })
-    return entry.value
+	entryIface, _ := allFunctionsCache.LoadOrStore(prog, &allFunctionsEntry{})
+	entry := entryIface.(*allFunctionsEntry)
+	entry.once.Do(func() {
+		entry.value = ssautil.AllFunctions(prog)
+	})
+	return entry.value
 }
 
 // getOrCreateSyntheticMethod returns a stable synthetic method function for a
 // given key, creating it exactly once per key.
 func getOrCreateSyntheticMethod(prog *ssa.Program, key, methodName string, sig *types.Signature) *ssa.Function {
-    if v, ok := syntheticMethodCache.Load(key); ok {
-        e := v.(*syntheticMethodEntry)
-        e.once.Do(func() { /* already initialized or will be */ })
-        return e.fn
-    }
-
-    e := &syntheticMethodEntry{}
-    actual, _ := syntheticMethodCache.LoadOrStore(key, e)
-    entry := actual.(*syntheticMethodEntry)
-    entry.once.Do(func() {
-        entry.fn = prog.NewFunction(methodName, sig, "synthetic")
-    })
-    return entry.fn
+	cacheKey := syntheticMethodKey{prog: prog, key: key}
+	entryIface, _ := syntheticMethodCache.LoadOrStore(cacheKey, &syntheticMethodEntry{})
+	entry := entryIface.(*syntheticMethodEntry)
+	entry.once.Do(func() {
+		entry.fn = prog.NewFunction(methodName, sig, "synthetic")
+	})
+	return entry.fn
 }
 
 // GraphString returns a string representation of the call graph,
@@ -204,50 +195,50 @@ func NewGraphWithContext(ctx context.Context, root *ssa.Function, srcFns ...*ssa
 		logger.Debug("Selected %d highest-priority functions for processing", len(functionsToProcess))
 	}
 
-    // Baseline pass: scan all SSA functions to add direct call edges
-    // Using allFns ensures we include methods and any function not listed in srcFns
-    prepass := NewProgressTracker(ctx, "Prepass: direct call edges", len(allFns))
-    logger.Step(fmt.Sprintf("Prepass: scanning %d SSA functions for direct calls", len(allFns)))
-    for fn := range allFns {
-        if fn == nil {
-            prepass.Update("skip nil")
-            continue
-        }
-        blocks := fn.Blocks
-        if len(blocks) == 0 {
-            prepass.Update(fn.Name())
-            continue
-        }
-        // Fast skip if no call-like instructions present
-        hasCall := false
-        for _, b := range blocks {
-            for _, ins := range b.Instrs {
-                if _, ok := ins.(ssa.CallInstruction); ok {
-                    hasCall = true
-                    break
-                }
-            }
-            if hasCall {
-                break
-            }
-        }
-        if !hasCall {
-            prepass.Update(fn.Name())
-            continue
-        }
-        // Add direct call edges without recursion
-        for _, b := range blocks {
-            for _, ins := range b.Instrs {
-                _ = checkBlockInstructionOptimized(root, allFns, g, fn, ins, func(*ssa.Function) error { return nil })
-            }
-        }
-        prepass.Update(fn.Name())
-    }
-    prepass.Complete()
+	// Baseline pass: scan all SSA functions to add direct call edges
+	// Using allFns ensures we include methods and any function not listed in srcFns
+	prepass := NewProgressTracker(ctx, "Prepass: direct call edges", len(allFns))
+	logger.Step(fmt.Sprintf("Prepass: scanning %d SSA functions for direct calls", len(allFns)))
+	for fn := range allFns {
+		if fn == nil {
+			prepass.Update("skip nil")
+			continue
+		}
+		blocks := fn.Blocks
+		if len(blocks) == 0 {
+			prepass.Update(fn.Name())
+			continue
+		}
+		// Fast skip if no call-like instructions present
+		hasCall := false
+		for _, b := range blocks {
+			for _, ins := range b.Instrs {
+				if _, ok := ins.(ssa.CallInstruction); ok {
+					hasCall = true
+					break
+				}
+			}
+			if hasCall {
+				break
+			}
+		}
+		if !hasCall {
+			prepass.Update(fn.Name())
+			continue
+		}
+		// Add direct call edges without recursion
+		for _, b := range blocks {
+			for _, ins := range b.Instrs {
+				_ = checkBlockInstructionOptimized(root, allFns, g, fn, ins, func(*ssa.Function) error { return nil })
+			}
+		}
+		prepass.Update(fn.Name())
+	}
+	prepass.Complete()
 
-    // Update progress tracker with actual number of functions to process
-    progressTracker := NewProgressTracker(ctx, "Processing source functions", len(functionsToProcess))
-    logger.Step(fmt.Sprintf("Processing source functions: %d functions to process", len(functionsToProcess)))
+	// Update progress tracker with actual number of functions to process
+	progressTracker := NewProgressTracker(ctx, "Processing source functions", len(functionsToProcess))
+	logger.Step(fmt.Sprintf("Processing source functions: %d functions to process", len(functionsToProcess)))
 	var walkFnWithDepth func(fn *ssa.Function, depth int) error
 	walkFnWithDepth = func(fn *ssa.Function, depth int) error {
 		// Optional recursion depth limit (disabled by default)
@@ -349,7 +340,15 @@ func NewGraphWithContext(ctx context.Context, root *ssa.Function, srcFns ...*ssa
 	logger.Debug("Removing duplicate edges from call graph")
 	// Remove duplicate edges once at the end - much more efficient than doing it
 	// on every instruction
-	removeDuplicateEdges(g)
+	DeduplicateEdges(g)
+
+	// Canonicalize edge ordering. Edges were appended to Out slices in the
+	// order map iterations happened to visit functions; that order is
+	// randomized between runs of the same program. Without a stable order
+	// downstream traversals (taint.Check's DFS, analyzer callsite selection)
+	// may report the same logical finding at a different SSA call site each
+	// run. Sorting once here makes the entire graph deterministic.
+	Canonicalize(g)
 
 	logger.Step("Call graph construction completed",
 		fmt.Sprintf("%d nodes", len(g.Nodes)),
@@ -358,34 +357,163 @@ func NewGraphWithContext(ctx context.Context, root *ssa.Function, srcFns ...*ssa
 	return g, nil
 }
 
+// Canonicalize sorts every node's In and Out edge slices into a deterministic
+// order so that downstream traversals do not depend on map iteration order.
+//
+// Edges are ordered by:
+//  1. caller token.Pos of the call site (rebased to file/line/col when the
+//     position is valid)
+//  2. callee function identity (fn.String())
+//  3. callee start position
+//
+// The call graph's Nodes map is left untouched; callers that need a stable
+// node order should use SortedNodes.
+func Canonicalize(g *callgraph.Graph) {
+	if g == nil {
+		return
+	}
+	for _, n := range g.Nodes {
+		if n == nil {
+			continue
+		}
+		sortEdges(n.Out)
+		sortEdges(n.In)
+	}
+}
+
+// SortedNodes returns the nodes of g in a deterministic order. The order is
+// stable across runs of the same program: nodes are keyed by function
+// identity (fn.String()) and then by start position to disambiguate
+// same-named synthetic functions.
+func SortedNodes(g *callgraph.Graph) []*callgraph.Node {
+	if g == nil {
+		return nil
+	}
+	out := make([]*callgraph.Node, 0, len(g.Nodes))
+	for _, n := range g.Nodes {
+		if n != nil {
+			out = append(out, n)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return nodeLess(out[i], out[j])
+	})
+	return out
+}
+
+func sortEdges(edges []*callgraph.Edge) {
+	sort.SliceStable(edges, func(i, j int) bool {
+		return edgeLess(edges[i], edges[j])
+	})
+}
+
+func edgeLess(a, b *callgraph.Edge) bool {
+	ap, bp := edgePos(a), edgePos(b)
+	if ap != bp {
+		return ap < bp
+	}
+	ak, bk := calleeKey(a), calleeKey(b)
+	if ak != bk {
+		return ak < bk
+	}
+	return calleePos(a) < calleePos(b)
+}
+
+func edgePos(e *callgraph.Edge) token.Pos {
+	if e == nil || e.Site == nil {
+		return token.NoPos
+	}
+	return e.Site.Pos()
+}
+
+func calleeKey(e *callgraph.Edge) string {
+	if e == nil || e.Callee == nil || e.Callee.Func == nil {
+		return ""
+	}
+	return e.Callee.Func.String()
+}
+
+func calleePos(e *callgraph.Edge) token.Pos {
+	if e == nil || e.Callee == nil || e.Callee.Func == nil {
+		return token.NoPos
+	}
+	return e.Callee.Func.Pos()
+}
+
+func nodeLess(a, b *callgraph.Node) bool {
+	ak, bk := nodeKey(a), nodeKey(b)
+	if ak != bk {
+		return ak < bk
+	}
+	return nodePos(a) < nodePos(b)
+}
+
+func nodeKey(n *callgraph.Node) string {
+	if n == nil || n.Func == nil {
+		return ""
+	}
+	return n.Func.String()
+}
+
+func nodePos(n *callgraph.Node) token.Pos {
+	if n == nil || n.Func == nil {
+		return token.NoPos
+	}
+	return n.Func.Pos()
+}
+
+// DeduplicateEdges removes duplicate call graph edges and rebuilds inbound edge
+// lists so Node.In and Node.Out remain consistent.
+func DeduplicateEdges(g *callgraph.Graph) {
+	removeDuplicateEdges(g)
+}
+
 // removeDuplicateEdges efficiently removes duplicate edges from the call graph.
 // This is done once at the end instead of on every instruction for better performance.
 func removeDuplicateEdges(g *callgraph.Graph) {
-    for _, node := range g.Nodes {
-        if len(node.Out) <= 1 {
-            continue // No duplicates possible
-        }
+	if g == nil {
+		return
+	}
 
-        // Deduplicate by (callee, site) so multiple callsites to the same callee are preserved
-        type edgeKey struct{
-            callee *callgraph.Node
-            site   any // typically ssa.CallInstruction; using any keeps interface comparability
-        }
-        seen := make(map[edgeKey]bool, len(node.Out))
-        uniqueEdges := make([]*callgraph.Edge, 0, len(node.Out))
+	type edgeKey struct {
+		caller *callgraph.Node
+		callee *callgraph.Node
+		site   ssa.CallInstruction
+	}
 
-        for _, edge := range node.Out {
-            k := edgeKey{callee: edge.Callee, site: edge.Site}
-            if !seen[k] {
-                seen[k] = true
-                uniqueEdges = append(uniqueEdges, edge)
-            }
-        }
+	for _, node := range g.Nodes {
+		if node == nil {
+			continue
+		}
+		seen := make(map[edgeKey]struct{}, len(node.Out))
+		uniqueEdges := make([]*callgraph.Edge, 0, len(node.Out))
+		for _, edge := range node.Out {
+			if edge == nil || edge.Callee == nil {
+				continue
+			}
+			edge.Caller = node
+			key := edgeKey{caller: node, callee: edge.Callee, site: edge.Site}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			uniqueEdges = append(uniqueEdges, edge)
+		}
+		node.Out = uniqueEdges
+		node.In = nil
+	}
 
-        if len(uniqueEdges) < len(node.Out) {
-            node.Out = uniqueEdges
-        }
-    }
+	for _, node := range g.Nodes {
+		if node == nil {
+			continue
+		}
+		for _, edge := range node.Out {
+			if edge == nil || edge.Callee == nil {
+				continue
+			}
+			edge.Callee.In = append(edge.Callee.In, edge)
+		}
+	}
 }
 
 // checkBlockInstructionOptimized is a high-performance version of checkBlockInstruction
@@ -402,84 +530,55 @@ func checkBlockInstructionOptimized(root *ssa.Function, allFns map[*ssa.Function
 	}
 
 	cc := callSite.Common()
-	var instrCall *ssa.Function
+	instrCalls := resolveCallTargets(root.Prog, allFns, cc)
 
-	// Handle interface method invocations up-front for completeness
-	if cc.IsInvoke() && cc.Method != nil {
-		if methodPkg := cc.Method.Pkg(); methodPkg != nil {
-			if pkg := root.Prog.ImportedPackage(methodPkg.Path()); pkg != nil {
-				if fn := pkg.Func(cc.Method.Name()); fn != nil {
-					instrCall = fn
-				} else {
-					instrCall = pkg.Prog.NewFunction(cc.Method.Name(), cc.Signature(), "callgraph")
-				}
-			}
-		}
-	}
-
-	// Optimized type switching with most common cases first
-	if instrCall == nil {
+	if len(instrCalls) == 0 {
 		switch callt := cc.Value.(type) {
 		case *ssa.Function:
 			// Direct function call - most common case
-			instrCall = callt
-
-			// Optimize ChangeInterface argument processing with early scanning
-			if len(cc.Args) > 0 {
-				if err := processChangeInterfaceArgsOptimized(root, g, callSite, instrCall); err != nil {
-					return err
-				}
-			}
+			instrCalls = append(instrCalls, callt)
 
 		case *ssa.MakeClosure:
 			// Closure creation - second most common
 			if calltFn, ok := callt.Fn.(*ssa.Function); ok {
-				instrCall = calltFn
+				instrCalls = append(instrCalls, calltFn)
 			}
-
-    case *ssa.Parameter:
-        // Method calls via interface - more complex case
-        if !cc.IsInvoke() || cc.Method == nil {
-            return nil
-        }
-
-        // Create or reuse a synthetic function for the invoked method to avoid duplicates
-        recv := cc.Signature().Recv()
-        if recv == nil {
-            return nil
-        }
-        recvStr := types.TypeString(recv.Type(), nil)
-        key := fmt.Sprintf("(%s).%s", recvStr, cc.Method.Name())
-        instrCall = getOrCreateSyntheticMethod(root.Prog, key, cc.Method.Name(), cc.Signature())
 
 		case *ssa.UnOp:
 			// Dereference operations - less common
 			if callt.Op == token.MUL {
 				switch fa := callt.X.(type) {
 				case *ssa.FieldAddr:
-					instrCall = findFunctionInField(fa, allFns)
+					instrCalls = append(instrCalls, findFunctionsInField(fa, allFns)...)
 				case *ssa.Field:
-					instrCall = findFunctionInFieldValue(fa, allFns)
+					instrCalls = append(instrCalls, findFunctionsInFieldValue(fa, allFns)...)
 				}
 			}
 		}
 	}
 
 	// Early exit if no function was determined
-	if instrCall == nil {
+	if len(instrCalls) == 0 {
 		return nil
 	}
 
-	// Add edge to call graph
-	callgraph.AddEdge(g.CreateNode(fn), callSite, g.CreateNode(instrCall))
+	for _, instrCall := range dedupeFunctions(instrCalls) {
+		if instrCall == nil {
+			continue
+		}
 
-	if err := walkFn(instrCall); err != nil {
-		return err
-	}
+		// Add edge to call graph
+		callgraph.AddEdge(g.CreateNode(fn), callSite, g.CreateNode(instrCall))
 
-	// Process function arguments efficiently - only if there are arguments
-	if len(cc.Args) > 0 {
-		return processFunctionArgumentsOptimized(g, callSite, instrCall)
+		if len(cc.Args) > 0 {
+			if err := processFunctionArgumentsOptimized(g, callSite, instrCall); err != nil {
+				return err
+			}
+		}
+
+		if err := walkFn(instrCall); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -502,80 +601,233 @@ func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g 
 	}
 
 	cc := callSite.Common()
-	var instrCall *ssa.Function
+	instrCalls := resolveCallTargets(root.Prog, allFns, cc)
 
-	// Handle interface method invocations up-front for completeness
-	if cc.IsInvoke() && cc.Method != nil {
-		if methodPkg := cc.Method.Pkg(); methodPkg != nil {
-			if pkg := root.Prog.ImportedPackage(methodPkg.Path()); pkg != nil {
-				if fn := pkg.Func(cc.Method.Name()); fn != nil {
-					instrCall = fn
-				} else {
-					instrCall = pkg.Prog.NewFunction(cc.Method.Name(), cc.Signature(), "callgraph")
+	if len(instrCalls) == 0 {
+		switch callt := cc.Value.(type) {
+		case *ssa.Function:
+			instrCalls = append(instrCalls, callt)
+
+		case *ssa.MakeClosure:
+			if calltFn, ok := callt.Fn.(*ssa.Function); ok {
+				instrCalls = append(instrCalls, calltFn)
+			}
+
+		case *ssa.UnOp:
+			if callt.Op == token.MUL {
+				switch fa := callt.X.(type) {
+				case *ssa.FieldAddr:
+					instrCalls = append(instrCalls, findFunctionsInField(fa, allFns)...)
+				case *ssa.Field:
+					instrCalls = append(instrCalls, findFunctionsInFieldValue(fa, allFns)...)
 				}
 			}
 		}
 	}
 
-	switch callt := cc.Value.(type) {
-	case *ssa.Function:
-		instrCall = callt
+	// Early exit if no function was determined
+	if len(instrCalls) == 0 {
+		return nil
+	}
 
-		// Optimize ChangeInterface argument processing
-		// Only check arguments if there are any - avoid unnecessary iterations
+	for _, instrCall := range dedupeFunctions(instrCalls) {
+		if instrCall == nil {
+			continue
+		}
+
+		// Add edge to call graph
+		callgraph.AddEdge(g.CreateNode(fn), callSite, g.CreateNode(instrCall))
+
 		if len(cc.Args) > 0 {
-			if err := processChangeInterfaceArgs(root, g, callSite, instrCall); err != nil {
+			if err := processFunctionArguments(g, callSite, instrCall); err != nil {
 				return err
 			}
 		}
 
-	case *ssa.MakeClosure:
-		if calltFn, ok := callt.Fn.(*ssa.Function); ok {
-			instrCall = calltFn
+		if err := walkFn(instrCall); err != nil {
+			return err
 		}
-
-	case *ssa.UnOp:
-		if callt.Op == token.MUL {
-			switch fa := callt.X.(type) {
-			case *ssa.FieldAddr:
-				instrCall = findFunctionInField(fa, allFns)
-			case *ssa.Field:
-				instrCall = findFunctionInFieldValue(fa, allFns)
-			}
-		}
-
-    case *ssa.Parameter:
-        // Handle method calls with early exits for performance
-        if !cc.IsInvoke() || cc.Method == nil {
-            return nil
-        }
-        recv := cc.Signature().Recv()
-        if recv == nil {
-            return nil
-        }
-        recvStr := types.TypeString(recv.Type(), nil)
-        key := fmt.Sprintf("(%s).%s", recvStr, cc.Method.Name())
-        instrCall = getOrCreateSyntheticMethod(root.Prog, key, cc.Method.Name(), cc.Signature())
-	}
-
-	// Early exit if no function was determined
-	if instrCall == nil {
-		return nil
-	}
-
-	// Add edge to call graph
-	callgraph.AddEdge(g.CreateNode(fn), callSite, g.CreateNode(instrCall))
-
-	if err := walkFn(instrCall); err != nil {
-		return err
-	}
-
-	// Process function arguments efficiently - only if there are arguments
-	if len(cc.Args) > 0 {
-		return processFunctionArguments(g, callSite, instrCall)
 	}
 
 	return nil
+}
+
+func resolveCallTargets(prog *ssa.Program, allFns map[*ssa.Function]bool, cc *ssa.CallCommon) []*ssa.Function {
+	if cc == nil {
+		return nil
+	}
+	if fn := cc.StaticCallee(); fn != nil {
+		return []*ssa.Function{fn}
+	}
+	if !cc.IsInvoke() || cc.Method == nil {
+		return nil
+	}
+
+	var targets []*ssa.Function
+	for _, recvType := range concreteReceiverTypes(cc.Value) {
+		targets = append(targets, concreteMethodsForInvoke(prog, allFns, recvType, cc.Method)...)
+	}
+	if len(targets) > 0 {
+		return dedupeFunctions(targets)
+	}
+
+	recv := cc.Signature().Recv()
+	if recv == nil {
+		return nil
+	}
+	recvStr := types.TypeString(recv.Type(), nil)
+	key := fmt.Sprintf("(%s).%s", recvStr, cc.Method.Name())
+	return []*ssa.Function{getOrCreateSyntheticMethod(prog, key, cc.Method.Name(), cc.Signature())}
+}
+
+func concreteReceiverTypes(v ssa.Value) []types.Type {
+	if v == nil {
+		return nil
+	}
+
+	seen := map[ssa.Value]struct{}{}
+	var out []types.Type
+	var visit func(ssa.Value)
+	visit = func(cur ssa.Value) {
+		if cur == nil {
+			return
+		}
+		if _, ok := seen[cur]; ok {
+			return
+		}
+		seen[cur] = struct{}{}
+
+		switch x := cur.(type) {
+		case *ssa.MakeInterface:
+			if x.X != nil {
+				out = append(out, x.X.Type())
+			}
+		case *ssa.ChangeInterface:
+			visit(x.X)
+		case *ssa.ChangeType:
+			visit(x.X)
+		case *ssa.Convert:
+			visit(x.X)
+		case *ssa.TypeAssert:
+			visit(x.X)
+		case *ssa.Phi:
+			for _, edge := range x.Edges {
+				visit(edge)
+			}
+		default:
+			t := cur.Type()
+			if t != nil {
+				if _, ok := t.Underlying().(*types.Interface); !ok {
+					out = append(out, t)
+				}
+			}
+		}
+	}
+	visit(v)
+	return uniqueTypes(out)
+}
+
+func concreteMethodsForInvoke(prog *ssa.Program, allFns map[*ssa.Function]bool, recvType types.Type, method *types.Func) []*ssa.Function {
+	if prog == nil || recvType == nil || method == nil {
+		return nil
+	}
+
+	var targets []*ssa.Function
+	for _, candidateType := range receiverTypeCandidates(recvType) {
+		methodSet := prog.MethodSets.MethodSet(candidateType)
+		if methodSet == nil {
+			continue
+		}
+		sel := methodSet.Lookup(method.Pkg(), method.Name())
+		if sel == nil {
+			continue
+		}
+		if fn := functionForMethodObject(allFns, sel.Obj()); fn != nil {
+			targets = append(targets, fn)
+			continue
+		}
+		targets = append(targets, functionsMatchingReceiver(allFns, candidateType, method.Name())...)
+	}
+	return dedupeFunctions(targets)
+}
+
+func functionForMethodObject(allFns map[*ssa.Function]bool, obj types.Object) *ssa.Function {
+	if obj == nil {
+		return nil
+	}
+	for fn := range allFns {
+		if fn != nil && fn.Object() == obj {
+			return fn
+		}
+	}
+	return nil
+}
+
+func functionsMatchingReceiver(allFns map[*ssa.Function]bool, recvType types.Type, methodName string) []*ssa.Function {
+	var out []*ssa.Function
+	for fn := range allFns {
+		if fn == nil || fn.Name() != methodName || fn.Signature == nil || fn.Signature.Recv() == nil {
+			continue
+		}
+		fnRecv := fn.Signature.Recv().Type()
+		if types.Identical(fnRecv, recvType) || types.AssignableTo(recvType, fnRecv) || types.AssignableTo(fnRecv, recvType) {
+			out = append(out, fn)
+		}
+	}
+	return out
+}
+
+func receiverTypeCandidates(t types.Type) []types.Type {
+	if t == nil {
+		return nil
+	}
+	candidates := []types.Type{t}
+	if _, ok := t.(*types.Pointer); !ok {
+		candidates = append(candidates, types.NewPointer(t))
+	}
+	if ptr, ok := t.(*types.Pointer); ok {
+		candidates = append(candidates, ptr.Elem())
+	}
+	return uniqueTypes(candidates)
+}
+
+func uniqueTypes(typesIn []types.Type) []types.Type {
+	var out []types.Type
+	for _, t := range typesIn {
+		if t == nil {
+			continue
+		}
+		seen := false
+		for _, existing := range out {
+			if types.Identical(existing, t) {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func dedupeFunctions(fns []*ssa.Function) []*ssa.Function {
+	if len(fns) <= 1 {
+		return fns
+	}
+	seen := make(map[*ssa.Function]struct{}, len(fns))
+	out := make([]*ssa.Function, 0, len(fns))
+	for _, fn := range fns {
+		if fn == nil {
+			continue
+		}
+		if _, ok := seen[fn]; ok {
+			continue
+		}
+		seen[fn] = struct{}{}
+		out = append(out, fn)
+	}
+	return out
 }
 
 // processChangeInterfaceArgsOptimized handles ChangeInterface arguments with enhanced performance.
@@ -858,11 +1110,14 @@ func AddFunction(cg *callgraph.Graph, target *ssa.Function, allFns map[*ssa.Func
 	return nil
 }
 
-// findFunctionInField scans all functions for assignments to the provided
-// struct field address and returns the first discovered function value.
-func findFunctionInField(fieldAddr *ssa.FieldAddr, allFns map[*ssa.Function]bool) *ssa.Function {
+// findFunctionsInField scans assignments to the provided struct field address.
+// Stores to the same allocation are preferred; when the allocation cannot be
+// tied back precisely, all matching field stores are returned conservatively.
+func findFunctionsInField(fieldAddr *ssa.FieldAddr, allFns map[*ssa.Function]bool) []*ssa.Function {
 	idx := fieldAddr.Field
 	structType := fieldAddr.X.Type()
+	var exact []*ssa.Function
+	var fallback []*ssa.Function
 
 	for fn := range allFns {
 		for _, blk := range fn.Blocks {
@@ -870,12 +1125,11 @@ func findFunctionInField(fieldAddr *ssa.FieldAddr, allFns map[*ssa.Function]bool
 				if store, ok := ins.(*ssa.Store); ok {
 					if fa, ok := store.Addr.(*ssa.FieldAddr); ok {
 						if fa.Field == idx && types.Identical(fa.X.Type(), structType) {
-							switch v := store.Val.(type) {
-							case *ssa.Function:
-								return v
-							case *ssa.MakeClosure:
-								if f, ok := v.Fn.(*ssa.Function); ok {
-									return f
+							for _, storedFn := range functionValues(store.Val) {
+								if sameFieldBase(fa.X, fieldAddr.X) {
+									exact = append(exact, storedFn)
+								} else {
+									fallback = append(fallback, storedFn)
 								}
 							}
 						}
@@ -884,14 +1138,19 @@ func findFunctionInField(fieldAddr *ssa.FieldAddr, allFns map[*ssa.Function]bool
 			}
 		}
 	}
-	return nil
+	if len(exact) > 0 {
+		return dedupeFunctions(exact)
+	}
+	return dedupeFunctions(fallback)
 }
 
-// findFunctionInFieldValue searches for function assignments made to the struct
+// findFunctionsInFieldValue searches for function assignments made to the struct
 // field represented by the given Field value.
-func findFunctionInFieldValue(field *ssa.Field, allFns map[*ssa.Function]bool) *ssa.Function {
+func findFunctionsInFieldValue(field *ssa.Field, allFns map[*ssa.Function]bool) []*ssa.Function {
 	idx := field.Field
 	structType := field.X.Type()
+	var exact []*ssa.Function
+	var fallback []*ssa.Function
 
 	for fn := range allFns {
 		for _, blk := range fn.Blocks {
@@ -899,18 +1158,68 @@ func findFunctionInFieldValue(field *ssa.Field, allFns map[*ssa.Function]bool) *
 				if store, ok := ins.(*ssa.Store); ok {
 					if fa, ok := store.Addr.(*ssa.FieldAddr); ok {
 						if fa.Field == idx && types.Identical(fa.X.Type(), structType) {
-							switch v := store.Val.(type) {
-							case *ssa.Function:
-								return v
-							case *ssa.MakeClosure:
-								if f, ok := v.Fn.(*ssa.Function); ok {
-									return f
+							for _, storedFn := range functionValues(store.Val) {
+								if sameFieldBase(fa.X, field.X) {
+									exact = append(exact, storedFn)
+								} else {
+									fallback = append(fallback, storedFn)
 								}
 							}
 						}
 					}
 				}
 			}
+		}
+	}
+	if len(exact) > 0 {
+		return dedupeFunctions(exact)
+	}
+	return dedupeFunctions(fallback)
+}
+
+func functionValues(v ssa.Value) []*ssa.Function {
+	switch v := v.(type) {
+	case *ssa.Function:
+		return []*ssa.Function{v}
+	case *ssa.MakeClosure:
+		if f, ok := v.Fn.(*ssa.Function); ok {
+			return []*ssa.Function{f}
+		}
+	}
+	return nil
+}
+
+func sameFieldBase(a, b ssa.Value) bool {
+	return fieldBase(a) != nil && fieldBase(a) == fieldBase(b)
+}
+
+func fieldBase(v ssa.Value) ssa.Value {
+	seen := map[ssa.Value]struct{}{}
+	for v != nil {
+		if _, ok := seen[v]; ok {
+			return v
+		}
+		seen[v] = struct{}{}
+
+		switch x := v.(type) {
+		case *ssa.FieldAddr:
+			v = x.X
+		case *ssa.Field:
+			v = x.X
+		case *ssa.IndexAddr:
+			v = x.X
+		case *ssa.UnOp:
+			if x.Op == token.MUL {
+				v = x.X
+				continue
+			}
+			return v
+		case *ssa.ChangeType:
+			v = x.X
+		case *ssa.Convert:
+			v = x.X
+		default:
+			return v
 		}
 	}
 	return nil

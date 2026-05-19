@@ -1,6 +1,7 @@
 package xss
 
 import (
+	"fmt"
 	"testing"
 
 	"golang.org/x/tools/go/analysis/analysistest"
@@ -34,4 +35,21 @@ func TestF(t *testing.T) {
 
 func TestG(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "g")
+}
+
+func TestH(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "h")
+}
+
+// TestDeterminism runs the analyzer multiple times on a fixture with many
+// in-package callers of a helper that itself writes to ResponseWriter. The
+// reported position must stay on the actual taint path each run; before
+// the call-site picker walked the taint path, this case would flap between
+// runs because cg.Nodes map iteration is randomized.
+func TestDeterminism(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		t.Run(fmt.Sprintf("iter-%d", i), func(t *testing.T) {
+			analysistest.Run(t, testdata, Analyzer, "determinism")
+		})
+	}
 }
