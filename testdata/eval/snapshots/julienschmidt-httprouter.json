@@ -1,0 +1,20 @@
+{
+  "target": "julienschmidt-httprouter",
+  "kind": "git",
+  "source": "https://github.com/julienschmidt/httprouter.git",
+  "commit": "4eec211fa4e8df74ed978dc5681612131854144f",
+  "analyzers": {
+    "logi": {
+      "count": 0,
+      "findings": []
+    },
+    "sqli": {
+      "count": 0,
+      "findings": []
+    },
+    "xss": {
+      "count": 0,
+      "findings": []
+    }
+  }
+}

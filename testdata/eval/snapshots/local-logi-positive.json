@@ -1,0 +1,18 @@
+{
+  "target": "local-logi-positive",
+  "kind": "local",
+  "source": "fixtures/local-logi-positive",
+  "analyzers": {
+    "logi": {
+      "count": 1,
+      "findings": [
+        {
+          "file": "main.go",
+          "line": 10,
+          "column": 12,
+          "message": "potential log injection"
+        }
+      ]
+    }
+  }
+}

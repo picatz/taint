@@ -1,0 +1,18 @@
+{
+  "target": "local-xss-positive",
+  "kind": "local",
+  "source": "fixtures/local-xss-positive",
+  "analyzers": {
+    "xss": {
+      "count": 1,
+      "findings": [
+        {
+          "file": "main.go",
+          "line": 9,
+          "column": 9,
+          "message": "potential XSS"
+        }
+      ]
+    }
+  }
+}

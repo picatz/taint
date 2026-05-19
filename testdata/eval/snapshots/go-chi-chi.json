@@ -1,0 +1,27 @@
+{
+  "target": "go-chi-chi",
+  "kind": "git",
+  "source": "https://github.com/go-chi/chi.git",
+  "commit": "71307f9b7e4e9527638bc951c42b782cd1560331",
+  "analyzers": {
+    "logi": {
+      "count": 0,
+      "findings": []
+    },
+    "sqli": {
+      "count": 0,
+      "findings": []
+    },
+    "xss": {
+      "count": 1,
+      "findings": [
+        {
+          "file": "middleware/logger.go",
+          "line": 109,
+          "column": 5,
+          "message": "potential XSS"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,45 @@
+# Manual precision evaluation. Runs cmd/taint-eval against the pinned
+# fixtures and remote repositories in testdata/eval/targets.yaml and fails
+# on snapshot drift. This workflow is intentionally NOT wired into the
+# default PR path because:
+#   - it clones third-party repositories at network-bound time, and
+#   - it gates on analyzer precision, which is reviewed separately from
+#     functional correctness.
+#
+# Trigger it manually from the Actions tab before a release, after
+# touching the taint engine, or when validating an analyzer change.
+name: Precision Eval (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Optional target selector (name, 'local', or 'git'). Empty means all."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: List targets
+        run: go run ./cmd/taint-eval list
+
+      - name: Check snapshots
+        run: |
+          if [ -n "${{ inputs.target }}" ]; then
+            go run ./cmd/taint-eval check -target "${{ inputs.target }}"
+          else
+            go run ./cmd/taint-eval check
+          fi

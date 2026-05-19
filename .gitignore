@@ -19,3 +19,6 @@
 
 # Go workspace file
 go.work
+
+# Precision evaluation harness cache (clones + built analyzer binaries).
+.cache/

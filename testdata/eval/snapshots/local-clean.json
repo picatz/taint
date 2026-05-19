@@ -1,0 +1,19 @@
+{
+  "target": "local-clean",
+  "kind": "local",
+  "source": "fixtures/local-clean",
+  "analyzers": {
+    "logi": {
+      "count": 0,
+      "findings": []
+    },
+    "sqli": {
+      "count": 0,
+      "findings": []
+    },
+    "xss": {
+      "count": 0,
+      "findings": []
+    }
+  }
+}
