@@ -9,7 +9,10 @@ import (
 // the given node as the root of the call graph that is searched.
 func InstructionsFor(root *callgraph.Node, v ssa.Value) (si ssa.Instruction) {
 	PathsSearch(root, func(n *callgraph.Node) bool {
-		for _, b := range root.Func.Blocks {
+		if n == nil || n.Func == nil {
+			return false
+		}
+		for _, b := range n.Func.Blocks {
 			for _, instr := range b.Instrs {
 				if instr.Pos() == v.Pos() {
 					si = instr

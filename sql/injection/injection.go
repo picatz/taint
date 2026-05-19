@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
+	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/ssa"
 )
 
@@ -248,16 +249,19 @@ func run(pass *analysis.Pass) (any, error) {
 
 	// Identify the main function from the package's SSA IR.
 	mainFn := buildSSA.Pkg.Func("main")
-	if mainFn == nil {
-		return nil, nil
-	}
 
 	// Construct a callgraph, using the main function as the root,
 	// constructed of all other functions. This returns a callgraph
 	// we can use to identify directed paths to SQL queries.
-	cg, err := callgraphutil.NewGraph(mainFn, buildSSA.SrcFuncs...)
+	var cg *callgraph.Graph
+	var err error
+	if mainFn != nil {
+		cg, err = callgraphutil.NewGraph(mainFn, buildSSA.SrcFuncs...)
+	} else {
+		cg, _, err = callgraphutil.CreateMultiRootCallGraph(buildSSA.Pkg.Prog, buildSSA.SrcFuncs)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to create new callgraph: %w", err)
+		return nil, fmt.Errorf("failed to create callgraph: %w", err)
 	}
 
 	// If you'd like to compare the callgraph constructed by the
@@ -293,7 +297,7 @@ func run(pass *analysis.Pass) (any, error) {
 
 	// Run taint check for user controlled values (sources) ending
 	// up in injectable SQL methods (sinks).
-	results := taint.Check(cg, userControlledValues, injectableSQLMethods)
+	diagnostics := taint.CheckDetailed(cg, userControlledValues, injectableSQLMethods)
 
 	// fmt.Printf("DEBUG: Found %d taint results\n", len(results))
 	// for i, result := range results {
@@ -304,7 +308,8 @@ func run(pass *analysis.Pass) (any, error) {
 	// a mitigation for the user controlled value.
 	//
 	// TODO: ensure this makes sense for all the GORM usage?
-	for _, result := range results {
+	for _, diagnostic := range diagnostics {
+		result := diagnostic.Result
 		// We found a query edge that is tainted by user input, is it
 		// doing this safely? We expect this to be safely done by
 		// providing a prepared statement as a constant in the query
@@ -339,7 +344,11 @@ func run(pass *analysis.Pass) (any, error) {
 		// Ensure it is a constant (prepared statement), otherwise report
 		// potential SQL injection.
 		if _, isConst := query.(*ssa.Const); !isConst {
-			pass.Reportf(result.SinkValue.Pos(), "potential sql injection")
+			reportPos := result.SinkValue.Pos()
+			if last := result.Path.Last(); last != nil && last.Site != nil {
+				reportPos = last.Site.Pos()
+			}
+			pass.Reportf(reportPos, "potential sql injection")
 		}
 	}
 

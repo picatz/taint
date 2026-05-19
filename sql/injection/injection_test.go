@@ -102,6 +102,26 @@ func TestV(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "v")
 }
 
+func TestW(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "w")
+}
+
+func TestReceiver(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "receiver")
+}
+
+func TestConstReturn(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "constreturn")
+}
+
+func TestLibraryPackage(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "lib")
+}
+
 func TestGRPC(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "grpc")
+}
+
+func TestGRPCModern(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "grpcmodern")
 }

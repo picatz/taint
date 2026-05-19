@@ -776,63 +776,42 @@ var builtinCommandLoad = &command{
 			bt.WriteString(styleWarning.Render(fmt.Sprintf("⚠ %d/%d packages failed to build SSA representation", nilCount, len(ssaPkgs))) + "\n")
 		}
 
-		// Use the proven efficient approach from benchmarks - iterate through packages and members
-		// instead of ssautil.AllFunctions() which includes everything
+		// Build source functions from the entire SSA program, filtered to the local module.
+		// This ensures traversal seeds include subpackages like "command" in Vault.
 		var srcFns []*ssa.Function
 
-		// Get the current module name for filtering
-		modulePrefix := getModulePrefix(dir)
-		if gopathMode {
-			// Disable module filtering in GOPATH mode; import paths are synthetic (e.g., "v", "v/nested").
-			modulePrefix = ""
-		}
+		// Determine module prefix (empty in GOPATH mode where import paths are synthetic).
+        modulePrefix := getModulePrefix(dir)
+        if forceFull {
+            // Include all functions (module + dependencies)
+            modulePrefix = ""
+        }
+        if gopathMode {
+            modulePrefix = ""
+        }
 		if modulePrefix != "" {
 			bt.WriteString(styleInfo.Render(fmt.Sprintf("• filtering to module: %s", modulePrefix)) + "\n")
 		}
 
-		totalFunctions := 0
+		// Scan all functions known to the Program, then keep only those belonging to the module.
+		allFns := ssautil.AllFunctions(ssaProg)
+		totalFunctions := len(allFns)
 		localFunctions := 0
-
-		// Use the benchmark's proven efficient approach
-		for _, pkg := range ssaPkgs {
-			if pkg == nil || pkg.Pkg == nil {
+		for fn := range allFns {
+			if fn == nil || fn.Pkg == nil || fn.Pkg.Pkg == nil {
 				continue
 			}
-
-			// Filter to only local module packages if we have a module prefix
-			if modulePrefix != "" && !strings.HasPrefix(pkg.Pkg.Path(), modulePrefix) {
+			if fn.Synthetic != "" {
 				continue
 			}
-
-			// Iterate through package members (much more efficient than AllFunctions)
-			for _, member := range pkg.Members {
-				fn, ok := member.(*ssa.Function)
-				if !ok || fn == nil {
-					continue
-				}
-
-				if fn.Object() == nil || fn.Object().Name() == "_" {
-					continue
-				}
-
-				// Add the function and its anonymous functions
-				var addAnons func(f *ssa.Function)
-				addAnons = func(f *ssa.Function) {
-					if f != nil && f.Synthetic == "" {
-						srcFns = append(srcFns, f)
-						localFunctions++
-					}
-					// Add anonymous functions
-					for _, anon := range f.AnonFuncs {
-						addAnons(anon)
-					}
-				}
-				addAnons(fn)
-				totalFunctions++
+			if modulePrefix != "" && !strings.HasPrefix(fn.Pkg.Pkg.Path(), modulePrefix) {
+				continue
 			}
+			srcFns = append(srcFns, fn)
+			localFunctions++
 		}
 
-		bt.WriteString(styleInfo.Render(fmt.Sprintf("• filtered functions: %d packages → %d local functions", totalFunctions, localFunctions)) + "\n")
+		bt.WriteString(styleInfo.Render(fmt.Sprintf("• filtered functions: %d scanned → %d in module", totalFunctions, localFunctions)) + "\n")
 
 		// Try to find a main function first
 		// Filter out nil or incomplete packages before passing to ssautil.MainPackages
