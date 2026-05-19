@@ -20,11 +20,14 @@ will determine if the program is vulnerable to SQL injection such that any of th
 sources reach the given sinks.
 
 ```go
-cg, _ := callgraph.New(mainFn, buildSSA.SrcFuncs...)
+cg, err := callgraphutil.NewGraph(mainFn, buildSSA.SrcFuncs...)
+if err != nil {
+	return err
+}
 
 sources := taint.NewSources(
-        "*net/http.Request",
-        "google.golang.org/protobuf/proto.Message", // gRPC request types
+	"*net/http.Request",
+	"google.golang.org/protobuf/proto.Message", // gRPC request types
 )
 
 sinks := taint.NewSinks(
@@ -38,7 +41,7 @@ sinks := taint.NewSinks(
 	"(*database/sql.Tx).QueryRowContext",
 )
 
-results, _ := taint.Check(cg, sources, sinks)
+results := taint.Check(cg, sources, sinks)
 
 for _, result := range results {
 	// We found a query edge that is tainted by user input, is it
@@ -63,6 +66,21 @@ for _, result := range results {
 	if _, isConst := query.(*ssa.Const); !isConst {
 		pass.Reportf(result.SinkValue.Pos(), "potential sql injection")
 	}
+}
+```
+
+For explainability, use `CheckDetailed` instead. It preserves the `Result`
+shape and adds ordered evidence for source matches, propagation, parameter
+mapping, sanitizer decisions, sink matches, and conservative unknowns.
+
+```go
+diagnostics := taint.CheckDetailed(cg, sources, sinks, taint.WithSanitizers("html.EscapeString"))
+for _, diagnostic := range diagnostics {
+	result := diagnostic.Result
+	for _, evidence := range diagnostic.Evidence {
+		fmt.Printf("%s: %s\n", evidence.Kind, evidence.Message)
+	}
+	_ = result
 }
 ```
 
