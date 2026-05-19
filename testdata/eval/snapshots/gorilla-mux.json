@@ -5,15 +5,8 @@
   "commit": "b4617d0b9670ad14039b2739167fd35a60f557c5",
   "analyzers": {
     "logi": {
-      "count": 1,
-      "findings": [
-        {
-          "file": "mux_test.go",
-          "line": 2985,
-          "column": 13,
-          "message": "potential log injection"
-        }
-      ]
+      "count": 0,
+      "findings": []
     },
     "sqli": {
       "count": 0,

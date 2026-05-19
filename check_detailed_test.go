@@ -107,6 +107,89 @@ func main() {
 	}
 }
 
+// TestReceiverPropagationPrefersPreciseReturnAnalysis is the engine-level
+// regression for the gorilla-mux false positive. A method returning only an
+// error that does not embed its receiver's data must not be marked tainted
+// just because the receiver type is a configured source.
+func TestReceiverPropagationPrefersPreciseReturnAnalysis(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "log"
+
+type Req struct{ name string }
+
+// Validate returns a framework error that mentions only constants. The
+// receiver carries data, but none of that data flows into the returned
+// error value.
+func (r *Req) Validate() error {
+	if r == nil {
+		return errConst
+	}
+	return nil
+}
+
+var errConst = errStr("invalid request")
+
+type errStr string
+
+func (e errStr) Error() string { return string(e) }
+
+func main() {
+	r := &Req{name: "x"}
+	if err := r.Validate(); err != nil {
+		log.Printf("validate: %v", err)
+	}
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources("*"+pkgPath+".Req"),
+		NewSinks("log.Printf"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected no diagnostics — error return does not embed receiver data — got %d", len(diagnostics))
+	}
+}
+
+// TestReceiverPropagationCatchesPreciseEmbedding is the positive complement:
+// a method whose error value DOES contain receiver data must still be
+// flagged. This proves the precise walker is actually doing work, not just
+// silently suppressing the previous false positive.
+func TestReceiverPropagationCatchesPreciseEmbedding(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"fmt"
+	"log"
+)
+
+type Req struct{ name string }
+
+// Validate returns an error containing receiver data — the precise return
+// walker must see this and mark the result tainted.
+func (r *Req) Validate() error {
+	return fmt.Errorf("bad name: %s", r.name)
+}
+
+func main() {
+	r := &Req{name: "x"}
+	if err := r.Validate(); err != nil {
+		log.Printf("validate: %v", err)
+	}
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources("*"+pkgPath+".Req"),
+		NewSinks("log.Printf"),
+	)
+	if len(diagnostics) == 0 {
+		t.Fatal("expected a diagnostic — error value embeds receiver data — got none")
+	}
+}
+
 func TestSourceRegistryMatchesTypes(t *testing.T) {
 	pkg := types.NewPackage("net/http", "http")
 	obj := types.NewTypeName(token.NoPos, pkg, "Request", nil)

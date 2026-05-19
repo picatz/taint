@@ -336,29 +336,15 @@ func checkPathDetailed(path callgraphutil.Path, rules *ruleRegistry, sink sinkRu
 			return true, src, tv
 		}
 	}
-	if len(args) > 0 {
-		return false, "", nil
-	}
-
-	if sanitizer, ok := rules.sanitizerForValue(last.Site.Value()); ok {
-		trace.add(Evidence{
-			Kind:    EvidenceSanitizerApplied,
-			Message: "sink value is sanitizer result",
-			Rule:    sanitizer.id,
-			Value:   last.Site.Value(),
-			Edge:    last,
-		})
-		return false, "", nil
-	}
-
-	tainted, src, tv := checkSSAValue(path, rules.sources, last.Site.Value(), valueSet{})
-	if tainted {
-		if _, sanitized := rules.sanitizerForValue(tv); sanitized {
-			return false, "", nil
-		}
-		return true, src, tv
-	}
-
+	// The argument-level check above is the only path to a finding. The
+	// previous fallback inspected `last.Site.Value()` — the sink call's
+	// own return value — but every configured sink takes at least one
+	// non-receiver argument (verified across xss/log/sql sink lists), so
+	// the fallback was dead in production and a footgun if a future sink
+	// accidentally ended up with zero selectable args (e.g. a getter). If
+	// such a sink is added intentionally, gate the fallback behind an
+	// explicit `sinkRule.checkResult` opt-in rather than reintroducing it
+	// here.
 	return false, "", nil
 }
 
@@ -607,9 +593,40 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 			return true, src, value.Call.Value
 		}
 
-		// General receiver propagation: if the call has a receiver (method call) and
-		// the receiver base object (recursively) derives from a source, mark call result tainted.
-		if value.Call.Signature() != nil && value.Call.Signature().Recv() != nil && len(value.Call.Args) > 0 {
+		// Prefer precise data-flow analysis when the callee body is available.
+		// checkCallReturnValues walks the callee's blocks, finds Return
+		// instructions, and recursively checks whether the actual returned
+		// values carry source-derived data. This is the principled answer to
+		// "is this call's result tainted" because it follows real dependencies
+		// rather than assuming everything that touches a tainted receiver is
+		// tainted.
+		//
+		// When the body is not analyzable — interface dispatch with no
+		// resolvable concrete, foreign code, etc. — we fall back to the
+		// conservative rule that a method called on a tainted receiver
+		// returns tainted data.
+		callee := staticCallee(&value.Call)
+		bodyAnalyzable := callee != nil && len(callee.Blocks) > 0
+
+		if bodyAnalyzable {
+			if tainted, src, tv := checkCallReturnValues(path, sources, value, -1, visited); tainted {
+				return true, src, tv
+			}
+			// Body was inspected and showed no source-derived data reaching a
+			// return value. Trust that verdict; do NOT fall back to blanket
+			// receiver propagation, which is exactly the over-tainting we are
+			// trying to avoid (e.g. errors returned by methods on
+			// *http.Request).
+		} else if value.Call.Signature() != nil && value.Call.Signature().Recv() != nil && len(value.Call.Args) > 0 && !returnsOnlyError(value.Call.Signature()) {
+			// Body not analyzable. Fall back to the conservative rule that a
+			// method called on a source-derived receiver returns tainted
+			// data — but skip when the only return value is an error.
+			// Foreign / third-party error construction rarely embeds
+			// receiver bytes verbatim, so propagating into error returns
+			// without a body to inspect produces almost exclusively noise.
+			// When the method also returns other values the propagation
+			// still fires (e.g. a foreign reader returning ([]byte, error)
+			// where the bytes legitimately carry receiver data).
 			recv := value.Call.Args[0]
 			if src, ok := matchSourceType(sources, recv.Type()); ok {
 				return true, src, recv
@@ -620,7 +637,6 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 			if src, base := derivedFromSource(recv, sources); src != "" {
 				return true, src, base
 			}
-			// Also check if receiver operand expression derives from source.
 			if src, base := isExpressionDerivedFromSource(recv, sources); src != "" {
 				return true, src, base
 			}
@@ -633,12 +649,6 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 					return true, src, tv
 				}
 			}
-		}
-
-		// 2. For local/static calls, taint the result only when a returned
-		// value is tainted after mapping callee parameters back to call args.
-		if tainted, src, tv := checkCallReturnValues(path, sources, value, -1, visited); tainted {
-			return true, src, tv
 		}
 
 		// 3. Handle the case of a *ssa.Call from an anonymous function (*ssa.MakeClosure).
@@ -1012,6 +1022,32 @@ func callString(cc *ssa.CallCommon) string {
 		return cc.Value.String()
 	}
 	return ""
+}
+
+// returnsOnlyError reports whether a function signature returns exactly one
+// value of the predeclared `error` interface type. Used to narrow the
+// conservative receiver-propagation fallback so foreign methods on a
+// source-typed receiver that return only an error do not get blanket-
+// tainted. Multi-return signatures like `([]byte, error)` still propagate
+// because the non-error result may legitimately carry receiver data.
+func returnsOnlyError(sig *types.Signature) bool {
+	if sig == nil {
+		return false
+	}
+	res := sig.Results()
+	if res == nil || res.Len() != 1 {
+		return false
+	}
+	t := res.At(0).Type()
+	if t == nil {
+		return false
+	}
+	if named, ok := t.(*types.Named); ok {
+		if obj := named.Obj(); obj != nil && obj.Pkg() == nil && obj.Name() == "error" {
+			return true
+		}
+	}
+	return t.String() == "error"
 }
 
 func staticCallee(cc *ssa.CallCommon) *ssa.Function {

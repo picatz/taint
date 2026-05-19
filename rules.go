@@ -193,6 +193,10 @@ func defaultPropagatorRules() []propagatorRule {
 	}
 	return []propagatorRule{
 		{id: "fmt.Sprintf", matchCall: exactCallMatcher("fmt.Sprintf"), selectArgs: allArgs},
+		{id: "fmt.Sprint", matchCall: exactCallMatcher("fmt.Sprint"), selectArgs: allArgs},
+		{id: "fmt.Sprintln", matchCall: exactCallMatcher("fmt.Sprintln"), selectArgs: allArgs},
+		{id: "fmt.Errorf", matchCall: exactCallMatcher("fmt.Errorf"), selectArgs: allArgs},
+		{id: "errors.New", matchCall: exactCallMatcher("errors.New"), selectArgs: allArgs},
 		{id: "io.ReadAll", matchCall: exactCallMatcher("io.ReadAll"), selectArgs: allArgs},
 		{id: "bufio.NewReader", matchCall: exactCallMatcher("bufio.NewReader"), selectArgs: allArgs},
 		{id: "bufio.NewReaderSize", matchCall: exactCallMatcher("bufio.NewReaderSize"), selectArgs: allArgs},

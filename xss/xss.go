@@ -131,6 +131,21 @@ func run(pass *analysis.Pass) (any, error) {
 			continue
 		}
 
+		// Destination provenance filter. The sink rule (io.Writer).Write
+		// matches any Write on any io.Writer, including writes to log
+		// buffers (*bytes.Buffer), *strings.Builder, *os.File, etc. — none
+		// of which are HTTP response surfaces. Reject the finding only when
+		// the destination is *provably* a non-ResponseWriter; preserve
+		// detection when the destination flows from a ResponseWriter and
+		// when its origin cannot be statically determined (channel handoff,
+		// opaque interface, recursion limit, etc.). This is a tristate
+		// filter, not a binary one — we never drop detection on unclear
+		// provenance.
+		if destinationProvenance(sinkDestination(sinkEdge), result.Path) == provNotResponseWriter {
+			dbg("filtered: sink destination provably not a ResponseWriter")
+			continue
+		}
+
 		// Pick the outermost call site on this specific taint path that lives
 		// inside the user's package. Walking the path itself (rather than the
 		// whole call graph) keeps the report stable: the same logical taint
@@ -483,4 +498,282 @@ func isHTTPRequestType(t types.Type) bool {
 	}
 	// Accept exact string match for robustness across testdata GOPATH/module modes
 	return t.String() == "*net/http.Request"
+}
+
+// destProv is the tristate verdict from destinationProvenance.
+type destProv int
+
+const (
+	// provUnknown means the destination's origin cannot be determined
+	// statically. The finding is preserved on unknown — under-tainting
+	// silently is worse than over-tainting visibly.
+	provUnknown destProv = iota
+	// provResponseWriter means the destination provably flows from an
+	// http.ResponseWriter typed value (parameter, field, or convertible).
+	provResponseWriter
+	// provNotResponseWriter means the destination provably allocates a
+	// concrete non-response writer type — bytes.Buffer, strings.Builder,
+	// os.File, etc. This is the only verdict that suppresses the finding.
+	provNotResponseWriter
+)
+
+// sinkDestination returns the SSA value that the sink writes into.
+//
+//   - (io.Writer).Write — destination is the Invoke receiver (Common.Value)
+//   - io.Copy(dst, src) — destination is Args[0]
+//   - io.WriteString(w, s) — destination is Args[0]
+//   - (net/http.ResponseWriter).Write/WriteHeader — destination is the
+//     receiver; these are already ResponseWriter-typed at the sink rule
+//     level, so the filter is a no-op but kept for uniformity.
+//
+// Returns nil if the destination cannot be located, in which case the
+// filter degrades to "preserve finding" (provUnknown semantics at the
+// caller).
+func sinkDestination(edge *callgraph.Edge) ssa.Value {
+	if edge == nil || edge.Site == nil {
+		return nil
+	}
+	cc := edge.Site.Common()
+	if cc == nil {
+		return nil
+	}
+	calleeID := ""
+	if edge.Callee != nil && edge.Callee.Func != nil {
+		calleeID = edge.Callee.Func.String()
+	}
+	// Invoke calls on io.Writer or net/http.ResponseWriter: destination is
+	// the receiver, which lives in Common.Value (not Args).
+	if cc.IsInvoke() {
+		return cc.Value
+	}
+	// Function-form sinks: io.Copy(dst, src), io.WriteString(w, s).
+	// Both place the destination at Args[0].
+	switch calleeID {
+	case "io.Copy", "io.WriteString":
+		if len(cc.Args) > 0 {
+			return cc.Args[0]
+		}
+	}
+	// Non-invoke method calls (rare for our sinks but handle): receiver is
+	// Args[0].
+	if cc.Signature() != nil && cc.Signature().Recv() != nil && len(cc.Args) > 0 {
+		return cc.Args[0]
+	}
+	return nil
+}
+
+// destinationProvenance walks v's data dependencies to classify whether it
+// flows from an HTTP response surface. The walker is intentionally
+// asymmetric: it returns provNotResponseWriter ONLY when every reaching
+// definition is a concrete non-response writer allocation; provUnknown is
+// the default when any reaching definition is opaque (channel, map index,
+// foreign call, recursion limit). This bias preserves detection on flows
+// the walker cannot fully resolve.
+//
+// The taint path is used to resolve *ssa.Parameter encounters: when v is a
+// parameter of a function on the path, we walk back to the call site and
+// inspect the caller's argument. Without this, helpers like chi's `cW`
+// would always report provUnknown for their `io.Writer` parameter and the
+// filter could never fire on intermediate buffer writes.
+func destinationProvenance(v ssa.Value, path callgraphutil.Path) destProv {
+	if v == nil {
+		return provUnknown
+	}
+	seen := map[ssa.Value]struct{}{}
+	var walk func(ssa.Value) destProv
+	walk = func(cur ssa.Value) destProv {
+		if cur == nil {
+			return provUnknown
+		}
+		if _, dup := seen[cur]; dup {
+			return provUnknown
+		}
+		seen[cur] = struct{}{}
+
+		// Symmetric type check: definite yes / definite no decisions based
+		// on the value's static type alone, before walking operands.
+		// Catches dereferences and casts where the SSA case below would
+		// fall through to provUnknown despite the type being conclusive.
+		if isResponseWriterType(cur.Type()) {
+			return provResponseWriter
+		}
+		if isKnownNonResponseWriterType(cur.Type()) {
+			return provNotResponseWriter
+		}
+
+		switch x := cur.(type) {
+		case *ssa.Parameter:
+			// Resolve parameter to caller argument via the taint path.
+			// Walking the actual flow lets us classify destinations like
+			// chi's cW(&buf, ...) where `w` inside cW is a parameter but
+			// the caller passed a known buffer.
+			if arg := callerArgForParameter(path, x); arg != nil {
+				return walk(arg)
+			}
+			return provUnknown
+		case *ssa.MakeInterface:
+			return walk(x.X)
+		case *ssa.ChangeInterface:
+			return walk(x.X)
+		case *ssa.ChangeType:
+			return walk(x.X)
+		case *ssa.Convert:
+			return walk(x.X)
+		case *ssa.TypeAssert:
+			return walk(x.X)
+		case *ssa.FieldAddr:
+			if isKnownNonResponseWriterType(x.Type()) {
+				return provNotResponseWriter
+			}
+			return provUnknown
+		case *ssa.UnOp:
+			if x.Op == token.MUL {
+				return walk(x.X)
+			}
+			return provUnknown
+		case *ssa.Alloc:
+			if isKnownNonResponseWriterType(x.Type()) {
+				return provNotResponseWriter
+			}
+			return provUnknown
+		case *ssa.Global:
+			if isKnownNonResponseWriterType(x.Type()) {
+				return provNotResponseWriter
+			}
+			return provUnknown
+		case *ssa.Call:
+			// A function returning the destination — without a return-type
+			// analysis we cannot prove the result is a non-response
+			// writer, so be conservative and return unknown. This is the
+			// case for bufio.NewWriter(w), bytes.NewBuffer(...), and any
+			// custom factory function.
+			return provUnknown
+		case *ssa.Phi:
+			var verdict destProv = -1
+			for _, e := range x.Edges {
+				p := walk(e)
+				if p == provUnknown {
+					return provUnknown
+				}
+				if verdict == -1 {
+					verdict = p
+					continue
+				}
+				if verdict != p {
+					return provUnknown
+				}
+			}
+			if verdict == -1 {
+				return provUnknown
+			}
+			return verdict
+		}
+		return provUnknown
+	}
+	return walk(v)
+}
+
+// callerArgForParameter walks the taint path to find the call edge that
+// targets the function containing the parameter, then returns the
+// corresponding argument from the caller's call site. Returns nil if the
+// parameter's parent function does not appear as a callee on the path or
+// the call site does not have an argument at the parameter's index.
+func callerArgForParameter(path callgraphutil.Path, p *ssa.Parameter) ssa.Value {
+	if p == nil || p.Parent() == nil {
+		return nil
+	}
+	parent := p.Parent()
+	paramIdx := -1
+	for i, fp := range parent.Params {
+		if fp == p {
+			paramIdx = i
+			break
+		}
+	}
+	if paramIdx < 0 {
+		return nil
+	}
+	for _, edge := range path {
+		if edge == nil || edge.Site == nil {
+			continue
+		}
+		if edge.Callee == nil || edge.Callee.Func != parent {
+			continue
+		}
+		common := edge.Site.Common()
+		if common == nil {
+			continue
+		}
+		// For Invoke calls Args excludes the receiver; for non-invoke
+		// method calls Args includes the receiver as Args[0]. Parameters
+		// likewise include the receiver as Params[0] for methods, so the
+		// indices align directly in the non-invoke case. For Invoke calls
+		// the receiver is in Common.Value; shift the param index down by
+		// one if the parent has a receiver.
+		argIdx := paramIdx
+		if common.IsInvoke() && parent.Signature.Recv() != nil {
+			if paramIdx == 0 {
+				return common.Value
+			}
+			argIdx = paramIdx - 1
+		}
+		if argIdx < 0 || argIdx >= len(common.Args) {
+			continue
+		}
+		return common.Args[argIdx]
+	}
+	return nil
+}
+
+// isResponseWriterType returns true for values typed as net/http.ResponseWriter
+// (the interface) or implementations thereof that we can recognize from
+// type strings alone. We deliberately match on the interface name because
+// chasing implementation relationships through go/types here is more
+// machinery than the precision win warrants.
+func isResponseWriterType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	s := t.String()
+	return s == "net/http.ResponseWriter" || s == "*net/http.ResponseWriter"
+}
+
+// isKnownNonResponseWriterType returns true for a curated allowlist of
+// stdlib types that are unambiguously not HTTP response surfaces in their
+// own right.
+//
+// The audit policy: a type belongs here only if (a) its Write/WriteString
+// implementations are confined to that type's owned storage (an in-memory
+// slice, a string buffer, an OS file descriptor, a log stream) and (b) any
+// downstream flush to an HTTP response surface happens via a *different*
+// call (e.g. (*bytes.Buffer).WriteTo, w.Write(buf.Bytes()), io.Copy(w, buf))
+// which the engine catches independently at the real ResponseWriter sink.
+//
+// Notable exclusions and their reasons:
+//
+//   - *bufio.Writer wraps an io.Writer that is commonly an
+//     http.ResponseWriter; bw.Write(tainted) followed by bw.Flush() reaches
+//     the wrapped writer. Excluded so wrapping a ResponseWriter still fires.
+//   - tabwriter, gzip.Writer, anything else that explicitly wraps another
+//     io.Writer at construction time. Same reasoning.
+//   - io.Pipe writers (an *io.PipeWriter feeds a paired Reader that the
+//     handler might serve). Excluded out of caution.
+//
+// Kept deliberately small. When in doubt, leave a type out and let
+// provUnknown preserve the finding — under-tainting silently is worse than
+// over-tainting visibly.
+func isKnownNonResponseWriterType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	switch t.String() {
+	case "*bytes.Buffer",
+		"bytes.Buffer",
+		"*strings.Builder",
+		"strings.Builder",
+		"*os.File",
+		"*log.Logger":
+		return true
+	}
+	return false
 }

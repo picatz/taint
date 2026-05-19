@@ -41,6 +41,27 @@ func TestH(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "h")
 }
 
+// TestI is the chi-mirror regression: a helper that writes constants into
+// a non-ResponseWriter destination (*bytes.Buffer) MUST NOT fire even
+// though the surrounding handler receives an *http.Request. A direct
+// w.Write on the same handler must still fire.
+func TestI(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "i")
+}
+
+// TestJ ensures the destination-provenance walker classifies channel
+// receives as provUnknown — preserving the diagnostic on opaque flows.
+func TestJ(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "j")
+}
+
+// TestK ensures the destination-provenance walker does NOT suppress writes
+// when the destination is a *bufio.Writer wrapping an http.ResponseWriter —
+// a common legitimate buffering idiom that is still a real XSS vector.
+func TestK(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "k")
+}
+
 // TestDeterminism runs the analyzer multiple times on a fixture with many
 // in-package callers of a helper that itself writes to ResponseWriter. The
 // reported position must stay on the actual taint path each run; before

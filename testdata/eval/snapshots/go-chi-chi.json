@@ -13,15 +13,8 @@
       "findings": []
     },
     "xss": {
-      "count": 1,
-      "findings": [
-        {
-          "file": "middleware/logger.go",
-          "line": 109,
-          "column": 5,
-          "message": "potential XSS"
-        }
-      ]
+      "count": 0,
+      "findings": []
     }
   }
 }

@@ -56,6 +56,23 @@ func TestL(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "l")
 }
 
+// TestM is the gorilla-mux regression: the engine must NOT propagate taint
+// into the error return of a stdlib method called on a source-typed
+// receiver when the method body is unavailable for inspection. This kills
+// the noise pattern from `mux_test.go:2985` while preserving detection on
+// the direct r.URL.Query() flow in the same handler.
+func TestM(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "m")
+}
+
+// TestN is the positive complement: a custom validator that embeds request
+// data in its error value must still be flagged via the precise return
+// walker. This guards against regressing to a coarse "errors are never
+// tainted" heuristic.
+func TestN(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "n")
+}
+
 func TestGRPC(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "grpc")
 }
