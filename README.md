@@ -255,8 +255,9 @@ $ sqli main.go
 ### `logi`
 
 The `logi` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer) finds potential log injections. It understands common logging packages, including `log`, `log/slog`, `github.com/golang/glog`, `github.com/hashicorp/go-hclog`, `github.com/sirupsen/logrus`, and `go.uber.org/zap`.
-For zap, structured field constructors such as `zap.String`, `zap.Any`,
-`zap.ByteString`, and `zap.Error` preserve taint into the logged field.
+For structured logging, field constructors such as `slog.String`, `slog.Any`,
+`zap.String`, `zap.Any`, `zap.ByteString`, and `zap.Error` preserve taint into
+the logged field.
 
 ```console
 $ go install github.com/picatz/taint/cmd/logi@latest
@@ -287,8 +288,8 @@ $ logi main.go
 
 The `xss` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer) finds potential cross-site scripting (XSS) vulnerabilities.
 It reports tainted writes through `http.ResponseWriter.Write`, `io.WriteString`,
-`io.Copy`, and `fmt.Fprint`/`fmt.Fprintf`/`fmt.Fprintln` when the destination
-flows from an HTTP response writer.
+`io.Copy`, `net/http.Error`, and `fmt.Fprint`/`fmt.Fprintf`/`fmt.Fprintln` when
+the destination flows from an HTTP response writer.
 
 ```console
 $ go install github.com/picatz/taint/cmd/xss@latest

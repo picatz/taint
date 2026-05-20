@@ -81,6 +81,10 @@ func TestP(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "p")
 }
 
+func TestQ(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "q")
+}
+
 func TestGRPC(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "grpc")
 }

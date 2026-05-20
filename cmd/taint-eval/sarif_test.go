@@ -53,7 +53,7 @@ func TestWriteSnapshotSARIF(t *testing.T) {
 	if doc.Version != "2.1.0" {
 		t.Fatalf("version = %q", doc.Version)
 	}
-	if got := doc.Runs[0].Results[0].RuleID; got != "sqli" {
+	if got := doc.Runs[0].Results[0].RuleID; got != "sqli/potential-sql-injection" {
 		t.Fatalf("rule = %q", got)
 	}
 	if got := doc.Runs[0].Results[0].Locations[0].PhysicalLocation.ArtifactLocation.URI; got != "main.go" {

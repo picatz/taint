@@ -66,6 +66,10 @@ func TestL(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "l")
 }
 
+func TestM(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "m")
+}
+
 // TestDeterminism runs the analyzer multiple times on a fixture with many
 // in-package callers of a helper that itself writes to ResponseWriter. The
 // reported position must stay on the actual taint path each run; before

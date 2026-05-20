@@ -32,6 +32,7 @@ var injectableFunctions = taint.NewSinks(
 	"fmt.Fprintln",
 	"io.Copy",
 	"io.WriteString",
+	"net/http.Error",
 )
 
 // Analyzer finds potential XSS issues.
@@ -552,11 +553,11 @@ func sinkDestination(edge *callgraph.Edge) ssa.Value {
 	if cc.IsInvoke() {
 		return cc.Value
 	}
-	// Function-form sinks: io.Copy(dst, src), io.WriteString(w, s), and
-	// fmt.Fprint/Fprintf/Fprintln(w, ...). All place the destination at
-	// Args[0].
+	// Function-form sinks: io.Copy(dst, src), io.WriteString(w, s),
+	// fmt.Fprint/Fprintf/Fprintln(w, ...), and net/http.Error(w, ...).
+	// All place the destination at Args[0].
 	switch calleeID {
-	case "fmt.Fprint", "fmt.Fprintf", "fmt.Fprintln", "io.Copy", "io.WriteString":
+	case "fmt.Fprint", "fmt.Fprintf", "fmt.Fprintln", "io.Copy", "io.WriteString", "net/http.Error":
 		if len(cc.Args) > 0 {
 			return cc.Args[0]
 		}

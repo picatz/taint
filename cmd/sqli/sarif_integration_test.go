@@ -51,7 +51,7 @@ func TestSARIFOutputEndToEnd(t *testing.T) {
 	if got := len(doc.Runs[0].Results); got != 7 {
 		t.Fatalf("results = %d, want 7", got)
 	}
-	if got := doc.Runs[0].Results[0].RuleID; got != "sqli" {
+	if got := doc.Runs[0].Results[0].RuleID; got != "sqli/potential-sql-injection" {
 		t.Fatalf("rule = %q", got)
 	}
 }

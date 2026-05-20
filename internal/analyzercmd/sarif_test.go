@@ -55,10 +55,17 @@ func TestSARIFLogFromAnalyzerJSON(t *testing.T) {
 	if got := log.Runs[0].Tool.Driver.Name; got != "sqli" {
 		t.Fatalf("driver name = %q", got)
 	}
-	if got := log.Runs[0].Results[0].Locations[0].PhysicalLocation.ArtifactLocation.URI; got != "main.go" {
+	result := log.Runs[0].Results[0]
+	if got := result.RuleID; got != "sqli/potential-sql-injection" {
+		t.Fatalf("rule ID = %q", got)
+	}
+	if got := log.Runs[0].Tool.Driver.Rules[0].HelpURI; got != "https://cwe.mitre.org/data/definitions/89.html" {
+		t.Fatalf("help URI = %q", got)
+	}
+	if got := result.Locations[0].PhysicalLocation.ArtifactLocation.URI; got != "main.go" {
 		t.Fatalf("artifact URI = %q", got)
 	}
-	region := log.Runs[0].Results[0].Locations[0].PhysicalLocation.Region
+	region := result.Locations[0].PhysicalLocation.Region
 	if region.StartLine != 9 || region.StartColumn != 10 {
 		t.Fatalf("region = %#v", region)
 	}

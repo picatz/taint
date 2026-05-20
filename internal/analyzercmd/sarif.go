@@ -184,13 +184,19 @@ type SARIFDriver struct {
 type SARIFRule struct {
 	ID                   string                    `json:"id"`
 	Name                 string                    `json:"name,omitempty"`
+	HelpURI              string                    `json:"helpUri,omitempty"`
 	ShortDescription     SARIFMessage              `json:"shortDescription,omitempty"`
 	FullDescription      SARIFMessage              `json:"fullDescription,omitempty"`
 	DefaultConfiguration SARIFDefaultConfiguration `json:"defaultConfiguration,omitempty"`
+	Properties           SARIFProperties           `json:"properties,omitempty"`
 }
 
 type SARIFDefaultConfiguration struct {
 	Level string `json:"level,omitempty"`
+}
+
+type SARIFProperties struct {
+	Tags []string `json:"tags,omitempty"`
 }
 
 type SARIFResult struct {
@@ -277,6 +283,7 @@ func SARIFLogFromFindings(driverName, driverDoc string, findings []Finding) SARI
 		if f.RuleID == "" {
 			f.RuleID = driverName
 		}
+		f.RuleID = detailedRuleID(f.RuleID, f.Message)
 		if _, ok := ruleSet[f.RuleID]; !ok {
 			ruleSet[f.RuleID] = ruleDescription(f.RuleID, driverName, driverDoc)
 		}
@@ -307,12 +314,15 @@ func SARIFLogFromFindings(driverName, driverDoc string, findings []Finding) SARI
 	rules := make([]SARIFRule, 0, len(ruleIDs))
 	for i, id := range ruleIDs {
 		ruleIndex[id] = i
+		meta := ruleMetadata(id)
 		rules = append(rules, SARIFRule{
 			ID:                   id,
-			Name:                 id,
+			Name:                 meta.name,
+			HelpURI:              meta.helpURI,
 			ShortDescription:     SARIFMessage{Text: ruleSet[id]},
 			FullDescription:      SARIFMessage{Text: ruleSet[id]},
 			DefaultConfiguration: SARIFDefaultConfiguration{Level: "warning"},
+			Properties:           SARIFProperties{Tags: meta.tags},
 		})
 	}
 
@@ -371,15 +381,64 @@ func ruleDescription(ruleID, driverName, driverDoc string) string {
 		return driverDoc
 	}
 	switch ruleID {
-	case "sqli":
+	case "sqli", "sqli/potential-sql-injection":
 		return "finds potential SQL injection issues"
-	case "logi":
+	case "logi", "logi/potential-log-injection":
 		return "finds potential log injection issues"
-	case "xss":
+	case "xss", "xss/potential-xss":
 		return "finds potential XSS issues"
 	default:
 		return ruleID
 	}
+}
+
+type sarifRuleMeta struct {
+	name    string
+	helpURI string
+	tags    []string
+}
+
+func ruleMetadata(ruleID string) sarifRuleMeta {
+	switch ruleID {
+	case "sqli/potential-sql-injection":
+		return sarifRuleMeta{
+			name:    "Potential SQL injection",
+			helpURI: "https://cwe.mitre.org/data/definitions/89.html",
+			tags:    []string{"security", "external/cwe/cwe-89"},
+		}
+	case "logi/potential-log-injection":
+		return sarifRuleMeta{
+			name:    "Potential log injection",
+			helpURI: "https://cwe.mitre.org/data/definitions/117.html",
+			tags:    []string{"security", "external/cwe/cwe-117"},
+		}
+	case "xss/potential-xss":
+		return sarifRuleMeta{
+			name:    "Potential cross-site scripting",
+			helpURI: "https://cwe.mitre.org/data/definitions/79.html",
+			tags:    []string{"security", "external/cwe/cwe-79"},
+		}
+	default:
+		return sarifRuleMeta{name: ruleID}
+	}
+}
+
+func detailedRuleID(analyzerName, message string) string {
+	switch analyzerName {
+	case "sqli":
+		if strings.EqualFold(message, "potential sql injection") {
+			return "sqli/potential-sql-injection"
+		}
+	case "logi":
+		if strings.EqualFold(message, "potential log injection") {
+			return "logi/potential-log-injection"
+		}
+	case "xss":
+		if strings.EqualFold(message, "potential XSS") {
+			return "xss/potential-xss"
+		}
+	}
+	return analyzerName
 }
 
 func splitPosn(posn string) (path string, line, col int) {
