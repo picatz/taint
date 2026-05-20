@@ -20,8 +20,16 @@ func TestShellCommandString(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "shell")
 }
 
+func TestShellCommandFlagsAndAliases(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "shellflags")
+}
+
 func TestTaintedOrdinaryArgumentIgnored(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "argument")
+}
+
+func TestTaintedVariadicOrdinaryArgumentIgnored(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "variadicclean")
 }
 
 func TestConstantsClean(t *testing.T) {

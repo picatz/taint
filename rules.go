@@ -589,33 +589,55 @@ func isStringSlice(t types.Type) bool {
 }
 
 func sliceElementAt(v ssa.Value, index int) ssa.Value {
-	seen := map[ssa.Value]struct{}{}
-	var visit func(ssa.Value) ssa.Value
-	visit = func(cur ssa.Value) ssa.Value {
-		if cur == nil {
+	type visitKey struct {
+		value ssa.Value
+		index int
+	}
+	seen := map[visitKey]struct{}{}
+	var visit func(ssa.Value, int) ssa.Value
+	visit = func(cur ssa.Value, curIndex int) ssa.Value {
+		if cur == nil || curIndex < 0 {
 			return nil
 		}
-		if _, ok := seen[cur]; ok {
+		key := visitKey{value: cur, index: curIndex}
+		if _, ok := seen[key]; ok {
 			return nil
 		}
-		seen[cur] = struct{}{}
+		seen[key] = struct{}{}
 		switch value := cur.(type) {
 		case *ssa.Slice:
-			return visit(value.X)
+			low := 0
+			if value.Low != nil {
+				var ok bool
+				low, ok = intConstant(value.Low)
+				if !ok {
+					return nil
+				}
+			}
+			return visit(value.X, curIndex+low)
 		case *ssa.ChangeInterface:
-			return visit(value.X)
+			return visit(value.X, curIndex)
 		case *ssa.ChangeType:
-			return visit(value.X)
+			return visit(value.X, curIndex)
 		case *ssa.Convert:
-			return visit(value.X)
+			return visit(value.X, curIndex)
 		case *ssa.MakeInterface:
-			return visit(value.X)
+			return visit(value.X, curIndex)
+		case *ssa.UnOp:
+			if value.Op != token.MUL {
+				return nil
+			}
+			stored, ok := storedValuesForLoad(value)
+			if !ok || len(stored) != 1 {
+				return nil
+			}
+			return visit(stored[0], curIndex)
 		case *ssa.Alloc:
-			return storedArrayElement(value, index)
+			return storedArrayElement(value, curIndex)
 		}
 		return nil
 	}
-	return visit(v)
+	return visit(v, index)
 }
 
 func storedArrayElement(array ssa.Value, index int) ssa.Value {
@@ -646,15 +668,38 @@ func storedArrayElement(array ssa.Value, index int) ssa.Value {
 }
 
 func intConstantEquals(v ssa.Value, want int) bool {
+	got, ok := intConstant(v)
+	return ok && got == want
+}
+
+func intConstant(v ssa.Value) (int, bool) {
 	c, ok := v.(*ssa.Const)
 	if !ok || c.Value == nil {
-		return false
+		return 0, false
 	}
 	got, exact := constant.Int64Val(c.Value)
-	return exact && got == int64(want)
+	if !exact {
+		return 0, false
+	}
+	out := int(got)
+	if int64(out) != got {
+		return 0, false
+	}
+	return out, true
 }
 
 func stringConstant(v ssa.Value) (string, bool) {
+	return stringConstantValue(v, map[ssa.Value]struct{}{})
+}
+
+func stringConstantValue(v ssa.Value, seen map[ssa.Value]struct{}) (string, bool) {
+	if v == nil {
+		return "", false
+	}
+	if _, ok := seen[v]; ok {
+		return "", false
+	}
+	seen[v] = struct{}{}
 	switch value := v.(type) {
 	case *ssa.Const:
 		if value.Value == nil || value.Value.Kind() != constant.String {
@@ -662,15 +707,55 @@ func stringConstant(v ssa.Value) (string, bool) {
 		}
 		return constant.StringVal(value.Value), true
 	case *ssa.ChangeInterface:
-		return stringConstant(value.X)
+		return stringConstantValue(value.X, seen)
 	case *ssa.ChangeType:
-		return stringConstant(value.X)
+		return stringConstantValue(value.X, seen)
 	case *ssa.Convert:
-		return stringConstant(value.X)
+		return stringConstantValue(value.X, seen)
 	case *ssa.MakeInterface:
-		return stringConstant(value.X)
+		return stringConstantValue(value.X, seen)
+	case *ssa.UnOp:
+		if value.Op != token.MUL {
+			return "", false
+		}
+		stored, ok := storedValuesForLoad(value)
+		if !ok {
+			return "", false
+		}
+		return commonStringConstant(stored, seen)
+	case *ssa.Phi:
+		return commonStringConstant(value.Edges, seen)
 	}
 	return "", false
+}
+
+func commonStringConstant(values []ssa.Value, seen map[ssa.Value]struct{}) (string, bool) {
+	if len(values) == 0 {
+		return "", false
+	}
+	var out string
+	for i, value := range values {
+		got, ok := stringConstantValue(value, cloneSSAValueSeen(seen))
+		if !ok {
+			return "", false
+		}
+		if i == 0 {
+			out = got
+			continue
+		}
+		if got != out {
+			return "", false
+		}
+	}
+	return out, true
+}
+
+func cloneSSAValueSeen(seen map[ssa.Value]struct{}) map[ssa.Value]struct{} {
+	out := make(map[ssa.Value]struct{}, len(seen))
+	for value := range seen {
+		out[value] = struct{}{}
+	}
+	return out
 }
 
 func isShellExecutable(name string) bool {
@@ -701,7 +786,33 @@ func isShellCommandFlag(shell, flag string) bool {
 		return strings.EqualFold(flag, "/c")
 	case "powershell", "powershell.exe", "pwsh", "pwsh.exe":
 		return strings.EqualFold(flag, "-command") || strings.EqualFold(flag, "-c")
+	case "sh", "bash", "dash", "zsh", "ksh", "ash":
+		return isPOSIXShellCommandFlag(flag)
 	default:
-		return flag == "-c"
+		return false
+	}
+}
+
+func isPOSIXShellCommandFlag(flag string) bool {
+	if flag == "-c" {
+		return true
+	}
+	if len(flag) < 3 || !strings.HasPrefix(flag, "-") || strings.HasPrefix(flag, "--") || flag[len(flag)-1] != 'c' {
+		return false
+	}
+	for _, option := range flag[1 : len(flag)-1] {
+		if !isPOSIXShellOption(option) {
+			return false
+		}
+	}
+	return true
+}
+
+func isPOSIXShellOption(option rune) bool {
+	switch option {
+	case 'a', 'b', 'C', 'e', 'f', 'h', 'i', 'l', 'm', 'n', 'p', 's', 't', 'u', 'v', 'x':
+		return true
+	default:
+		return false
 	}
 }
