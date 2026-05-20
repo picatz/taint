@@ -116,6 +116,9 @@ func PathSearch(start *callgraph.Node, isMatch func(*callgraph.Node) bool) Path 
 	)
 
 	search = func(n *callgraph.Node) Path {
+		if n == nil {
+			return nil
+		}
 		if !seen[n] {
 			// debug("searching: %v\n", n)
 			seen[n] = true
@@ -207,6 +210,9 @@ func ReachableNodes(start *callgraph.Node) map[*callgraph.Node]bool {
 // to a node that matches the function name.
 func PathSearchCallTo(start *callgraph.Node, fn string) Path {
 	return PathSearch(start, func(n *callgraph.Node) bool {
+		if n == nil || n.Func == nil {
+			return false
+		}
 		fnStr := n.Func.String()
 		return fnStr == fn
 	})

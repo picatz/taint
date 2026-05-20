@@ -108,6 +108,9 @@ func NewGraph(root *ssa.Function, srcFns ...*ssa.Function) (*callgraph.Graph, er
 
 // NewGraphWithContext creates a new call graph with context support for cancellation and logging
 func NewGraphWithContext(ctx context.Context, root *ssa.Function, srcFns ...*ssa.Function) (*callgraph.Graph, error) {
+	if root == nil {
+		return nil, fmt.Errorf("nil root function")
+	}
 	logger := FromContext(ctx)
 
 	logger.Step("Starting call graph construction",
@@ -919,16 +922,34 @@ func processChangeInterfaceArgsOptimized(root *ssa.Function, g *callgraph.Graph,
 // 2. Reduced allocations in argument processing
 // 3. Early exits for non-function arguments
 func processFunctionArgumentsOptimized(g *callgraph.Graph, site ssa.CallInstruction, instrCall *ssa.Function) error {
-	// Optimized loop with early type checking
-	for _, arg := range site.Common().Args {
-		switch argt := arg.(type) {
-		case *ssa.Function:
-			// Direct function reference - most common case
-			callgraph.AddEdge(g.CreateNode(instrCall), site, g.CreateNode(argt))
-		case *ssa.MakeClosure:
-			// Closure creation - second most common case
-			if argtFn, ok := argt.Fn.(*ssa.Function); ok {
-				callgraph.AddEdge(g.CreateNode(instrCall), site, g.CreateNode(argtFn))
+	return processFunctionArgumentsByUse(g, site, instrCall)
+}
+
+func processFunctionArgumentsByUse(g *callgraph.Graph, site ssa.CallInstruction, instrCall *ssa.Function) error {
+	if g == nil || site == nil || instrCall == nil || site.Common() == nil {
+		return nil
+	}
+
+	for argIndex, arg := range site.Common().Args {
+		callbacks := functionValues(arg)
+		if len(callbacks) == 0 {
+			continue
+		}
+		dispatches := callbackArgumentDispatches(site, instrCall, argIndex)
+		if len(dispatches) == 0 {
+			continue
+		}
+		for _, callback := range callbacks {
+			for _, dispatch := range dispatches {
+				caller := dispatch.caller
+				if caller == nil {
+					caller = instrCall
+				}
+				dispatchSite := dispatch.site
+				if dispatchSite == nil {
+					dispatchSite = site
+				}
+				callgraph.AddEdge(g.CreateNode(caller), dispatchSite, g.CreateNode(callback))
 			}
 		}
 	}
@@ -1019,17 +1040,7 @@ func processChangeInterfaceArgs(root *ssa.Function, g *callgraph.Graph, site ssa
 // This handles cases where functions are passed as arguments to other functions,
 // which is common in callback patterns and higher-order functions.
 func processFunctionArguments(g *callgraph.Graph, site ssa.CallInstruction, instrCall *ssa.Function) error {
-	for _, arg := range site.Common().Args {
-		switch argt := arg.(type) {
-		case *ssa.Function:
-			callgraph.AddEdge(g.CreateNode(instrCall), site, g.CreateNode(argt))
-		case *ssa.MakeClosure:
-			if argtFn, ok := argt.Fn.(*ssa.Function); ok {
-				callgraph.AddEdge(g.CreateNode(instrCall), site, g.CreateNode(argtFn))
-			}
-		}
-	}
-	return nil
+	return processFunctionArgumentsByUse(g, site, instrCall)
 }
 
 // AddFunction analyzes the given target SSA function, adding information to the call graph.
@@ -1178,15 +1189,266 @@ func findFunctionsInFieldValue(field *ssa.Field, allFns map[*ssa.Function]bool) 
 }
 
 func functionValues(v ssa.Value) []*ssa.Function {
-	switch v := v.(type) {
+	seen := map[ssa.Value]struct{}{}
+	var visit func(ssa.Value) []*ssa.Function
+	visit = func(cur ssa.Value) []*ssa.Function {
+		if cur == nil {
+			return nil
+		}
+		if _, ok := seen[cur]; ok {
+			return nil
+		}
+		seen[cur] = struct{}{}
+
+		switch value := cur.(type) {
+		case *ssa.Function:
+			return []*ssa.Function{value}
+		case *ssa.MakeClosure:
+			if f, ok := value.Fn.(*ssa.Function); ok {
+				return []*ssa.Function{f}
+			}
+		case *ssa.MakeInterface:
+			return visit(value.X)
+		case *ssa.ChangeInterface:
+			return visit(value.X)
+		case *ssa.ChangeType:
+			return visit(value.X)
+		case *ssa.Convert:
+			return visit(value.X)
+		case *ssa.TypeAssert:
+			return visit(value.X)
+		}
+		return nil
+	}
+	return dedupeFunctions(visit(v))
+}
+
+type callbackDispatch struct {
+	caller *ssa.Function
+	site   ssa.CallInstruction
+}
+
+func callbackArgumentDispatches(site ssa.CallInstruction, callee *ssa.Function, argIndex int) []callbackDispatch {
+	if knownCallbackRegistrationArg(site, argIndex) {
+		return []callbackDispatch{{caller: callee, site: site}}
+	}
+	param := parameterForCallArg(site.Common(), callee, argIndex)
+	if param == nil {
+		return nil
+	}
+	return dedupeCallbackDispatches(functionParameterDispatches(callee, param, map[callbackParamKey]struct{}{}))
+}
+
+type callbackParamKey struct {
+	fn    *ssa.Function
+	param *ssa.Parameter
+}
+
+func functionParameterDispatches(fn *ssa.Function, param *ssa.Parameter, seen map[callbackParamKey]struct{}) []callbackDispatch {
+	if fn == nil || param == nil || len(fn.Blocks) == 0 {
+		return nil
+	}
+	key := callbackParamKey{fn: fn, param: param}
+	if _, ok := seen[key]; ok {
+		return nil
+	}
+	seen[key] = struct{}{}
+
+	var out []callbackDispatch
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			call, ok := instr.(ssa.CallInstruction)
+			if !ok || call.Common() == nil {
+				continue
+			}
+			common := call.Common()
+			if valueDerivedFromParameter(common.Value, param) {
+				out = append(out, callbackDispatch{caller: fn, site: call})
+				continue
+			}
+			target := staticCalleeForCallCommon(common)
+			for argIndex, arg := range common.Args {
+				if !valueDerivedFromParameter(arg, param) {
+					continue
+				}
+				if knownCallbackRegistrationArg(call, argIndex) {
+					caller := target
+					if caller == nil {
+						caller = fn
+					}
+					out = append(out, callbackDispatch{caller: caller, site: call})
+					continue
+				}
+				targetParam := parameterForCallArg(common, target, argIndex)
+				out = append(out, functionParameterDispatches(target, targetParam, seen)...)
+			}
+		}
+	}
+	return out
+}
+
+func dedupeCallbackDispatches(dispatches []callbackDispatch) []callbackDispatch {
+	if len(dispatches) <= 1 {
+		return dispatches
+	}
+	seen := make(map[callbackDispatch]struct{}, len(dispatches))
+	out := make([]callbackDispatch, 0, len(dispatches))
+	for _, dispatch := range dispatches {
+		if dispatch.site == nil {
+			continue
+		}
+		if _, ok := seen[dispatch]; ok {
+			continue
+		}
+		seen[dispatch] = struct{}{}
+		out = append(out, dispatch)
+	}
+	return out
+}
+
+func valueDerivedFromParameter(v ssa.Value, param *ssa.Parameter) bool {
+	seen := map[ssa.Value]struct{}{}
+	var visit func(ssa.Value) bool
+	visit = func(cur ssa.Value) bool {
+		if cur == nil {
+			return false
+		}
+		if cur == param {
+			return true
+		}
+		if _, ok := seen[cur]; ok {
+			return false
+		}
+		seen[cur] = struct{}{}
+
+		switch value := cur.(type) {
+		case *ssa.MakeInterface:
+			return visit(value.X)
+		case *ssa.ChangeInterface:
+			return visit(value.X)
+		case *ssa.ChangeType:
+			return visit(value.X)
+		case *ssa.Convert:
+			return visit(value.X)
+		case *ssa.TypeAssert:
+			return visit(value.X)
+		case *ssa.Phi:
+			for _, edge := range value.Edges {
+				if visit(edge) {
+					return true
+				}
+			}
+		case *ssa.UnOp:
+			if visit(value.X) {
+				return true
+			}
+			if value.Op == token.MUL {
+				for _, stored := range storedValuesForAddress(value.X) {
+					if visit(stored) {
+						return true
+					}
+				}
+			}
+		case *ssa.Alloc:
+			for _, stored := range storedValuesForAddress(value) {
+				if visit(stored) {
+					return true
+				}
+			}
+		case ssa.Instruction:
+			for _, operand := range value.Operands(nil) {
+				if operand != nil && visit(*operand) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return visit(v)
+}
+
+func storedValuesForAddress(addr ssa.Value) []ssa.Value {
+	if addr == nil {
+		return nil
+	}
+	var out []ssa.Value
+	if refs := addr.Referrers(); refs != nil {
+		for _, ref := range *refs {
+			store, ok := ref.(*ssa.Store)
+			if !ok || store.Addr != addr || store.Val == nil {
+				continue
+			}
+			out = append(out, store.Val)
+		}
+	}
+	return out
+}
+
+func parameterForCallArg(common *ssa.CallCommon, callee *ssa.Function, argIndex int) *ssa.Parameter {
+	if common == nil || callee == nil || argIndex < 0 {
+		return nil
+	}
+	paramIndex := argIndex
+	if common.IsInvoke() && callee.Signature != nil && callee.Signature.Recv() != nil {
+		paramIndex++
+	}
+	if paramIndex < 0 || paramIndex >= len(callee.Params) {
+		return nil
+	}
+	return callee.Params[paramIndex]
+}
+
+func staticCalleeForCallCommon(common *ssa.CallCommon) *ssa.Function {
+	if common == nil {
+		return nil
+	}
+	if fn := common.StaticCallee(); fn != nil {
+		return fn
+	}
+	switch value := common.Value.(type) {
 	case *ssa.Function:
-		return []*ssa.Function{v}
+		return value
 	case *ssa.MakeClosure:
-		if f, ok := v.Fn.(*ssa.Function); ok {
-			return []*ssa.Function{f}
+		if fn, ok := value.Fn.(*ssa.Function); ok {
+			return fn
 		}
 	}
 	return nil
+}
+
+func knownCallbackRegistrationArg(site ssa.CallInstruction, argIndex int) bool {
+	if site == nil || site.Common() == nil {
+		return false
+	}
+	switch callCommonString(site.Common()) {
+	case "net/http.Handle", "net/http.HandleFunc":
+		return argIndex == 1
+	case "(*net/http.ServeMux).Handle", "(net/http.ServeMux).Handle",
+		"(*net/http.ServeMux).HandleFunc", "(net/http.ServeMux).HandleFunc":
+		return argIndex == 2
+	case "net/http.ListenAndServe":
+		return argIndex == 1
+	case "net/http.ListenAndServeTLS":
+		return argIndex == 3
+	}
+	return false
+}
+
+func callCommonString(common *ssa.CallCommon) string {
+	if common == nil {
+		return ""
+	}
+	if fn := common.StaticCallee(); fn != nil {
+		return fn.String()
+	}
+	if common.IsInvoke() && common.Method != nil && common.Signature() != nil && common.Signature().Recv() != nil {
+		recvStr := types.TypeString(common.Signature().Recv().Type(), nil)
+		return fmt.Sprintf("(%s).%s", recvStr, common.Method.Name())
+	}
+	if common.Value != nil {
+		return common.Value.String()
+	}
+	return ""
 }
 
 func sameFieldBase(a, b ssa.Value) bool {

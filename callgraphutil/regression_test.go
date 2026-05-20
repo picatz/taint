@@ -64,6 +64,21 @@ func TestDeduplicateEdgesKeepsInOutConsistent(t *testing.T) {
 	}
 }
 
+func TestNewGraphRejectsNilRoot(t *testing.T) {
+	if _, err := NewGraph(nil); err == nil {
+		t.Fatal("expected nil root error")
+	}
+}
+
+func TestPathSearchHandlesNilStart(t *testing.T) {
+	if path := PathSearch(nil, func(*callgraph.Node) bool { return true }); path != nil {
+		t.Fatalf("expected nil path for nil start, got %v", path)
+	}
+	if path := PathSearchCallTo(nil, "target"); path != nil {
+		t.Fatalf("expected nil call path for nil start, got %v", path)
+	}
+}
+
 func TestInterfaceInvokeUsesConcreteImplementation(t *testing.T) {
 	cg, pkgPath := graphForSource(t, `package main
 
