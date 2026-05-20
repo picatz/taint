@@ -26,3 +26,6 @@ go.work
 # Generated callgraph exports.
 callgraphutil/taint.csv
 callgraphutil/taint-metadata.csv
+
+# Generated analyzer reports.
+*.sarif

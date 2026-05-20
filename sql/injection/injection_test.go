@@ -110,6 +110,10 @@ func TestX(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "x")
 }
 
+func TestY(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "y")
+}
+
 func TestReceiver(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "receiver")
 }

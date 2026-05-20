@@ -33,10 +33,22 @@ var injectableSQLMethods = taint.NewSinks(
 	"(*database/sql.DB).QueryContext",
 	"(*database/sql.DB).QueryRow",
 	"(*database/sql.DB).QueryRowContext",
+	"(*database/sql.DB).Exec",
+	"(*database/sql.DB).ExecContext",
+	"(*database/sql.DB).Prepare",
+	"(*database/sql.DB).PrepareContext",
 	"(*database/sql.Tx).Query",
 	"(*database/sql.Tx).QueryContext",
 	"(*database/sql.Tx).QueryRow",
 	"(*database/sql.Tx).QueryRowContext",
+	"(*database/sql.Tx).Exec",
+	"(*database/sql.Tx).ExecContext",
+	"(*database/sql.Tx).Prepare",
+	"(*database/sql.Tx).PrepareContext",
+	"(*database/sql.Conn).QueryContext",
+	"(*database/sql.Conn).QueryRowContext",
+	"(*database/sql.Conn).ExecContext",
+	"(*database/sql.Conn).PrepareContext",
 	// GORM v1
 	// https://gorm.io/docs/security.html
 	// https://gorm.io/docs/security.html#SQL-injection-Methods

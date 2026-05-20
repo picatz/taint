@@ -188,6 +188,14 @@ The `sqli`, `logi`, and `xss` analyzer CLIs use the built-in taint callgraph
 by default. Pass `-callgraph=vta` to compare results with the alternate CHA+VTA
 builder.
 
+They also support SARIF output for code scanning integrations:
+
+```console
+$ sqli -sarif ./... > sqli.sarif
+$ logi -sarif-output logi.sarif ./...
+$ xss -sarif ./...
+```
+
 ### `sqli`
 
 The `sqli` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer) finds potential SQL injections.
@@ -195,6 +203,7 @@ The `sqli` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer
 Supported SQL packages include:
 
 - the standard library `database/sql` package
+  (`Query`, `QueryRow`, `Exec`, and `Prepare` variants on `DB`, `Tx`, and `Conn`)
 - `github.com/jinzhu/gorm` (GORM v1)
 - `gorm.io/gorm` (GORM v2)
 - `github.com/jmoiron/sqlx`

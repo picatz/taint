@@ -1,10 +1,10 @@
 package main
 
 import (
+	"github.com/picatz/taint/internal/analyzercmd"
 	"github.com/picatz/taint/log/injection"
-	"golang.org/x/tools/go/analysis/singlechecker"
 )
 
 func main() {
-	singlechecker.Main(injection.Analyzer)
+	analyzercmd.Main(injection.Analyzer)
 }

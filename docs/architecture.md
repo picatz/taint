@@ -64,6 +64,11 @@ parameter mapping, sanitizer decisions, sink matches, and unresolved or
 synthetic modeling. Analyzers can report the concrete unsafe callsite and use
 the evidence for debug or future CLI output.
 
+Analyzer commands (`sqli`, `logi`, and `xss`) support `-sarif` and
+`-sarif-output <path>`. SARIF mode runs the same analyzer through the standard
+singlechecker JSON path, then converts diagnostics into deterministic SARIF
+2.1.0 results with rule IDs matching analyzer names.
+
 ## Conservative Limits
 
 The engine is intentionally conservative where SSA or callgraph information is
