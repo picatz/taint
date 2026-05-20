@@ -2,6 +2,8 @@ package analyzercmd
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -200,11 +202,12 @@ type SARIFProperties struct {
 }
 
 type SARIFResult struct {
-	RuleID    string          `json:"ruleId"`
-	RuleIndex int             `json:"ruleIndex,omitempty"`
-	Level     string          `json:"level,omitempty"`
-	Message   SARIFMessage    `json:"message"`
-	Locations []SARIFLocation `json:"locations,omitempty"`
+	RuleID              string            `json:"ruleId"`
+	RuleIndex           int               `json:"ruleIndex,omitempty"`
+	Level               string            `json:"level,omitempty"`
+	Message             SARIFMessage      `json:"message"`
+	Locations           []SARIFLocation   `json:"locations,omitempty"`
+	PartialFingerprints map[string]string `json:"partialFingerprints,omitempty"`
 }
 
 type SARIFMessage struct {
@@ -346,10 +349,11 @@ func SARIFLogFromFindings(driverName, driverDoc string, findings []Finding) SARI
 	results := make([]SARIFResult, 0, len(deduped))
 	for _, f := range deduped {
 		results = append(results, SARIFResult{
-			RuleID:    f.RuleID,
-			RuleIndex: ruleIndex[f.RuleID],
-			Level:     "warning",
-			Message:   SARIFMessage{Text: f.Message},
+			RuleID:              f.RuleID,
+			RuleIndex:           ruleIndex[f.RuleID],
+			Level:               "warning",
+			Message:             SARIFMessage{Text: f.Message},
+			PartialFingerprints: map[string]string{"taint/v1": partialFingerprint(f)},
 			Locations: []SARIFLocation{{
 				PhysicalLocation: SARIFPhysicalLocation{
 					ArtifactLocation: SARIFArtifactLocation{URI: f.URI},
@@ -439,6 +443,17 @@ func detailedRuleID(analyzerName, message string) string {
 		}
 	}
 	return analyzerName
+}
+
+func partialFingerprint(f Finding) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte(f.RuleID))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(f.URI))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(f.Message))
+	sum := h.Sum(nil)
+	return hex.EncodeToString(sum[:16])
 }
 
 func splitPosn(posn string) (path string, line, col int) {

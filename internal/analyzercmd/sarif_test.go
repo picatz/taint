@@ -59,6 +59,19 @@ func TestSARIFLogFromAnalyzerJSON(t *testing.T) {
 	if got := result.RuleID; got != "sqli/potential-sql-injection" {
 		t.Fatalf("rule ID = %q", got)
 	}
+	if result.PartialFingerprints["taint/v1"] == "" {
+		t.Fatalf("missing partial fingerprint: %#v", result.PartialFingerprints)
+	}
+	shifted := SARIFLogFromFindings("sqli", "finds sql", []Finding{{
+		RuleID:  "sqli",
+		URI:     "main.go",
+		Line:    42,
+		Column:  99,
+		Message: "potential sql injection",
+	}})
+	if got, want := shifted.Runs[0].Results[0].PartialFingerprints["taint/v1"], result.PartialFingerprints["taint/v1"]; got != want {
+		t.Fatalf("fingerprint changed after line movement: got %q want %q", got, want)
+	}
 	if got := log.Runs[0].Tool.Driver.Rules[0].HelpURI; got != "https://cwe.mitre.org/data/definitions/89.html" {
 		t.Fatalf("help URI = %q", got)
 	}
