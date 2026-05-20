@@ -16,11 +16,9 @@ import (
 func WriteCosmograph(graph, metadata io.Writer, g *callgraph.Graph) error {
 	graphWriter := csv.NewWriter(graph)
 	graphWriter.Comma = ','
-	defer graphWriter.Flush()
 
 	metadataWriter := csv.NewWriter(metadata)
 	metadataWriter.Comma = ','
-	defer metadataWriter.Flush()
 
 	// Write header.
 	if err := graphWriter.Write([]string{"source", "target"}); err != nil {
@@ -33,7 +31,7 @@ func WriteCosmograph(graph, metadata io.Writer, g *callgraph.Graph) error {
 	}
 
 	// Write edges.
-	for _, n := range g.Nodes {
+	for _, n := range SortedNodes(g) {
 		// TODO: fix this so there's not so many "shared" functions?
 		//
 		// It is a bit of a hack, but it works for now.
@@ -53,7 +51,7 @@ func WriteCosmograph(graph, metadata io.Writer, g *callgraph.Graph) error {
 			return fmt.Errorf("failed to write metadata: %w", err)
 		}
 
-		for _, e := range n.Out {
+		for _, e := range sortedOutgoingEdges(n) {
 			// Write edge.
 			if err := graphWriter.Write([]string{
 				fmt.Sprintf("%d", n.ID),
@@ -62,6 +60,17 @@ func WriteCosmograph(graph, metadata io.Writer, g *callgraph.Graph) error {
 				return fmt.Errorf("failed to write edge: %w", err)
 			}
 		}
+	}
+
+	graphWriter.Flush()
+	graphErr := graphWriter.Error()
+	metadataWriter.Flush()
+	metadataErr := metadataWriter.Error()
+	if graphErr != nil {
+		return fmt.Errorf("failed to flush cosmograph graph csv: %w", graphErr)
+	}
+	if metadataErr != nil {
+		return fmt.Errorf("failed to flush cosmograph metadata csv: %w", metadataErr)
 	}
 
 	return nil

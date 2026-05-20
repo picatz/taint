@@ -20,7 +20,9 @@ import (
 func NewVulncheckCallGraph(ctx context.Context, prog *ssa.Program, entries []*ssa.Function) (*callgraph.Graph, error) {
 	entrySlice := make(map[*ssa.Function]bool)
 	for _, e := range entries {
-		entrySlice[e] = true
+		if e != nil {
+			entrySlice[e] = true
+		}
 	}
 
 	if err := ctx.Err(); err != nil { // cancelled?
@@ -48,6 +50,7 @@ func NewVulncheckCallGraph(ctx context.Context, prog *ssa.Program, entries []*ss
 	}
 	cg := vta.CallGraph(fslice, vtaCg)
 	cg.DeleteSyntheticNodes()
+	Canonicalize(cg)
 
 	return cg, nil
 }
@@ -60,6 +63,9 @@ func forwardSlice(sources map[*ssa.Function]bool, cg *callgraph.Graph) map[*ssa.
 	seen := make(map[*ssa.Function]bool)
 	var visit func(f *ssa.Function)
 	visit = func(f *ssa.Function) {
+		if f == nil {
+			return
+		}
 		if seen[f] {
 			return
 		}

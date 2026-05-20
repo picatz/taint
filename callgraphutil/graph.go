@@ -410,6 +410,15 @@ func sortEdges(edges []*callgraph.Edge) {
 	})
 }
 
+func sortedOutgoingEdges(n *callgraph.Node) []*callgraph.Edge {
+	if n == nil {
+		return nil
+	}
+	edges := append([]*callgraph.Edge(nil), n.Out...)
+	sortEdges(edges)
+	return edges
+}
+
 func edgeLess(a, b *callgraph.Edge) bool {
 	ap, bp := edgePos(a), edgePos(b)
 	if ap != bp {

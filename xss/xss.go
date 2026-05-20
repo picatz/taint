@@ -1,6 +1,7 @@
 package xss
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"go/token"
@@ -40,11 +41,13 @@ var Analyzer = &analysis.Analyzer{
 
 // debugXSS enables verbose debug logging for this analyzer.
 var debugXSS bool
+var callGraphAlgorithm = string(callgraphutil.CallGraphAlgorithmTaint)
 
 func init() {
 	// Add a "-debug" flag to the analyzer.
 	fs := flag.NewFlagSet("xss", flag.ContinueOnError)
 	fs.BoolVar(&debugXSS, "debug", false, "enable debug logging for xss analyzer")
+	fs.StringVar(&callGraphAlgorithm, "callgraph", callGraphAlgorithm, "callgraph algorithm: taint or vta")
 	Analyzer.Flags = *fs
 	// Also honor environment variable for convenience.
 	if os.Getenv("XSS_DEBUG") != "" {
@@ -93,13 +96,13 @@ func run(pass *analysis.Pass) (any, error) {
 	// Construct a callgraph, using the main function as the root,
 	// constructed of all other functions. This returns a callgraph
 	// we can use to identify directed paths to logging functions.
-	var cg *callgraph.Graph
-	var err error
-	if mainFn != nil {
-		cg, err = callgraphutil.NewGraph(mainFn, buildSSA.SrcFuncs...)
-	} else {
-		cg, _, err = callgraphutil.CreateMultiRootCallGraph(buildSSA.Pkg.Prog, buildSSA.SrcFuncs)
-	}
+	cg, _, err := callgraphutil.BuildCallGraph(
+		context.Background(),
+		callgraphutil.CallGraphAlgorithm(callGraphAlgorithm),
+		buildSSA.Pkg.Prog,
+		mainFn,
+		buildSSA.SrcFuncs,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create callgraph: %w", err)
 	}

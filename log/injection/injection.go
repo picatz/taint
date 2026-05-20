@@ -1,6 +1,7 @@
 package injection
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"go/token"
@@ -13,7 +14,6 @@ import (
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
-	"golang.org/x/tools/go/callgraph"
 )
 
 var userControlledValues = taint.NewSources(
@@ -162,10 +162,12 @@ var Analyzer = &analysis.Analyzer{
 }
 
 var debugLogI bool
+var callGraphAlgorithm = string(callgraphutil.CallGraphAlgorithmTaint)
 
 func init() {
 	fs := flag.NewFlagSet("logi", flag.ContinueOnError)
 	fs.BoolVar(&debugLogI, "debug", false, "enable debug logging for log injection analyzer")
+	fs.StringVar(&callGraphAlgorithm, "callgraph", callGraphAlgorithm, "callgraph algorithm: taint or vta")
 	Analyzer.Flags = *fs
 	if os.Getenv("LOGI_DEBUG") != "" {
 		debugLogI = true
@@ -220,13 +222,13 @@ func run(pass *analysis.Pass) (any, error) {
 	// Construct a callgraph, using the main function as the root,
 	// constructed of all other functions. This returns a callgraph
 	// we can use to identify directed paths to logging functions.
-	var cg *callgraph.Graph
-	var err error
-	if mainFn != nil {
-		cg, err = callgraphutil.NewGraph(mainFn, buildSSA.SrcFuncs...)
-	} else {
-		cg, _, err = callgraphutil.CreateMultiRootCallGraph(buildSSA.Pkg.Prog, buildSSA.SrcFuncs)
-	}
+	cg, _, err := callgraphutil.BuildCallGraph(
+		context.Background(),
+		callgraphutil.CallGraphAlgorithm(callGraphAlgorithm),
+		buildSSA.Pkg.Prog,
+		mainFn,
+		buildSSA.SrcFuncs,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create callgraph: %w", err)
 	}

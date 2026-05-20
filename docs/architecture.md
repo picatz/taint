@@ -12,6 +12,11 @@ builder adds direct calls, closures, concrete interface dispatch when it can
 recover receiver types, function-field calls, and a synthetic root for
 multi-entry library analysis.
 
+Analyzer CLIs expose `-callgraph=taint` by default and `-callgraph=vta` as an
+alternate CHA+VTA strategy adapted from govulncheck. The selection is routed
+through `callgraphutil.BuildCallGraph`, so command packages and library
+packages get the same root handling across algorithms.
+
 Edges are deduplicated at the end of construction and inbound edge lists are
 rebuilt so `Node.In` and `Node.Out` stay consistent. Path search uses simple
 path traversal to avoid cycles while preserving distinct paths to the same

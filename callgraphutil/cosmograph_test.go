@@ -1,54 +1,63 @@
 package callgraphutil_test
 
 import (
-	"context"
-	"fmt"
-	"os"
+	"bytes"
+	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/picatz/taint/callgraphutil"
 )
 
 func TestWriteCosmograph(t *testing.T) {
-	var (
-		ownerName = "picatz"
-		repoName  = "taint"
-	)
+	g := exportTestGraph(exportUnsortedNodeOrder)
 
-	repo, _, err := cloneGitHubRepository(context.Background(), ownerName, repoName)
-	if err != nil {
-		t.Fatal(err)
+	graph, metadata := writeCosmograph(t, g)
+	if repeatedGraph, repeatedMetadata := writeCosmograph(t, g); graph != repeatedGraph || metadata != repeatedMetadata {
+		t.Fatalf("WriteCosmograph changed across repeated calls\ngraph first:\n%s\ngraph second:\n%s\nmetadata first:\n%s\nmetadata second:\n%s",
+			graph, repeatedGraph, metadata, repeatedMetadata)
+	}
+	if sortedGraph, sortedMetadata := writeCosmograph(t, exportTestGraph(exportSortedNodeOrder)); graph != sortedGraph || metadata != sortedMetadata {
+		t.Fatalf("WriteCosmograph changed with graph node insertion order\ngraph unsorted:\n%s\ngraph sorted:\n%s\nmetadata unsorted:\n%s\nmetadata sorted:\n%s",
+			graph, sortedGraph, metadata, sortedMetadata)
 	}
 
-	pkgs, err := loadPackages(context.Background(), repo, "./...")
-	if err != nil {
-		t.Fatal(err)
+	wantGraphRows := [][]string{
+		{"source", "target"},
+		{"20", "40"},
+		{"10", "30"},
+		{"10", "40"},
+	}
+	if got := readCSVRows(t, graph); !reflect.DeepEqual(got, wantGraphRows) {
+		t.Fatalf("unexpected cosmograph rows:\ngot:  %#v\nwant: %#v", got, wantGraphRows)
 	}
 
-	mainFn, srcFns, err := loadSSA(context.Background(), pkgs)
-	if err != nil {
-		t.Fatal(err)
+	wantMetadataRows := [][]string{
+		{"id", "pkg", "func"},
+		{"20", "shared", "aSource"},
+		{"30", "shared", "aTarget"},
+		{"10", "shared", "zSource"},
+		{"40", "shared", "zTarget"},
+	}
+	if got := readCSVRows(t, metadata); !reflect.DeepEqual(got, wantMetadataRows) {
+		t.Fatalf("unexpected cosmograph metadata rows:\ngot:  %#v\nwant: %#v", got, wantMetadataRows)
+	}
+}
+
+func TestWriteCosmographReturnsFlushErrors(t *testing.T) {
+	g := exportTestGraph(exportUnsortedNodeOrder)
+
+	graphErr := errors.New("graph flush failed")
+	var metadata bytes.Buffer
+	err := callgraphutil.WriteCosmograph(errorWriter{err: graphErr}, &metadata, g)
+	if !errors.Is(err, graphErr) {
+		t.Fatalf("expected graph flush error, got %v", err)
 	}
 
-	cg, err := loadCallGraph(context.Background(), mainFn, srcFns)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	graphOutput, err := os.Create(fmt.Sprintf("%s.csv", repoName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer graphOutput.Close()
-
-	metadataOutput, err := os.Create(fmt.Sprintf("%s-metadata.csv", repoName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer metadataOutput.Close()
-
-	err = callgraphutil.WriteCosmograph(graphOutput, metadataOutput, cg)
-	if err != nil {
-		t.Fatal(err)
+	metadataErr := errors.New("metadata flush failed")
+	var graph bytes.Buffer
+	err = callgraphutil.WriteCosmograph(&graph, errorWriter{err: metadataErr}, g)
+	if !errors.Is(err, metadataErr) {
+		t.Fatalf("expected metadata flush error, got %v", err)
 	}
 }

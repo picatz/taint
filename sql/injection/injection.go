@@ -1,6 +1,8 @@
 package injection
 
 import (
+	"context"
+	"flag"
 	"fmt"
 	"go/token"
 	"go/types"
@@ -196,6 +198,14 @@ var Analyzer = &analysis.Analyzer{
 	Requires: []*analysis.Analyzer{buildssa.Analyzer},
 }
 
+var callGraphAlgorithm = string(callgraphutil.CallGraphAlgorithmTaint)
+
+func init() {
+	fs := flag.NewFlagSet("sqli", flag.ContinueOnError)
+	fs.StringVar(&callGraphAlgorithm, "callgraph", callGraphAlgorithm, "callgraph algorithm: taint or vta")
+	Analyzer.Flags = *fs
+}
+
 // imports returns true if the package imports any of the given packages.
 func imports(pass *analysis.Pass, pkgs ...string) bool {
 	visited := make(map[*types.Package]bool)
@@ -254,13 +264,13 @@ func run(pass *analysis.Pass) (any, error) {
 	// Construct a callgraph, using the main function as the root,
 	// constructed of all other functions. This returns a callgraph
 	// we can use to identify directed paths to SQL queries.
-	var cg *callgraph.Graph
-	var err error
-	if mainFn != nil {
-		cg, err = callgraphutil.NewGraph(mainFn, buildSSA.SrcFuncs...)
-	} else {
-		cg, _, err = callgraphutil.CreateMultiRootCallGraph(buildSSA.Pkg.Prog, buildSSA.SrcFuncs)
-	}
+	cg, _, err := callgraphutil.BuildCallGraph(
+		context.Background(),
+		callgraphutil.CallGraphAlgorithm(callGraphAlgorithm),
+		buildSSA.Pkg.Prog,
+		mainFn,
+		buildSSA.SrcFuncs,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create callgraph: %w", err)
 	}

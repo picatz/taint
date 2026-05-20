@@ -182,6 +182,12 @@ n0:github.com/picatz/taint/cmd/taint/example.main → n6:(*net/http.ServeMux).Ha
 
 **Other commands:** `cg` (show callgraph), `nodes` (list nodes), `pkgs` (list packages), `root` (show root), `clear`, `exit`
 
+### Analyzer CLI Options
+
+The `sqli`, `logi`, and `xss` analyzer CLIs use the built-in taint callgraph
+by default. Pass `-callgraph=vta` to compare results with the alternate CHA+VTA
+builder.
+
 ### `sqli`
 
 The `sqli` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer) finds potential SQL injections.

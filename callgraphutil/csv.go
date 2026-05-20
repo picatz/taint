@@ -16,7 +16,6 @@ import (
 func WriteCSV(w io.Writer, g *callgraph.Graph) error {
 	cw := csv.NewWriter(w)
 	cw.Comma = ','
-	defer cw.Flush()
 
 	// Write header.
 	if err := cw.Write([]string{
@@ -37,13 +36,13 @@ func WriteCSV(w io.Writer, g *callgraph.Graph) error {
 	}
 
 	// Write edges.
-	for _, n := range g.Nodes {
+	for _, n := range SortedNodes(g) {
 		source, err := getNodeInfo(n)
 		if err != nil {
 			return fmt.Errorf("failed to get node info: %w", err)
 		}
 
-		for _, e := range n.Out {
+		for _, e := range sortedOutgoingEdges(n) {
 			target, err := getNodeInfo(e.Callee)
 			if err != nil {
 				return fmt.Errorf("failed to get node info: %w", err)
@@ -58,6 +57,11 @@ func WriteCSV(w io.Writer, g *callgraph.Graph) error {
 				return fmt.Errorf("failed to write edge: %w", err)
 			}
 		}
+	}
+
+	cw.Flush()
+	if err := cw.Error(); err != nil {
+		return fmt.Errorf("failed to flush csv: %w", err)
 	}
 
 	return nil

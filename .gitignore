@@ -22,3 +22,7 @@ go.work
 
 # Precision evaluation harness cache (clones + built analyzer binaries).
 .cache/
+
+# Generated callgraph exports.
+callgraphutil/taint.csv
+callgraphutil/taint-metadata.csv

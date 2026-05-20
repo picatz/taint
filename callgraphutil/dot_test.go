@@ -2,199 +2,48 @@ package callgraphutil_test
 
 import (
 	"bytes"
-	"context"
-	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"os"
+	"errors"
+	"strings"
 	"testing"
 
-	"github.com/go-git/go-git/v5"
 	"github.com/picatz/taint/callgraphutil"
 	"golang.org/x/tools/go/callgraph"
-	"golang.org/x/tools/go/packages"
-	"golang.org/x/tools/go/ssa"
-	"golang.org/x/tools/go/ssa/ssautil"
 )
 
-func cloneGitHubRepository(ctx context.Context, ownerName, repoName string) (string, string, error) {
-	// Get the owner and repo part of the URL.
-	ownerAndRepo := ownerName + "/" + repoName
-
-	// Get the directory path.
-	dir, err := os.MkdirTemp(os.TempDir(), fmt.Sprintf("callgraphutil_csv-%s-%s", ownerName, repoName))
-	if err != nil {
-		return "", "", fmt.Errorf("failed to create temp dir: %w", err)
-	}
-
-	// Clone the repository.
-	repo, err := git.PlainCloneContext(ctx, dir, false, &git.CloneOptions{
-		URL:          fmt.Sprintf("https://github.com/%s", ownerAndRepo),
-		Depth:        1,
-		Tags:         git.NoTags,
-		SingleBranch: true,
-	})
-	if err != nil {
-		return dir, "", fmt.Errorf("%w", err)
-	}
-
-	// Get the repository's HEAD.
-	head, err := repo.Head()
-	if err != nil {
-		return dir, "", fmt.Errorf("%w", err)
-	}
-
-	return dir, head.Hash().String(), nil
-}
-
-func loadPackages(ctx context.Context, dir, pattern string) ([]*packages.Package, error) {
-	loadMode :=
-		packages.NeedName |
-			packages.NeedDeps |
-			packages.NeedFiles |
-			packages.NeedModule |
-			packages.NeedTypes |
-			packages.NeedImports |
-			packages.NeedSyntax |
-			packages.NeedTypesInfo
-		// packages.NeedTypesSizes |
-		// packages.NeedCompiledGoFiles |
-		// packages.NeedExportFile |
-		// packages.NeedEmbedPatterns
-
-	// parseMode := parser.ParseComments
-	parseMode := parser.SkipObjectResolution
-
-	// patterns := []string{dir}
-	patterns := []string{pattern}
-	// patterns := []string{"all"}
-
-	pkgs, err := packages.Load(&packages.Config{
-		Mode:    loadMode,
-		Context: ctx,
-		Env:     os.Environ(),
-		Dir:     dir,
-		Tests:   false,
-		ParseFile: func(fset *token.FileSet, filename string, src []byte) (*ast.File, error) {
-			return parser.ParseFile(fset, filename, src, parseMode)
-		},
-	}, patterns...)
-	if err != nil {
-		return nil, err
-	}
-
-	return pkgs, nil
-
-}
-
-func loadSSA(ctx context.Context, pkgs []*packages.Package) (mainFn *ssa.Function, srcFns []*ssa.Function, err error) {
-	ssaBuildMode := ssa.InstantiateGenerics // ssa.SanityCheckFunctions | ssa.GlobalDebug
-
-	// Analyze the package.
-	ssaProg, ssaPkgs := ssautil.Packages(pkgs, ssaBuildMode)
-
-	// It's possible that the ssaProg is nil?
-	if ssaProg == nil {
-		err = fmt.Errorf("failed to create new ssa program")
-		return
-	}
-
-	ssaProg.Build()
-
-	for _, pkg := range ssaPkgs {
-		if pkg == nil {
-			continue
-		}
-		pkg.Build()
-	}
-
-	// Remove nil ssaPkgs by iterating over the slice of packages
-	// and for each nil package, we append the slice up to that
-	// index and then append the slice from the next index to the
-	// end of the slice. This effectively removes the nil package
-	// from the slice without having to allocate a new slice.
-	for i := 0; i < len(ssaPkgs); i++ {
-		if ssaPkgs[i] == nil {
-			ssaPkgs = append(ssaPkgs[:i], ssaPkgs[i+1:]...)
-			i--
-		}
-	}
-
-	mainPkgs := ssautil.MainPackages(ssaPkgs)
-
-	mainFn = mainPkgs[0].Members["main"].(*ssa.Function)
-
-	for _, pkg := range ssaPkgs {
-		for _, fn := range pkg.Members {
-			if fn.Object() == nil {
-				continue
-			}
-
-			if fn.Object().Name() == "_" {
-				continue
-			}
-
-			pkgFn := pkg.Func(fn.Object().Name())
-			if pkgFn == nil {
-				continue
-			}
-
-			var addAnons func(f *ssa.Function)
-			addAnons = func(f *ssa.Function) {
-				srcFns = append(srcFns, f)
-				for _, anon := range f.AnonFuncs {
-					addAnons(anon)
-				}
-			}
-			addAnons(pkgFn)
-		}
-	}
-
-	if mainFn == nil {
-		err = fmt.Errorf("failed to find main function")
-		return
-	}
-
-	return
-}
-
-func loadCallGraph(ctx context.Context, mainFn *ssa.Function, srcFns []*ssa.Function) (*callgraph.Graph, error) {
-	cg, err := callgraphutil.NewGraph(mainFn, srcFns...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create new callgraph: %w", err)
-	}
-
-	return cg, nil
-}
-
 func TestWriteDOT(t *testing.T) {
-	repo, _, err := cloneGitHubRepository(context.Background(), "picatz", "taint")
-	if err != nil {
-		t.Fatal(err)
+	output := writeDOT(t, exportTestGraph(exportUnsortedNodeOrder))
+	if repeated := writeDOT(t, exportTestGraph(exportUnsortedNodeOrder)); output != repeated {
+		t.Fatalf("WriteDOT changed across repeated calls\nfirst:\n%s\nsecond:\n%s", output, repeated)
+	}
+	if sortedInsertion := writeDOT(t, exportTestGraph(exportSortedNodeOrder)); output != sortedInsertion {
+		t.Fatalf("WriteDOT changed with graph node insertion order\nunsorted:\n%s\nsorted:\n%s", output, sortedInsertion)
 	}
 
-	pkgs, err := loadPackages(context.Background(), repo, "./...")
-	if err != nil {
+	for _, want := range []string{
+		"digraph callgraph {",
+		"20 -> 40;",
+		"10 -> 30;",
+		"10 -> 40;",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("DOT output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestWriteDOTReturnsFlushError(t *testing.T) {
+	errFlush := errors.New("flush failed")
+	err := callgraphutil.WriteDOT(errorWriter{err: errFlush}, exportTestGraph(exportUnsortedNodeOrder))
+	if !errors.Is(err, errFlush) {
+		t.Fatalf("expected flush error, got %v", err)
+	}
+}
+
+func writeDOT(t *testing.T, cg *callgraph.Graph) string {
+	t.Helper()
+	var output bytes.Buffer
+	if err := callgraphutil.WriteDOT(&output, cg); err != nil {
 		t.Fatal(err)
 	}
-
-	mainFn, srcFns, err := loadSSA(context.Background(), pkgs)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cg, err := loadCallGraph(context.Background(), mainFn, srcFns)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	output := &bytes.Buffer{}
-
-	err = callgraphutil.WriteDOT(output, cg)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	fmt.Println(output.String())
+	return output.String()
 }
