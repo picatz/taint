@@ -27,6 +27,17 @@ func (v valueSet) add(sv ssa.Value) {
 	v[sv] = struct{}{}
 }
 
+func (v valueSet) clone() valueSet {
+	if v == nil {
+		return valueSet{}
+	}
+	out := make(valueSet, len(v))
+	for sv := range v {
+		out[sv] = struct{}{}
+	}
+	return out
+}
+
 // stringSet is a set of unique strings that express
 // the types of sources and sinks that are being
 // tracked.

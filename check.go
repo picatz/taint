@@ -416,7 +416,7 @@ func parameterMappings(edge *callgraph.Edge, common *ssa.CallCommon) []Evidence 
 	}
 	params := edge.Callee.Func.Params
 	args := common.Args
-	if len(args) == 0 {
+	if len(args) == 0 && !(common.IsInvoke() && len(params) > 0) {
 		return nil
 	}
 	if len(params) == 0 {
@@ -434,16 +434,20 @@ func parameterMappings(edge *callgraph.Edge, common *ssa.CallCommon) []Evidence 
 		}
 		return out
 	}
-	limit := min(len(params), len(args))
+	limit := len(params)
 	out := make([]Evidence, 0, limit)
 	for i := 0; i < limit; i++ {
-		if params[i] == nil || args[i] == nil {
+		if params[i] == nil {
+			continue
+		}
+		arg := callArgForParamIndex(common, edge.Callee.Func, i)
+		if arg == nil {
 			continue
 		}
 		out = append(out, Evidence{
 			Kind:    EvidenceParameterMapping,
 			Message: fmt.Sprintf("argument %d maps to parameter %s", i, params[i].Name()),
-			Value:   args[i],
+			Value:   arg,
 			Edge:    edge,
 		})
 	}
@@ -511,26 +515,10 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 			return true, src, value
 		}
 
-		// Check the parameter's referrers.
-		refs := value.Referrers()
-		if refs != nil {
-			for _, ref := range *refs {
-				refVal, isVal := ref.(ssa.Value)
-				if isVal {
-					tainted, src, tv := checkSSAValue(path, sources, refVal, visited)
-					if tainted {
-						return true, src, tv
-					}
-					continue
-				}
-
-				tainted, src, tv := checkSSAInstruction(path, sources, ref, visited)
-				if tainted {
-					return true, src, tv
-				}
-			}
-		}
-
+		// Do not walk the parameter's referrers here. Referrers are forward
+		// uses of the parameter, so following them can attribute unrelated
+		// later expressions back to an earlier sink argument. Parameter taint
+		// should flow from the concrete caller argument on the active path.
 		for _, edge := range path {
 			if edge == nil || edge.Callee == nil || edge.Callee.Func == nil || edge.Site == nil {
 				continue
@@ -546,8 +534,7 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 			if common == nil {
 				continue
 			}
-			if idx := parameterCallArgIndex(parent, value); idx >= 0 && idx < len(common.Args) {
-				arg := common.Args[idx]
+			if arg := callArgForParameter(edge, value); arg != nil {
 				ta, src, tv := checkSSAValue(path, sources, arg, visited)
 				if ta {
 					return true, src, tv
@@ -555,42 +542,19 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 				if src, base := isExpressionDerivedFromSource(arg, sources); src != "" {
 					return true, src, base
 				}
-				continue
-			}
-			if sig, ok := edge.Callee.Func.Type().(*types.Signature); ok {
-				if params := sig.Params(); params != nil {
-					for pi := 0; pi < params.Len(); pi++ {
-						if params.At(pi).Name() != value.Name() {
-							continue
-						}
-						argIndex := pi
-						if sig.Recv() != nil {
-							argIndex++
-						}
-						if argIndex < len(common.Args) {
-							arg := common.Args[argIndex]
-							ta, src, tv := checkSSAValue(path, sources, arg, visited)
-							if ta {
-								return true, src, tv
-							}
-							// Also check if the argument expression derives from a source via operand chains.
-							if src, base := isExpressionDerivedFromSource(arg, sources); src != "" {
-								return true, src, base
-							}
-						}
-						break
-					}
-				}
 			}
 		}
-	// Function calls can be a little tricky. We need to check a few things.
-	// 1. See if the call itself was a source.
-	// 2. See if any of the arguments was a source.
-	// 3. See if the call value calls a source (anonymous functions).
+		// Function calls can be a little tricky. We need to check a few things.
+		// 1. See if the call itself was a source.
+		// 2. See if any of the arguments was a source.
+		// 3. See if the call value calls a source (anonymous functions).
 	case *ssa.Call:
 		// 1. Handle the case where we finally called a source.
 		if src, ok := matchSourceCall(sources, &value.Call); ok {
 			return true, src, value.Call.Value
+		}
+		if tainted, src, tv := checkReceiverBufferedWrites(path, sources, value, visited); tainted {
+			return true, src, tv
 		}
 
 		// Prefer precise data-flow analysis when the callee body is available.
@@ -609,7 +573,7 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 		bodyAnalyzable := callee != nil && len(callee.Blocks) > 0
 
 		if bodyAnalyzable {
-			if tainted, src, tv := checkCallReturnValues(path, sources, value, -1, visited); tainted {
+			if tainted, src, tv := checkCallReturnValues(path, sources, value, -1, visited.clone()); tainted {
 				return true, src, tv
 			}
 			// Body was inspected and showed no source-derived data reaching a
@@ -833,7 +797,30 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 		if tainted {
 			return true, src, tv
 		}
+	case *ssa.Phi:
+		for _, edge := range value.Edges {
+			tainted, src, tv := checkSSAValue(path, sources, edge, visited)
+			if tainted {
+				return true, src, tv
+			}
+		}
 	case *ssa.UnOp:
+		if value.Op == token.MUL {
+			if stored, ok := storedValuesForLoad(value); ok {
+				for _, storedValue := range stored {
+					tainted, src, tv := checkSSAValue(path, sources, storedValue, visited)
+					if tainted {
+						return true, src, tv
+					}
+				}
+				if len(stored) == 0 {
+					if src, base := isExpressionDerivedFromSource(value.X, sources); src != "" {
+						return true, src, base
+					}
+				}
+				return false, "", nil
+			}
+		}
 		// Check the single operand.
 		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
 		if tainted {
@@ -860,23 +847,31 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 
 		// Check the value's referrers.
 		refs := value.X.Referrers()
-		for _, ref := range *refs {
-			refVal, isVal := ref.(ssa.Value)
-			if isVal {
-				tainted, src, tv := checkSSAValue(path, sources, refVal, visited)
+		if refs != nil {
+			for _, ref := range *refs {
+				refVal, isVal := ref.(ssa.Value)
+				if isVal {
+					tainted, src, tv := checkSSAValue(path, sources, refVal, visited)
+					if tainted {
+						return true, src, tv
+					}
+					continue
+				}
+
+				tainted, src, tv := checkSSAInstruction(path, sources, ref, visited)
 				if tainted {
 					return true, src, tv
 				}
-				continue
-			}
-
-			tainted, src, tv := checkSSAInstruction(path, sources, ref, visited)
-			if tainted {
-				return true, src, tv
 			}
 		}
 	case *ssa.TypeAssert:
 		// Check the value being type asserted.
+		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
+		if tainted {
+			return true, src, tv
+		}
+	case *ssa.ChangeType:
+		// Check the value being changed to an identical underlying type.
 		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
 		if tainted {
 			return true, src, tv
@@ -889,7 +884,7 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 		}
 	case *ssa.Extract:
 		if call, ok := value.Tuple.(*ssa.Call); ok {
-			tainted, src, tv := checkCallReturnValues(path, sources, call, value.Index, visited)
+			tainted, src, tv := checkCallReturnValues(path, sources, call, value.Index, visited.clone())
 			if tainted {
 				return true, src, tv
 			}
@@ -999,6 +994,218 @@ func checkSSAInstruction(path callgraphutil.Path, sources Sources, i ssa.Instruc
 	return false, "", nil
 }
 
+func checkReceiverBufferedWrites(path callgraphutil.Path, sources Sources, call *ssa.Call, visited valueSet) (bool, string, ssa.Value) {
+	if call == nil || !bufferReadCall(&call.Call) {
+		return false, "", nil
+	}
+	recv := receiverArg(&call.Call)
+	if recv == nil {
+		return false, "", nil
+	}
+	for _, arg := range priorBufferedWriteArgs(recv, call) {
+		tainted, src, tv := checkSSAValue(path, sources, arg, visited)
+		if tainted {
+			return true, src, tv
+		}
+	}
+	return false, "", nil
+}
+
+func bufferReadCall(call *ssa.CallCommon) bool {
+	switch callString(call) {
+	case "(*strings.Builder).String",
+		"(*bytes.Buffer).String",
+		"(*bytes.Buffer).Bytes":
+		return true
+	default:
+		return false
+	}
+}
+
+func bufferWriteCall(call *ssa.CallCommon) bool {
+	switch callString(call) {
+	case "(*strings.Builder).Write",
+		"(*strings.Builder).WriteString",
+		"(*bytes.Buffer).Write",
+		"(*bytes.Buffer).WriteString":
+		return true
+	default:
+		return false
+	}
+}
+
+func receiverArg(call *ssa.CallCommon) ssa.Value {
+	if call == nil {
+		return nil
+	}
+	if call.IsInvoke() {
+		return call.Value
+	}
+	if call.Signature() != nil && call.Signature().Recv() != nil && len(call.Args) > 0 {
+		return call.Args[0]
+	}
+	return nil
+}
+
+func priorBufferedWriteArgs(recv ssa.Value, read ssa.Instruction) []ssa.Value {
+	base := memoryBase(recv)
+	if base == nil || read == nil {
+		return nil
+	}
+	refs := base.Referrers()
+	if refs == nil {
+		return nil
+	}
+	var out []ssa.Value
+	for _, ref := range *refs {
+		write, ok := ref.(*ssa.Call)
+		if !ok || !bufferWriteCall(&write.Call) || !instructionMayReachUse(write, read) {
+			continue
+		}
+		writeRecv := receiverArg(&write.Call)
+		if writeRecv == nil || memoryBase(writeRecv) != base {
+			continue
+		}
+		args := write.Call.Args
+		if len(args) > 0 && writeRecv == args[0] {
+			args = args[1:]
+		}
+		out = append(out, args...)
+	}
+	return out
+}
+
+func instructionMayReachUse(def, use ssa.Instruction) bool {
+	if def == nil || use == nil {
+		return true
+	}
+	if before, sameBlock := instructionPrecedesInSameBlock(def, use); sameBlock {
+		return before
+	}
+	if def.Block() == nil || use.Block() == nil {
+		return true
+	}
+	return blockMayReach(def.Block(), use.Block())
+}
+
+func memoryBase(v ssa.Value) ssa.Value {
+	seen := map[ssa.Value]struct{}{}
+	for v != nil {
+		if _, ok := seen[v]; ok {
+			return v
+		}
+		seen[v] = struct{}{}
+		switch value := v.(type) {
+		case *ssa.FieldAddr:
+			v = value.X
+		case *ssa.IndexAddr:
+			v = value.X
+		case *ssa.UnOp:
+			if value.Op != token.MUL {
+				return v
+			}
+			v = value.X
+		case *ssa.ChangeType:
+			v = value.X
+		case *ssa.Convert:
+			v = value.X
+		case *ssa.MakeInterface:
+			v = value.X
+		case *ssa.ChangeInterface:
+			v = value.X
+		default:
+			return v
+		}
+	}
+	return nil
+}
+
+func storedValuesForLoad(load *ssa.UnOp) ([]ssa.Value, bool) {
+	if load == nil || load.Op != token.MUL || load.X == nil {
+		return nil, false
+	}
+	stores := storesForAddress(load.X)
+	if len(stores) == 0 {
+		return nil, false
+	}
+	out := make([]ssa.Value, 0, len(stores))
+	for _, store := range stores {
+		if storeMayReachLoad(store, load) {
+			out = append(out, store.Val)
+		}
+	}
+	return out, true
+}
+
+func storesForAddress(addr ssa.Value) []*ssa.Store {
+	if addr == nil {
+		return nil
+	}
+	var out []*ssa.Store
+	if refs := addr.Referrers(); refs != nil {
+		for _, ref := range *refs {
+			store, ok := ref.(*ssa.Store)
+			if !ok || store.Addr != addr || store.Val == nil {
+				continue
+			}
+			out = append(out, store)
+		}
+	}
+	return out
+}
+
+func storeMayReachLoad(store *ssa.Store, load *ssa.UnOp) bool {
+	if store == nil || load == nil {
+		return true
+	}
+	if before, sameBlock := instructionPrecedesInSameBlock(store, load); sameBlock {
+		return before
+	}
+	if store.Block() == nil || load.Block() == nil {
+		return true
+	}
+	return blockMayReach(store.Block(), load.Block())
+}
+
+func instructionPrecedesInSameBlock(first, second ssa.Instruction) (bool, bool) {
+	if first == nil || second == nil || first.Block() == nil || first.Block() != second.Block() {
+		return false, false
+	}
+	for _, instr := range first.Block().Instrs {
+		if instr == first {
+			return true, true
+		}
+		if instr == second {
+			return false, true
+		}
+	}
+	return false, true
+}
+
+func blockMayReach(from, to *ssa.BasicBlock) bool {
+	if from == nil || to == nil {
+		return true
+	}
+	seen := map[*ssa.BasicBlock]struct{}{}
+	work := []*ssa.BasicBlock{from}
+	for len(work) > 0 {
+		block := work[len(work)-1]
+		work = work[:len(work)-1]
+		if block == nil {
+			continue
+		}
+		if block == to {
+			return true
+		}
+		if _, ok := seen[block]; ok {
+			continue
+		}
+		seen[block] = struct{}{}
+		work = append(work, block.Succs...)
+	}
+	return false
+}
+
 func parameterCallArgIndex(fn *ssa.Function, param *ssa.Parameter) int {
 	if fn == nil || param == nil {
 		return -1
@@ -1011,6 +1218,37 @@ func parameterCallArgIndex(fn *ssa.Function, param *ssa.Parameter) int {
 	return -1
 }
 
+func callArgForParameter(edge *callgraph.Edge, param *ssa.Parameter) ssa.Value {
+	if edge == nil || edge.Site == nil || edge.Callee == nil || edge.Callee.Func == nil || param == nil {
+		return nil
+	}
+	parent := param.Parent()
+	if parent == nil || edge.Callee.Func != parent {
+		return nil
+	}
+	idx := parameterCallArgIndex(parent, param)
+	if idx < 0 {
+		return nil
+	}
+	return callArgForParamIndex(edge.Site.Common(), parent, idx)
+}
+
+func callArgForParamIndex(common *ssa.CallCommon, callee *ssa.Function, paramIndex int) ssa.Value {
+	if common == nil || callee == nil || paramIndex < 0 {
+		return nil
+	}
+	if common.IsInvoke() && callee.Signature != nil && callee.Signature.Recv() != nil {
+		if paramIndex == 0 {
+			return common.Value
+		}
+		paramIndex--
+	}
+	if paramIndex < 0 || paramIndex >= len(common.Args) {
+		return nil
+	}
+	return common.Args[paramIndex]
+}
+
 func callString(cc *ssa.CallCommon) string {
 	if cc == nil {
 		return ""
@@ -1019,6 +1257,9 @@ func callString(cc *ssa.CallCommon) string {
 		return fn.String()
 	}
 	if cc.Value != nil {
+		if builtin, ok := cc.Value.(*ssa.Builtin); ok {
+			return builtin.Name()
+		}
 		return cc.Value.String()
 	}
 	return ""

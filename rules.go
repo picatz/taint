@@ -191,7 +191,23 @@ func defaultPropagatorRules() []propagatorRule {
 		}
 		return call.Args
 	}
+	argsAt := func(indexes ...int) func(*ssa.CallCommon) []ssa.Value {
+		return func(call *ssa.CallCommon) []ssa.Value {
+			if call == nil {
+				return nil
+			}
+			out := make([]ssa.Value, 0, len(indexes))
+			for _, index := range indexes {
+				if index >= 0 && index < len(call.Args) {
+					out = append(out, call.Args[index])
+				}
+			}
+			return out
+		}
+	}
+	firstArg := argsAt(0)
 	return []propagatorRule{
+		{id: "append", matchCall: exactCallMatcher("append"), selectArgs: allArgs},
 		{id: "fmt.Sprintf", matchCall: exactCallMatcher("fmt.Sprintf"), selectArgs: allArgs},
 		{id: "fmt.Sprint", matchCall: exactCallMatcher("fmt.Sprint"), selectArgs: allArgs},
 		{id: "fmt.Sprintln", matchCall: exactCallMatcher("fmt.Sprintln"), selectArgs: allArgs},
@@ -202,6 +218,46 @@ func defaultPropagatorRules() []propagatorRule {
 		{id: "bufio.NewReaderSize", matchCall: exactCallMatcher("bufio.NewReaderSize"), selectArgs: allArgs},
 		{id: "go.uber.org/zap.String", matchCall: exactCallMatcher("go.uber.org/zap.String"), selectArgs: allArgs},
 		{id: "html.EscapeString", matchCall: exactCallMatcher("html.EscapeString"), selectArgs: allArgs},
+		{id: "strings.Clone", matchCall: exactCallMatcher("strings.Clone"), selectArgs: firstArg},
+		{id: "strings.Join", matchCall: exactCallMatcher("strings.Join"), selectArgs: allArgs},
+		{id: "strings.Map", matchCall: exactCallMatcher("strings.Map"), selectArgs: allArgs},
+		{id: "strings.NewReader", matchCall: exactCallMatcher("strings.NewReader"), selectArgs: firstArg},
+		{id: "strings.Replace", matchCall: exactCallMatcher("strings.Replace"), selectArgs: argsAt(0, 2)},
+		{id: "strings.ReplaceAll", matchCall: exactCallMatcher("strings.ReplaceAll"), selectArgs: argsAt(0, 2)},
+		{id: "strings.ToLower", matchCall: exactCallMatcher("strings.ToLower"), selectArgs: firstArg},
+		{id: "strings.ToTitle", matchCall: exactCallMatcher("strings.ToTitle"), selectArgs: firstArg},
+		{id: "strings.ToUpper", matchCall: exactCallMatcher("strings.ToUpper"), selectArgs: firstArg},
+		{id: "strings.ToValidUTF8", matchCall: exactCallMatcher("strings.ToValidUTF8"), selectArgs: argsAt(0, 1)},
+		{id: "strings.Trim", matchCall: exactCallMatcher("strings.Trim"), selectArgs: firstArg},
+		{id: "strings.TrimFunc", matchCall: exactCallMatcher("strings.TrimFunc"), selectArgs: firstArg},
+		{id: "strings.TrimLeft", matchCall: exactCallMatcher("strings.TrimLeft"), selectArgs: firstArg},
+		{id: "strings.TrimLeftFunc", matchCall: exactCallMatcher("strings.TrimLeftFunc"), selectArgs: firstArg},
+		{id: "strings.TrimPrefix", matchCall: exactCallMatcher("strings.TrimPrefix"), selectArgs: firstArg},
+		{id: "strings.TrimRight", matchCall: exactCallMatcher("strings.TrimRight"), selectArgs: firstArg},
+		{id: "strings.TrimRightFunc", matchCall: exactCallMatcher("strings.TrimRightFunc"), selectArgs: firstArg},
+		{id: "strings.TrimSpace", matchCall: exactCallMatcher("strings.TrimSpace"), selectArgs: firstArg},
+		{id: "strings.TrimSuffix", matchCall: exactCallMatcher("strings.TrimSuffix"), selectArgs: firstArg},
+		{id: "bytes.Clone", matchCall: exactCallMatcher("bytes.Clone"), selectArgs: firstArg},
+		{id: "bytes.Join", matchCall: exactCallMatcher("bytes.Join"), selectArgs: allArgs},
+		{id: "bytes.Map", matchCall: exactCallMatcher("bytes.Map"), selectArgs: allArgs},
+		{id: "bytes.NewBuffer", matchCall: exactCallMatcher("bytes.NewBuffer"), selectArgs: firstArg},
+		{id: "bytes.NewBufferString", matchCall: exactCallMatcher("bytes.NewBufferString"), selectArgs: firstArg},
+		{id: "bytes.NewReader", matchCall: exactCallMatcher("bytes.NewReader"), selectArgs: firstArg},
+		{id: "bytes.Replace", matchCall: exactCallMatcher("bytes.Replace"), selectArgs: argsAt(0, 2)},
+		{id: "bytes.ReplaceAll", matchCall: exactCallMatcher("bytes.ReplaceAll"), selectArgs: argsAt(0, 2)},
+		{id: "bytes.ToLower", matchCall: exactCallMatcher("bytes.ToLower"), selectArgs: firstArg},
+		{id: "bytes.ToTitle", matchCall: exactCallMatcher("bytes.ToTitle"), selectArgs: firstArg},
+		{id: "bytes.ToUpper", matchCall: exactCallMatcher("bytes.ToUpper"), selectArgs: firstArg},
+		{id: "bytes.ToValidUTF8", matchCall: exactCallMatcher("bytes.ToValidUTF8"), selectArgs: argsAt(0, 1)},
+		{id: "bytes.Trim", matchCall: exactCallMatcher("bytes.Trim"), selectArgs: firstArg},
+		{id: "bytes.TrimFunc", matchCall: exactCallMatcher("bytes.TrimFunc"), selectArgs: firstArg},
+		{id: "bytes.TrimLeft", matchCall: exactCallMatcher("bytes.TrimLeft"), selectArgs: firstArg},
+		{id: "bytes.TrimLeftFunc", matchCall: exactCallMatcher("bytes.TrimLeftFunc"), selectArgs: firstArg},
+		{id: "bytes.TrimPrefix", matchCall: exactCallMatcher("bytes.TrimPrefix"), selectArgs: firstArg},
+		{id: "bytes.TrimRight", matchCall: exactCallMatcher("bytes.TrimRight"), selectArgs: firstArg},
+		{id: "bytes.TrimRightFunc", matchCall: exactCallMatcher("bytes.TrimRightFunc"), selectArgs: firstArg},
+		{id: "bytes.TrimSpace", matchCall: exactCallMatcher("bytes.TrimSpace"), selectArgs: firstArg},
+		{id: "bytes.TrimSuffix", matchCall: exactCallMatcher("bytes.TrimSuffix"), selectArgs: firstArg},
 	}
 }
 
@@ -312,6 +368,9 @@ func (r *ruleRegistry) sanitizerForValue(v ssa.Value) (sanitizerRule, bool) {
 			return visit(value.X)
 		case *ssa.UnOp:
 			if value.Op == token.MUL {
+				if stored, hasStores := storedValuesForLoad(value); hasStores {
+					return allValuesSanitized(stored, visit)
+				}
 				if rule, ok := allStoredValuesSanitized(value.X, visit); ok {
 					return rule, true
 				}

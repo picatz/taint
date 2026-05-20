@@ -82,6 +82,37 @@ func main() {
 	}
 }
 
+func TestCheckDetailedSanitizerIgnoresLaterUnsanitizedStore(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"database/sql"
+	"html"
+)
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	q := html.EscapeString(source())
+	p := &q
+	db.Query(*p)
+	*p = source()
+	_ = *p
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+		WithSanitizers("html.EscapeString"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected sanitizer to ignore later unsanitized store, got %d", len(diagnostics))
+	}
+}
+
 func TestCheckDetailedExtraSourcesAndSinks(t *testing.T) {
 	cg, pkgPath := detailedGraphForSource(t, `package main
 
@@ -197,6 +228,463 @@ func TestSourceRegistryMatchesTypes(t *testing.T) {
 
 	if src, ok := matchSourceType(NewSources("*net/http.Request"), types.NewPointer(request)); !ok || src != "*net/http.Request" {
 		t.Fatalf("expected *net/http.Request source match, got %q matched=%v", src, ok)
+	}
+}
+
+func TestCheckDetailedDoesNotTreatUnusedCallbackArgumentAsReachable(t *testing.T) {
+	cg, _ := detailedGraphForSource(t, `package main
+
+import (
+	"log"
+	"net/http"
+)
+
+func ignore(func(*http.Request)) {}
+
+func main() {
+	ignore(func(r *http.Request) {
+		log.Print(r.URL.Query().Get("q"))
+	})
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources("*net/http.Request"),
+		NewSinks("log.Print"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected no diagnostics for callback that is never invoked, got %d", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedTreatsInvokedCallbackArgumentAsReachable(t *testing.T) {
+	cg, _ := detailedGraphForSource(t, `package main
+
+import (
+	"log"
+	"net/http"
+)
+
+func invoke(cb func(*http.Request)) {
+	cb(nil)
+}
+
+func main() {
+	invoke(func(r *http.Request) {
+		log.Print(r.URL.Query().Get("q"))
+	})
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources("*net/http.Request"),
+		NewSinks("log.Print"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected one diagnostic for callback that is invoked, got %d", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedPropagatesThroughStringTransforms(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"database/sql"
+	"strings"
+)
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	db.Query(strings.TrimSpace(source()))
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected one diagnostic through strings.TrimSpace, got %d", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedPropagatesThroughPhi(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"database/sql"
+	"os"
+)
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	q := "safe"
+	if len(os.Args) > 0 {
+		q = source()
+	}
+	db.Query(q)
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected one diagnostic through phi value, got %d", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedPropagatesThroughStructFieldRead(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+type request struct {
+	query string
+}
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	r := request{query: source()}
+	db.Query(r.query)
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected one diagnostic through struct field read, got %d", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedFindsSinkCalledThroughMethodValue(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	query := db.Query
+	query(source())
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected one diagnostic through database/sql method value, got %d", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedPropagatesThroughAppendAndJoin(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"database/sql"
+	"strings"
+)
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	parts := []string{"select "}
+	parts = append(parts, source())
+	db.Query(strings.Join(parts, ""))
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected one diagnostic through append and strings.Join, got %d", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedPropagatesThroughStringsBuilder(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"database/sql"
+	"strings"
+)
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	var b strings.Builder
+	b.WriteString("select ")
+	b.WriteString(source())
+	db.Query(b.String())
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected one diagnostic through strings.Builder, got %d", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedDoesNotTaintBuilderStringFromLaterWrite(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"database/sql"
+	"strings"
+)
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	var b strings.Builder
+	b.WriteString("select 1")
+	db.Query(b.String())
+	b.WriteString(source())
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected no diagnostic from later strings.Builder write, got %d", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedPropagatesThroughBytesBuffer(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"bytes"
+	"database/sql"
+)
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	var b bytes.Buffer
+	b.WriteString("select ")
+	b.WriteString(source())
+	db.Query(b.String())
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected one diagnostic through bytes.Buffer, got %d", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedPropagatesCallbackInvocationArguments(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func invoke(cb func(string)) {
+	cb(source())
+}
+
+func main() {
+	db := &sql.DB{}
+	invoke(func(q string) {
+		db.Query(q)
+	})
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected one diagnostic through callback invocation argument, got %d", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedDoesNotTaintEarlierLoadFromLaterStore(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	q := "safe"
+	p := &q
+	db.Query(*p)
+	q = source()
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected no diagnostic from later store, got %d", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedDoesNotTaintEarlierLoadFromLaterBranchStore(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"database/sql"
+	"os"
+)
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	q := "safe"
+	p := &q
+	db.Query(*p)
+	if len(os.Args) > 0 {
+		q = source()
+	}
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected no diagnostic from later branch store, got %d", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedDoesNotTaintParameterFromUnrelatedLaterUse(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func query(db *sql.DB, q string) {
+	db.Query(q)
+	_ = source() + q
+}
+
+func main() {
+	db := &sql.DB{}
+	query(db, "safe")
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected no diagnostic from unrelated later parameter use, got %d", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedDoesNotTaintFieldFromUnrelatedLaterUse(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+type request struct {
+	query string
+}
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	r := request{query: "safe"}
+	db.Query(r.query)
+	_ = source() + r.query
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected no diagnostic from unrelated later field use, got %d", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedMapsInvokeArgumentsToMethodParameters(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+type runner interface {
+	run(string)
+}
+
+type impl struct {
+	db *sql.DB
+}
+
+func source() string { return "user" }
+
+func (i impl) run(q string) {
+	i.db.Query(q)
+}
+
+func main() {
+	var r runner = impl{db: &sql.DB{}}
+	r.run(source())
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected one diagnostic through interface invoke argument, got %d", len(diagnostics))
 	}
 }
 
