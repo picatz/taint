@@ -223,6 +223,14 @@ type SARIFRegion struct {
 	StartColumn int `json:"startColumn,omitempty"`
 }
 
+type Finding struct {
+	RuleID  string
+	URI     string
+	Line    int
+	Column  int
+	Message string
+}
+
 // SARIFLogFromAnalyzerJSON converts singlechecker JSON diagnostics into a
 // deterministic SARIF 2.1.0 log.
 func SARIFLogFromAnalyzerJSON(analyzer *analysis.Analyzer, doc analyzerJSON, root string) SARIFLog {
@@ -233,48 +241,57 @@ func SARIFLogFromAnalyzerJSON(analyzer *analysis.Analyzer, doc analyzerJSON, roo
 		driverDoc = analyzer.Doc
 	}
 
-	type finding struct {
-		ruleID  string
-		uri     string
-		line    int
-		column  int
-		message string
-	}
-	var findings []finding
-	ruleSet := map[string]string{}
-	seen := map[string]struct{}{}
+	var findings []Finding
 	for _, byAnalyzer := range doc {
 		for name, diagnostics := range byAnalyzer {
 			ruleName := name
 			if ruleName == "" {
 				ruleName = driverName
 			}
-			if _, ok := ruleSet[ruleName]; !ok {
-				ruleSet[ruleName] = ruleDescription(ruleName, driverName, driverDoc)
-			}
 			for _, diagnostic := range diagnostics {
 				path, line, column := splitPosn(diagnostic.Posn)
-				f := finding{
-					ruleID:  ruleName,
-					uri:     artifactURI(path, root),
-					line:    line,
-					column:  column,
-					message: diagnostic.Message,
-				}
-				key := strings.Join([]string{
-					f.ruleID,
-					f.uri,
-					strconv.Itoa(f.line),
-					strconv.Itoa(f.column),
-					f.message,
-				}, "\x00")
-				if _, ok := seen[key]; ok {
-					continue
-				}
-				seen[key] = struct{}{}
-				findings = append(findings, f)
+				findings = append(findings, Finding{
+					RuleID:  ruleName,
+					URI:     artifactURI(path, root),
+					Line:    line,
+					Column:  column,
+					Message: diagnostic.Message,
+				})
 			}
 		}
+	}
+	return SARIFLogFromFindings(driverName, driverDoc, findings)
+}
+
+// SARIFLogFromFindings converts normalized findings into a deterministic SARIF
+// 2.1.0 log. URI values should already be relative to the user's target when
+// possible.
+func SARIFLogFromFindings(driverName, driverDoc string, findings []Finding) SARIFLog {
+	if driverName == "" {
+		driverName = "taint"
+	}
+	ruleSet := map[string]string{}
+	seen := map[string]struct{}{}
+	deduped := make([]Finding, 0, len(findings))
+	for _, f := range findings {
+		if f.RuleID == "" {
+			f.RuleID = driverName
+		}
+		if _, ok := ruleSet[f.RuleID]; !ok {
+			ruleSet[f.RuleID] = ruleDescription(f.RuleID, driverName, driverDoc)
+		}
+		key := strings.Join([]string{
+			f.RuleID,
+			f.URI,
+			strconv.Itoa(f.Line),
+			strconv.Itoa(f.Column),
+			f.Message,
+		}, "\x00")
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		deduped = append(deduped, f)
 	}
 	if len(ruleSet) == 0 {
 		ruleSet[driverName] = ruleDescription(driverName, driverName, driverDoc)
@@ -299,36 +316,36 @@ func SARIFLogFromAnalyzerJSON(analyzer *analysis.Analyzer, doc analyzerJSON, roo
 		})
 	}
 
-	sort.SliceStable(findings, func(i, j int) bool {
-		a, b := findings[i], findings[j]
+	sort.SliceStable(deduped, func(i, j int) bool {
+		a, b := deduped[i], deduped[j]
 		return strings.Join([]string{
-			a.ruleID,
-			a.uri,
-			strconv.Itoa(a.line),
-			strconv.Itoa(a.column),
-			a.message,
+			a.RuleID,
+			a.URI,
+			strconv.Itoa(a.Line),
+			strconv.Itoa(a.Column),
+			a.Message,
 		}, "\x00") < strings.Join([]string{
-			b.ruleID,
-			b.uri,
-			strconv.Itoa(b.line),
-			strconv.Itoa(b.column),
-			b.message,
+			b.RuleID,
+			b.URI,
+			strconv.Itoa(b.Line),
+			strconv.Itoa(b.Column),
+			b.Message,
 		}, "\x00")
 	})
 
-	results := make([]SARIFResult, 0, len(findings))
-	for _, f := range findings {
+	results := make([]SARIFResult, 0, len(deduped))
+	for _, f := range deduped {
 		results = append(results, SARIFResult{
-			RuleID:    f.ruleID,
-			RuleIndex: ruleIndex[f.ruleID],
+			RuleID:    f.RuleID,
+			RuleIndex: ruleIndex[f.RuleID],
 			Level:     "warning",
-			Message:   SARIFMessage{Text: f.message},
+			Message:   SARIFMessage{Text: f.Message},
 			Locations: []SARIFLocation{{
 				PhysicalLocation: SARIFPhysicalLocation{
-					ArtifactLocation: SARIFArtifactLocation{URI: f.uri},
+					ArtifactLocation: SARIFArtifactLocation{URI: f.URI},
 					Region: SARIFRegion{
-						StartLine:   f.line,
-						StartColumn: f.column,
+						StartLine:   f.Line,
+						StartColumn: f.Column,
 					},
 				},
 			}},

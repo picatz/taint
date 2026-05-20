@@ -24,6 +24,7 @@ Flags:
   or `$TAINT_EVAL_CACHE`)
 - `-target` target name, `local`, or `git`
 - `-repo` path to the taint repo (default working directory)
+- `-sarif-dir` optional directory for per target/analyzer SARIF reports
 
 ## Layout
 

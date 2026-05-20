@@ -27,6 +27,9 @@ var injectableFunctions = taint.NewSinks(
 	"(net/http.ResponseWriter).Write",
 	"(net/http.ResponseWriter).WriteHeader",
 	"(io.Writer).Write",
+	"fmt.Fprint",
+	"fmt.Fprintf",
+	"fmt.Fprintln",
 	"io.Copy",
 	"io.WriteString",
 )
@@ -549,10 +552,11 @@ func sinkDestination(edge *callgraph.Edge) ssa.Value {
 	if cc.IsInvoke() {
 		return cc.Value
 	}
-	// Function-form sinks: io.Copy(dst, src), io.WriteString(w, s).
-	// Both place the destination at Args[0].
+	// Function-form sinks: io.Copy(dst, src), io.WriteString(w, s), and
+	// fmt.Fprint/Fprintf/Fprintln(w, ...). All place the destination at
+	// Args[0].
 	switch calleeID {
-	case "io.Copy", "io.WriteString":
+	case "fmt.Fprint", "fmt.Fprintf", "fmt.Fprintln", "io.Copy", "io.WriteString":
 		if len(cc.Args) > 0 {
 			return cc.Args[0]
 		}

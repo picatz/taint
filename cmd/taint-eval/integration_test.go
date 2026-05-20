@@ -21,6 +21,7 @@ func TestEndToEnd_LocalCheck(t *testing.T) {
 		t.Skip("end-to-end requires building analyzer binaries")
 	}
 	repoRoot := findRepoRoot(t)
+	sarifDir := t.TempDir()
 
 	var stdout, stderr bytes.Buffer
 	args := []string{
@@ -30,6 +31,7 @@ func TestEndToEnd_LocalCheck(t *testing.T) {
 		"-cache", t.TempDir(),
 		"-repo", repoRoot,
 		"-target", "local",
+		"-sarif-dir", sarifDir,
 	}
 	if err := run(context.Background(), args, &stdout, &stderr); err != nil {
 		t.Fatalf("check failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
@@ -40,6 +42,9 @@ func TestEndToEnd_LocalCheck(t *testing.T) {
 	}
 	if !strings.Contains(out, "local-sqli-positive: OK") {
 		t.Fatalf("expected local-sqli-positive OK in output:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(sarifDir, "local-sqli-positive-sqli.sarif")); err != nil {
+		t.Fatalf("expected SARIF report: %v", err)
 	}
 }
 

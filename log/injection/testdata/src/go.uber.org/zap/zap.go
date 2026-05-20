@@ -24,4 +24,7 @@ func (s *SugaredLogger) Fatal(args ...interface{})  {}
 
 type Field struct{}
 
-func String(key, val string) Field { return Field{} }
+func Any(key string, val interface{}) Field   { return Field{} }
+func ByteString(key string, val []byte) Field { return Field{} }
+func Error(err error) Field                   { return Field{} }
+func String(key, val string) Field            { return Field{} }

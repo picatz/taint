@@ -20,6 +20,7 @@
 //	                by kind (default: all targets)
 //	-repo dir       repository root used to locate the analyzer commands
 //	                (default: the working directory of taint-eval)
+//	-sarif-dir dir  optional directory for per target/analyzer SARIF reports
 package main
 
 import (
@@ -59,6 +60,7 @@ func run(parent context.Context, args []string, stdout, stderr io.Writer) error 
 	cacheOverride := flags.String("cache", "", "cache directory for cloned repos")
 	targetSel := flags.String("target", "", "target name, \"local\", or \"git\"")
 	repoRoot := flags.String("repo", "", "path to the taint repo root (default: working directory)")
+	sarifDir := flags.String("sarif-dir", "", "optional directory for per target/analyzer SARIF reports")
 	jobs := flags.Int("jobs", defaultJobs(), "max concurrent target evaluations (default: NumCPU/2 capped at target count)")
 	if err := flags.Parse(rest); err != nil {
 		return err
@@ -94,9 +96,9 @@ func run(parent context.Context, args []string, stdout, stderr io.Writer) error 
 	case "list":
 		return runList(stdout, snapshotsAbs, targets)
 	case "check":
-		return runCheck(ctx, stdout, stderr, *repoRoot, *cacheOverride, manifestDir, snapshotsAbs, targets, *jobs)
+		return runCheck(ctx, stdout, stderr, *repoRoot, *cacheOverride, manifestDir, snapshotsAbs, *sarifDir, targets, *jobs)
 	case "update":
-		return runUpdate(ctx, stdout, stderr, *repoRoot, *cacheOverride, manifestDir, snapshotsAbs, targets, *jobs)
+		return runUpdate(ctx, stdout, stderr, *repoRoot, *cacheOverride, manifestDir, snapshotsAbs, *sarifDir, targets, *jobs)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
@@ -118,7 +120,8 @@ flags:
   -snapshots dir   snapshot directory (default testdata/eval/snapshots)
   -cache dir       cache root for cloned git targets
   -target sel      target name, "local", or "git"
-  -repo dir        path to the taint repo (default: working directory)`)
+  -repo dir        path to the taint repo (default: working directory)
+  -sarif-dir dir   optional directory for SARIF reports`)
 }
 
 func runList(stdout io.Writer, snapshotsDir string, targets []Target) error {
@@ -212,7 +215,7 @@ func runTargets(ctx context.Context, targets []Target, jobs int, fn func(context
 	return results
 }
 
-func runCheck(ctx context.Context, stdout, stderr io.Writer, repoRoot, cacheOverride, manifestDir, snapshotsDir string, targets []Target, jobs int) error {
+func runCheck(ctx context.Context, stdout, stderr io.Writer, repoRoot, cacheOverride, manifestDir, snapshotsDir, sarifDir string, targets []Target, jobs int) error {
 	cacheDir, cmdFor, err := prepareRun(ctx, repoRoot, cacheOverride, targets)
 	if err != nil {
 		return err
@@ -234,6 +237,11 @@ func runCheck(ctx context.Context, stdout, stderr io.Writer, repoRoot, cacheOver
 			}
 			fmt.Fprintf(stdout, "%s: ERROR %v\n", r.target.Name, r.err)
 			continue
+		}
+		if sarifDir != "" {
+			if err := WriteSnapshotSARIF(sarifDir, r.target.Name, r.snap); err != nil {
+				return err
+			}
 		}
 		expected, err := LoadSnapshot(SnapshotPath(snapshotsDir, r.target.Name))
 		if err != nil {
@@ -266,7 +274,7 @@ func runCheck(ctx context.Context, stdout, stderr io.Writer, repoRoot, cacheOver
 	return nil
 }
 
-func runUpdate(ctx context.Context, stdout, stderr io.Writer, repoRoot, cacheOverride, manifestDir, snapshotsDir string, targets []Target, jobs int) error {
+func runUpdate(ctx context.Context, stdout, stderr io.Writer, repoRoot, cacheOverride, manifestDir, snapshotsDir, sarifDir string, targets []Target, jobs int) error {
 	cacheDir, cmdFor, err := prepareRun(ctx, repoRoot, cacheOverride, targets)
 	if err != nil {
 		return err
@@ -282,6 +290,11 @@ func runUpdate(ctx context.Context, stdout, stderr io.Writer, repoRoot, cacheOve
 		if r.err != nil {
 			fmt.Fprintf(stdout, "%s: ERROR %v\n", r.target.Name, r.err)
 			return fmt.Errorf("target %q: %w", r.target.Name, r.err)
+		}
+		if sarifDir != "" {
+			if err := WriteSnapshotSARIF(sarifDir, r.target.Name, r.snap); err != nil {
+				return err
+			}
 		}
 		path := SnapshotPath(snapshotsDir, r.target.Name)
 		if err := WriteSnapshot(path, r.snap); err != nil {
