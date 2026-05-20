@@ -26,10 +26,12 @@ are deduplicated by sink callsite and source type, preferring richer paths so
 wrapper calls retain useful evidence.
 
 The recursive SSA walk follows common value forms: parameters, calls, returns,
-allocations, stores, fields, indexes, slices, conversions, interface changes,
-closures, map updates, and binary/unary expressions. Return-summary modeling
-maps callee return values back to caller arguments and has a fixed recursion
-bound to avoid unbounded summaries.
+allocations, stores, fields, indexes, slices, phi nodes, conversions, interface
+changes, closures, map updates, and binary/unary expressions. Pointer loads use
+basic flow-sensitive reachability, so stores that cannot reach the load do not
+taint it or satisfy sanitizer coverage. Return-summary modeling maps callee
+return values back to caller arguments and has a fixed recursion bound to avoid
+unbounded summaries.
 
 ## Rule Registries
 
@@ -38,8 +40,11 @@ rules. Public `Sources` and `Sinks` remain string sets for compatibility, while
 the engine turns them into exact function, method, and type matchers.
 
 Default propagation rules model known transforms such as `fmt.Sprintf`,
-`io.ReadAll`, `bufio.NewReader`, `bufio.NewReaderSize`, `zap.String`, and
-`html.EscapeString` when that call is not configured as a sanitizer.
+`append`, `strings.Join`, common `strings`/`bytes` transforms, `io.ReadAll`,
+`bufio.NewReader`, `bufio.NewReaderSize`, `zap.String`, and
+`html.EscapeString` when that call is not configured as a sanitizer. The engine
+also models `strings.Builder` and `bytes.Buffer` writes that can reach later
+`String` or `Bytes` reads.
 
 Sanitizers are value-specific. A sanitizer suppresses a finding only when the
 actual value passed to the sink is the sanitizer result, possibly wrapped by SSA
@@ -58,6 +63,9 @@ the evidence for debug or future CLI output.
 
 The engine is intentionally conservative where SSA or callgraph information is
 incomplete. Dynamic reflection, complex aliasing, data-dependent dispatch, and
-some indirect function-field flows may be unresolved. Unknown or synthetic
-modeling is captured in diagnostic evidence instead of hidden from callers.
-
+some indirect function-field flows may be unresolved. Callback arguments are
+linked at observed dispatch sites, plus a small set of known registration APIs
+such as `net/http.HandleFunc`; callbacks that are only passed to a function are
+not treated as reachable unless the callee invokes or registers them. Unknown or
+synthetic modeling is captured in diagnostic evidence instead of hidden from
+callers.

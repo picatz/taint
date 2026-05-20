@@ -2,6 +2,7 @@ package injection
 
 import (
 	"fmt"
+	"go/token"
 	"go/types"
 	"strings"
 
@@ -327,7 +328,7 @@ func run(pass *analysis.Pass) (any, error) {
 		}
 
 		// Skip the context argument, if using a *Context query variant.
-		if strings.HasSuffix(queryEdge.Site.Value().Call.Value.String(), "Context") {
+		if strings.HasSuffix(edgeCalleeName(queryEdge), "Context") {
 			if len(queryArgs) < 2 {
 				continue
 			}
@@ -344,13 +345,40 @@ func run(pass *analysis.Pass) (any, error) {
 		// Ensure it is a constant (prepared statement), otherwise report
 		// potential SQL injection.
 		if _, isConst := query.(*ssa.Const); !isConst {
-			reportPos := result.SinkValue.Pos()
-			if last := result.Path.Last(); last != nil && last.Site != nil {
-				reportPos = last.Site.Pos()
+			reportPos := resultPosition(result)
+			if !reportPos.IsValid() {
+				continue
 			}
 			pass.Reportf(reportPos, "potential sql injection")
 		}
 	}
 
 	return nil, nil
+}
+
+func edgeCalleeName(edge *callgraph.Edge) string {
+	if edge == nil {
+		return ""
+	}
+	if edge.Callee != nil && edge.Callee.Func != nil {
+		return edge.Callee.Func.String()
+	}
+	if edge.Site != nil && edge.Site.Common() != nil {
+		if fn := edge.Site.Common().StaticCallee(); fn != nil {
+			return fn.String()
+		}
+	}
+	return ""
+}
+
+func resultPosition(result taint.Result) token.Pos {
+	if len(result.Path) > 0 {
+		if last := result.Path.Last(); last != nil && last.Site != nil {
+			return last.Site.Pos()
+		}
+	}
+	if result.SinkValue != nil {
+		return result.SinkValue.Pos()
+	}
+	return token.NoPos
 }

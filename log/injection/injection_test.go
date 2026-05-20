@@ -73,6 +73,10 @@ func TestN(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "n")
 }
 
+func TestO(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "o")
+}
+
 func TestGRPC(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "grpc")
 }

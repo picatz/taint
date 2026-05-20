@@ -3,6 +3,7 @@ package injection
 import (
 	"flag"
 	"fmt"
+	"go/token"
 	"go/types"
 	"os"
 	"strings"
@@ -244,14 +245,24 @@ func run(pass *analysis.Pass) (any, error) {
 				dbg("evidence=%s rule=%s msg=%s", evidence.Kind, evidence.Rule, evidence.Message)
 			}
 		}
-		reportPos := result.SinkValue.Pos()
-		if len(result.Path) > 0 {
-			if last := result.Path[len(result.Path)-1]; last != nil && last.Site != nil {
-				reportPos = last.Site.Pos()
-			}
+		reportPos := resultPosition(result)
+		if !reportPos.IsValid() {
+			continue
 		}
 		pass.Reportf(reportPos, "potential log injection")
 	}
 
 	return nil, nil
+}
+
+func resultPosition(result taint.Result) token.Pos {
+	if len(result.Path) > 0 {
+		if last := result.Path[len(result.Path)-1]; last != nil && last.Site != nil {
+			return last.Site.Pos()
+		}
+	}
+	if result.SinkValue != nil {
+		return result.SinkValue.Pos()
+	}
+	return token.NoPos
 }
