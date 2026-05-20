@@ -4,6 +4,10 @@
   "source": "https://github.com/go-chi/chi.git",
   "commit": "71307f9b7e4e9527638bc951c42b782cd1560331",
   "analyzers": {
+    "cmdi": {
+      "count": 0,
+      "findings": []
+    },
     "logi": {
       "count": 0,
       "findings": []

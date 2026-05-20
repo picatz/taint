@@ -83,3 +83,39 @@ func TestSARIFLogFromAnalyzerJSON(t *testing.T) {
 		t.Fatalf("region = %#v", region)
 	}
 }
+
+func TestSARIFCommandInjectionMetadata(t *testing.T) {
+	root := t.TempDir()
+	posn := filepath.Join(root, "main.go") + ":12:2"
+	doc := analyzerJSON{
+		"example.com/app": {
+			"cmdi": {{Posn: posn, Message: "potential command injection"}},
+		},
+	}
+
+	log := SARIFLogFromAnalyzerJSON(&analysis.Analyzer{Name: "cmdi", Doc: "finds potential command injection issues"}, doc, root)
+	result := log.Runs[0].Results[0]
+	if got := result.RuleID; got != "cmdi/potential-command-injection" {
+		t.Fatalf("rule ID = %q", got)
+	}
+	if result.PartialFingerprints["taint/v1"] == "" {
+		t.Fatalf("missing partial fingerprint: %#v", result.PartialFingerprints)
+	}
+	shifted := SARIFLogFromFindings("cmdi", "finds potential command injection issues", []Finding{{
+		RuleID:  "cmdi",
+		URI:     "main.go",
+		Line:    99,
+		Column:  7,
+		Message: "potential command injection",
+	}})
+	if got, want := shifted.Runs[0].Results[0].PartialFingerprints["taint/v1"], result.PartialFingerprints["taint/v1"]; got != want {
+		t.Fatalf("fingerprint changed after line movement: got %q want %q", got, want)
+	}
+	rule := log.Runs[0].Tool.Driver.Rules[0]
+	if got := rule.HelpURI; got != "https://cwe.mitre.org/data/definitions/78.html" {
+		t.Fatalf("help URI = %q", got)
+	}
+	if got := rule.Properties.Tags; len(got) != 2 || got[1] != "external/cwe/cwe-78" {
+		t.Fatalf("tags = %#v", got)
+	}
+}

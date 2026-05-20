@@ -389,6 +389,8 @@ func ruleDescription(ruleID, driverName, driverDoc string) string {
 		return "finds potential SQL injection issues"
 	case "logi", "logi/potential-log-injection":
 		return "finds potential log injection issues"
+	case "cmdi", "cmdi/potential-command-injection":
+		return "finds potential command injection issues"
 	case "xss", "xss/potential-xss":
 		return "finds potential XSS issues"
 	default:
@@ -416,6 +418,12 @@ func ruleMetadata(ruleID string) sarifRuleMeta {
 			helpURI: "https://cwe.mitre.org/data/definitions/117.html",
 			tags:    []string{"security", "external/cwe/cwe-117"},
 		}
+	case "cmdi/potential-command-injection":
+		return sarifRuleMeta{
+			name:    "Potential command injection",
+			helpURI: "https://cwe.mitre.org/data/definitions/78.html",
+			tags:    []string{"security", "external/cwe/cwe-78"},
+		}
 	case "xss/potential-xss":
 		return sarifRuleMeta{
 			name:    "Potential cross-site scripting",
@@ -436,6 +444,10 @@ func detailedRuleID(analyzerName, message string) string {
 	case "logi":
 		if strings.EqualFold(message, "potential log injection") {
 			return "logi/potential-log-injection"
+		}
+	case "cmdi":
+		if strings.EqualFold(message, "potential command injection") {
+			return "cmdi/potential-command-injection"
 		}
 	case "xss":
 		if strings.EqualFold(message, "potential XSS") {

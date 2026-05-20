@@ -20,6 +20,14 @@ func TestWriteSnapshotSARIF(t *testing.T) {
 					Message: "potential sql injection",
 				}},
 			},
+			"cmdi": {
+				Findings: []Finding{{
+					File:    "main.go",
+					Line:    9,
+					Column:  2,
+					Message: "potential command injection",
+				}},
+			},
 		},
 	}
 	snap.normalize()
@@ -58,5 +66,17 @@ func TestWriteSnapshotSARIF(t *testing.T) {
 	}
 	if got := doc.Runs[0].Results[0].Locations[0].PhysicalLocation.ArtifactLocation.URI; got != "main.go" {
 		t.Fatalf("uri = %q", got)
+	}
+
+	path = filepath.Join(dir, "local-sqli-cmdi.sarif")
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if got := doc.Runs[0].Results[0].RuleID; got != "cmdi/potential-command-injection" {
+		t.Fatalf("cmdi rule = %q", got)
 	}
 }

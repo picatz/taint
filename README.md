@@ -87,8 +87,8 @@ for _, diagnostic := range diagnostics {
 ### `taint`
 
 The `taint` CLI is an interactive tool to find potential security vulnerabilities. It can be used
-to find potential SQL injections, log injections, and cross-site scripting (XSS) vulnerabilities, 
-among other types of vulnerabilities.
+to find potential SQL injections, log injections, command injections, and cross-site scripting (XSS)
+vulnerabilities, among other types of vulnerabilities.
 
 ```console
 $ go install github.com/picatz/taint/cmd/taint@latest
@@ -184,7 +184,7 @@ n0:github.com/picatz/taint/cmd/taint/example.main → n6:(*net/http.ServeMux).Ha
 
 ### Analyzer CLI Options
 
-The `sqli`, `logi`, and `xss` analyzer CLIs use the built-in taint callgraph
+The `sqli`, `logi`, `cmdi`, and `xss` analyzer CLIs use the built-in taint callgraph
 by default. Pass `-callgraph=vta` to compare results with the alternate CHA+VTA
 builder.
 
@@ -193,6 +193,7 @@ They also support SARIF output for code scanning integrations:
 ```console
 $ sqli -sarif ./... > sqli.sarif
 $ logi -sarif-output logi.sarif ./...
+$ cmdi -sarif-output cmdi.sarif ./...
 $ xss -sarif ./...
 ```
 
@@ -282,6 +283,37 @@ func main() {
 }
 $ logi main.go
 ./log/injection/testdata/src/a/main.go:10:14: potential log injection
+```
+
+### `cmdi`
+
+The `cmdi` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer) finds potential command injection issues. It reports tainted executable names passed to `os/exec.Command` or `os/exec.CommandContext`, and tainted shell command strings in calls such as `exec.Command("sh", "-c", input)`. It does not flag every tainted ordinary process argument in the v1 rule.
+
+```console
+$ go install github.com/picatz/taint/cmd/cmdi@latest
+```
+
+```console
+$ cd command/injection/testdata/src/direct
+$ cat main.go
+package main
+
+import (
+        "net/http"
+        "os/exec"
+)
+
+func run(r *http.Request) {
+        exec.Command(r.FormValue("cmd")) // want "potential command injection"
+}
+
+func main() {
+        http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+                run(r)
+        })
+}
+$ cmdi main.go
+./command/injection/testdata/src/direct/main.go:9:14: potential command injection
 ```
 
 ### `xss`

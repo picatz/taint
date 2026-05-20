@@ -43,8 +43,14 @@ func TestEndToEnd_LocalCheck(t *testing.T) {
 	if !strings.Contains(out, "local-sqli-positive: OK") {
 		t.Fatalf("expected local-sqli-positive OK in output:\n%s", out)
 	}
+	if !strings.Contains(out, "local-cmdi-positive: OK") {
+		t.Fatalf("expected local-cmdi-positive OK in output:\n%s", out)
+	}
 	if _, err := os.Stat(filepath.Join(sarifDir, "local-sqli-positive-sqli.sarif")); err != nil {
 		t.Fatalf("expected SARIF report: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sarifDir, "local-cmdi-positive-cmdi.sarif")); err != nil {
+		t.Fatalf("expected cmdi SARIF report: %v", err)
 	}
 }
 
@@ -66,7 +72,7 @@ func TestEndToEnd_List(t *testing.T) {
 		t.Fatalf("list failed: %v\nstderr:\n%s", err, stderr.String())
 	}
 	out := stdout.String()
-	for _, want := range []string{"local-clean", "local-sqli-positive", "sqli=1"} {
+	for _, want := range []string{"local-clean", "local-sqli-positive", "local-cmdi-positive", "sqli=1", "cmdi=1"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("list output missing %q:\n%s", want, out)
 		}

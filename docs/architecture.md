@@ -1,7 +1,8 @@
 # Architecture
 
 `taint` is a library-first static taint engine for Go SSA programs. The current
-stabilized detector families are SQL injection, log injection, and XSS.
+stabilized detector families are SQL injection, log injection, command
+injection, and XSS.
 
 ## Callgraph Construction
 
@@ -43,6 +44,9 @@ unbounded summaries.
 Sources, sinks, sanitizers, and propagators are represented as typed internal
 rules. Public `Sources` and `Sinks` remain string sets for compatibility, while
 the engine turns them into exact function, method, and type matchers.
+Sink rules can also select a narrower subset of call arguments internally; the
+command-injection sinks use this to check only executable names and shell
+command strings instead of every process argument.
 
 Default propagation rules model known transforms such as `fmt.Sprintf`,
 `append`, `strings.Join`, common `strings`/`bytes` transforms, `io.ReadAll`,
@@ -64,7 +68,7 @@ parameter mapping, sanitizer decisions, sink matches, and unresolved or
 synthetic modeling. Analyzers can report the concrete unsafe callsite and use
 the evidence for debug or future CLI output.
 
-Analyzer commands (`sqli`, `logi`, and `xss`) support `-sarif` and
+Analyzer commands (`sqli`, `logi`, `cmdi`, and `xss`) support `-sarif` and
 `-sarif-output <path>`. SARIF mode runs the same analyzer through the standard
 singlechecker JSON path, then converts diagnostics into deterministic SARIF
 2.1.0 results with rule IDs matching analyzer names.

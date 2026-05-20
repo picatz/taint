@@ -1,0 +1,18 @@
+{
+  "target": "local-cmdi-positive",
+  "kind": "local",
+  "source": "fixtures/local-cmdi-positive",
+  "analyzers": {
+    "cmdi": {
+      "count": 1,
+      "findings": [
+        {
+          "file": "main.go",
+          "line": 10,
+          "column": 18,
+          "message": "potential command injection"
+        }
+      ]
+    }
+  }
+}

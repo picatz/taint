@@ -1,9 +1,11 @@
 package taint
 
 import (
+	"go/constant"
 	"go/token"
 	"go/types"
 	"sort"
+	"strings"
 
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/ssa"
@@ -166,12 +168,17 @@ func exactSourceRule(id string) sourceRule {
 }
 
 func exactSinkRule(id string) sinkRule {
+	selectArgs := defaultSinkArguments
+	switch id {
+	case "os/exec.Command", "os/exec.CommandContext":
+		selectArgs = execCommandSinkArguments
+	}
 	return sinkRule{
 		id: id,
 		matchEdge: func(edge *callgraph.Edge) bool {
 			return edgeCallsSink(edge, id)
 		},
-		selectArgs: defaultSinkArguments,
+		selectArgs: selectArgs,
 	}
 }
 
@@ -518,4 +525,183 @@ func defaultSinkArguments(edge *callgraph.Edge) []ssa.Value {
 		args = args[1:]
 	}
 	return args
+}
+
+func execCommandSinkArguments(edge *callgraph.Edge) []ssa.Value {
+	if edge == nil || edge.Site == nil || edge.Site.Common() == nil {
+		return nil
+	}
+	args := edge.Site.Common().Args
+	nameIndex := 0
+	if edgeCallsSink(edge, "os/exec.CommandContext") {
+		nameIndex = 1
+	}
+	if nameIndex >= len(args) {
+		return nil
+	}
+
+	selected := []ssa.Value{args[nameIndex]}
+	if command := shellCommandStringArg(args, nameIndex); command != nil {
+		selected = append(selected, command)
+	}
+	return selected
+}
+
+func shellCommandStringArg(args []ssa.Value, nameIndex int) ssa.Value {
+	shell, ok := stringConstant(args[nameIndex])
+	if !ok || !isShellExecutable(shell) {
+		return nil
+	}
+	flagValue := execCommandVariadicArg(args, nameIndex, 0)
+	commandValue := execCommandVariadicArg(args, nameIndex, 1)
+	if flagValue == nil || commandValue == nil {
+		return nil
+	}
+	flag, ok := stringConstant(flagValue)
+	if !ok || !isShellCommandFlag(shell, flag) {
+		return nil
+	}
+	return commandValue
+}
+
+func execCommandVariadicArg(args []ssa.Value, nameIndex, offset int) ssa.Value {
+	variadicIndex := nameIndex + 1
+	if variadicIndex < len(args) && isStringSlice(args[variadicIndex].Type()) {
+		return sliceElementAt(args[variadicIndex], offset)
+	}
+	directIndex := variadicIndex + offset
+	if directIndex >= 0 && directIndex < len(args) {
+		return args[directIndex]
+	}
+	return nil
+}
+
+func isStringSlice(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	slice, ok := t.Underlying().(*types.Slice)
+	if !ok {
+		return false
+	}
+	elem, ok := slice.Elem().Underlying().(*types.Basic)
+	return ok && elem.Kind() == types.String
+}
+
+func sliceElementAt(v ssa.Value, index int) ssa.Value {
+	seen := map[ssa.Value]struct{}{}
+	var visit func(ssa.Value) ssa.Value
+	visit = func(cur ssa.Value) ssa.Value {
+		if cur == nil {
+			return nil
+		}
+		if _, ok := seen[cur]; ok {
+			return nil
+		}
+		seen[cur] = struct{}{}
+		switch value := cur.(type) {
+		case *ssa.Slice:
+			return visit(value.X)
+		case *ssa.ChangeInterface:
+			return visit(value.X)
+		case *ssa.ChangeType:
+			return visit(value.X)
+		case *ssa.Convert:
+			return visit(value.X)
+		case *ssa.MakeInterface:
+			return visit(value.X)
+		case *ssa.Alloc:
+			return storedArrayElement(value, index)
+		}
+		return nil
+	}
+	return visit(v)
+}
+
+func storedArrayElement(array ssa.Value, index int) ssa.Value {
+	if array == nil || array.Referrers() == nil {
+		return nil
+	}
+	for _, ref := range *array.Referrers() {
+		switch ref := ref.(type) {
+		case *ssa.Store:
+			addr, ok := ref.Addr.(*ssa.IndexAddr)
+			if !ok || addr.X != array || !intConstantEquals(addr.Index, index) {
+				continue
+			}
+			return ref.Val
+		case *ssa.IndexAddr:
+			if ref.X != array || !intConstantEquals(ref.Index, index) || ref.Referrers() == nil {
+				continue
+			}
+			for _, indexRef := range *ref.Referrers() {
+				store, ok := indexRef.(*ssa.Store)
+				if ok && store.Addr == ref {
+					return store.Val
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func intConstantEquals(v ssa.Value, want int) bool {
+	c, ok := v.(*ssa.Const)
+	if !ok || c.Value == nil {
+		return false
+	}
+	got, exact := constant.Int64Val(c.Value)
+	return exact && got == int64(want)
+}
+
+func stringConstant(v ssa.Value) (string, bool) {
+	switch value := v.(type) {
+	case *ssa.Const:
+		if value.Value == nil || value.Value.Kind() != constant.String {
+			return "", false
+		}
+		return constant.StringVal(value.Value), true
+	case *ssa.ChangeInterface:
+		return stringConstant(value.X)
+	case *ssa.ChangeType:
+		return stringConstant(value.X)
+	case *ssa.Convert:
+		return stringConstant(value.X)
+	case *ssa.MakeInterface:
+		return stringConstant(value.X)
+	}
+	return "", false
+}
+
+func isShellExecutable(name string) bool {
+	base := shellBaseName(name)
+	switch strings.ToLower(base) {
+	case "sh", "bash", "dash", "zsh", "ksh", "ash",
+		"cmd", "cmd.exe",
+		"powershell", "powershell.exe",
+		"pwsh", "pwsh.exe":
+		return true
+	default:
+		return false
+	}
+}
+
+func shellBaseName(name string) string {
+	name = strings.TrimSpace(name)
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+		return name[i+1:]
+	}
+	return name
+}
+
+func isShellCommandFlag(shell, flag string) bool {
+	base := strings.ToLower(shellBaseName(shell))
+	switch base {
+	case "cmd", "cmd.exe":
+		return strings.EqualFold(flag, "/c")
+	case "powershell", "powershell.exe", "pwsh", "pwsh.exe":
+		return strings.EqualFold(flag, "-command") || strings.EqualFold(flag, "-c")
+	default:
+		return flag == "-c"
+	}
 }

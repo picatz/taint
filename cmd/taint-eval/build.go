@@ -9,7 +9,7 @@ import (
 	"runtime"
 )
 
-// buildAnalyzerBinaries compiles cmd/sqli, cmd/logi, and cmd/xss into a
+// buildAnalyzerBinaries compiles cmd/sqli, cmd/logi, cmd/cmdi, and cmd/xss into a
 // temporary directory inside the cache and returns a lookup function for use
 // by RunTarget. Building once per harness invocation avoids the cost of
 // re-compiling for each target.
@@ -21,6 +21,7 @@ func buildAnalyzerBinaries(ctx context.Context, cacheDir CacheDir, repoRoot stri
 	binaries := map[string]string{
 		"sqli": "github.com/picatz/taint/cmd/sqli",
 		"logi": "github.com/picatz/taint/cmd/logi",
+		"cmdi": "github.com/picatz/taint/cmd/cmdi",
 		"xss":  "github.com/picatz/taint/cmd/xss",
 	}
 	paths := map[string]string{}

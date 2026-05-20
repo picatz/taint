@@ -1,5 +1,5 @@
 // Command taint-eval is the precision-evaluation harness for the existing
-// sqli, logi, and xss analyzers. It runs each analyzer against pinned local
+// sqli, logi, cmdi, and xss analyzers. It runs each analyzer against pinned local
 // fixtures and remote repositories listed in testdata/eval/targets.yaml and
 // compares their output against committed JSON snapshots so regressions and
 // false-positive drift surface as a diff.

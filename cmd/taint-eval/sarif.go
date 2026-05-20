@@ -67,6 +67,8 @@ func analyzerDoc(name string) string {
 		return "finds potential SQL injection issues"
 	case "logi":
 		return "finds potential log injection issues"
+	case "cmdi":
+		return "finds potential command injection issues"
 	case "xss":
 		return "finds potential XSS issues"
 	default:

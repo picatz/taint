@@ -1,6 +1,6 @@
 # Precision Evaluation Harness
 
-`cmd/taint-eval` runs the existing `sqli`, `logi`, and `xss` analyzers
+`cmd/taint-eval` runs the existing `sqli`, `logi`, `cmdi`, and `xss` analyzers
 against pinned local fixtures and remote repositories and compares the
 output against committed JSON snapshots. The goal is to make false
 positive and regression drift measurable as the engine evolves, without
@@ -35,6 +35,7 @@ testdata/eval/
     local-clean/
     local-sqli-positive/
     local-logi-positive/
+    local-cmdi-positive/
     local-xss-positive/
   snapshots/                   # JSON expected output per target
     local-*.json

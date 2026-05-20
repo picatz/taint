@@ -1,7 +1,7 @@
 # Precision evaluation manifest.
 #
 # Each target is invoked against the existing analyzer CLIs
-# (cmd/sqli, cmd/logi, cmd/xss) and compared against a JSON
+# (cmd/sqli, cmd/logi, cmd/cmdi, cmd/xss) and compared against a JSON
 # snapshot under testdata/eval/snapshots.
 #
 # Local targets live under testdata/eval/fixtures and are
@@ -18,7 +18,7 @@ targets:
     kind: local
     path: fixtures/local-clean
     packages: ["./..."]
-    analyzers: [sqli, logi, xss]
+    analyzers: [sqli, logi, cmdi, xss]
 
   - name: local-sqli-positive
     kind: local
@@ -32,6 +32,12 @@ targets:
     packages: ["./..."]
     analyzers: [logi]
 
+  - name: local-cmdi-positive
+    kind: local
+    path: fixtures/local-cmdi-positive
+    packages: ["./..."]
+    analyzers: [cmdi]
+
   - name: local-xss-positive
     kind: local
     path: fixtures/local-xss-positive
@@ -44,7 +50,7 @@ targets:
     # v1.8.1
     commit: b4617d0b9670ad14039b2739167fd35a60f557c5
     packages: ["./..."]
-    analyzers: [sqli, logi, xss]
+    analyzers: [sqli, logi, cmdi, xss]
 
   - name: julienschmidt-httprouter
     kind: git
@@ -52,7 +58,7 @@ targets:
     # v1.3.0
     commit: 4eec211fa4e8df74ed978dc5681612131854144f
     packages: ["./..."]
-    analyzers: [sqli, logi, xss]
+    analyzers: [sqli, logi, cmdi, xss]
 
   - name: go-chi-chi
     kind: git
@@ -60,4 +66,4 @@ targets:
     # v5.2.1
     commit: 71307f9b7e4e9527638bc951c42b782cd1560331
     packages: ["./..."]
-    analyzers: [sqli, logi, xss]
+    analyzers: [sqli, logi, cmdi, xss]

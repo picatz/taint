@@ -3,6 +3,10 @@
   "kind": "local",
   "source": "fixtures/local-clean",
   "analyzers": {
+    "cmdi": {
+      "count": 0,
+      "findings": []
+    },
     "logi": {
       "count": 0,
       "findings": []

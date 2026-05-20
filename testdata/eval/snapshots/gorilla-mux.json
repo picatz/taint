@@ -4,6 +4,10 @@
   "source": "https://github.com/gorilla/mux.git",
   "commit": "b4617d0b9670ad14039b2739167fd35a60f557c5",
   "analyzers": {
+    "cmdi": {
+      "count": 0,
+      "findings": []
+    },
     "logi": {
       "count": 0,
       "findings": []
