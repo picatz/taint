@@ -564,8 +564,25 @@ func checkBlockInstructionOptimized(root *ssa.Function, allFns map[*ssa.Function
 					instrCalls = append(instrCalls, findFunctionsInField(fa, allFns)...)
 				case *ssa.Field:
 					instrCalls = append(instrCalls, findFunctionsInFieldValue(fa, allFns)...)
+				case *ssa.Global:
+					instrCalls = append(instrCalls, findFunctionsStoredAt(fa, allFns)...)
 				}
 			}
+
+		case *ssa.Lookup:
+			// Map-valued function dispatch: handlers["foo"](w, r).
+			instrCalls = append(instrCalls, findFunctionsInMap(callt, allFns)...)
+
+		case *ssa.Extract:
+			// Comma-ok map dispatch: h, ok := handlers["foo"]; h(...).
+			// The tuple producer is the Lookup we actually want to resolve.
+			if lookup, ok := callt.Tuple.(*ssa.Lookup); ok && callt.Index == 0 {
+				instrCalls = append(instrCalls, findFunctionsInMap(lookup, allFns)...)
+			}
+
+		case *ssa.Phi:
+			// Function chosen at a join point: f := cond ? a : b; f(...).
+			instrCalls = append(instrCalls, findFunctionsInPhi(callt)...)
 		}
 	}
 
@@ -1195,6 +1212,132 @@ func findFunctionsInFieldValue(field *ssa.Field, allFns map[*ssa.Function]bool) 
 		return dedupeFunctions(exact)
 	}
 	return dedupeFunctions(fallback)
+}
+
+// findFunctionsStoredAt scans the program for stores targeting the given
+// address-valued SSA value (typically a *ssa.Global holding a function-typed
+// variable) and returns every distinct function that flows into the address.
+// This lets indirect calls through a global function variable resolve to its
+// possible callees.
+func findFunctionsStoredAt(addr ssa.Value, allFns map[*ssa.Function]bool) []*ssa.Function {
+	if addr == nil {
+		return nil
+	}
+	var out []*ssa.Function
+	for fn := range allFns {
+		for _, blk := range fn.Blocks {
+			for _, ins := range blk.Instrs {
+				store, ok := ins.(*ssa.Store)
+				if !ok || store.Addr != addr {
+					continue
+				}
+				out = append(out, functionValues(store.Val)...)
+			}
+		}
+	}
+	return dedupeFunctions(out)
+}
+
+// findFunctionsInMap resolves a map-valued function dispatch
+// (handlers[key](...)) to the set of functions previously stored into the same
+// map. Stores reach across functions, mirroring how findFunctionsInField scans
+// the whole program for field assignments.
+func findFunctionsInMap(lookup *ssa.Lookup, allFns map[*ssa.Function]bool) []*ssa.Function {
+	if lookup == nil {
+		return nil
+	}
+	mapValue := lookup.X
+	if mapValue == nil {
+		return nil
+	}
+	var out []*ssa.Function
+	for fn := range allFns {
+		for _, blk := range fn.Blocks {
+			for _, ins := range blk.Instrs {
+				upd, ok := ins.(*ssa.MapUpdate)
+				if !ok || !sameMapBase(upd.Map, mapValue) {
+					continue
+				}
+				out = append(out, functionValues(upd.Value)...)
+			}
+		}
+	}
+	return dedupeFunctions(out)
+}
+
+// findFunctionsInPhi resolves a phi-valued indirect call: f := cond ? a : b;
+// f(...). Each incoming edge is folded through functionValues so closures and
+// converted function references are recognized.
+func findFunctionsInPhi(phi *ssa.Phi) []*ssa.Function {
+	if phi == nil {
+		return nil
+	}
+	var out []*ssa.Function
+	for _, edge := range phi.Edges {
+		out = append(out, functionValues(edge)...)
+	}
+	return dedupeFunctions(out)
+}
+
+// sameMapBase returns true when two SSA values refer to the same underlying
+// map. Direct identity covers map values built in the current function;
+// loads from the same *ssa.Global cover package-level maps, including the
+// common pattern where the package init function performs MapUpdate on a
+// freshly created map before storing it into the global.
+func sameMapBase(a, b ssa.Value) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	ga := mapBackingGlobal(a)
+	gb := mapBackingGlobal(b)
+	return ga != nil && ga == gb
+}
+
+// mapBackingGlobal returns the *ssa.Global that backs a map-valued SSA value
+// when one is reachable through trivial dereference or via the
+// MakeMap-then-Store pattern emitted for package-level map literals.
+func mapBackingGlobal(v ssa.Value) *ssa.Global {
+	if v == nil {
+		return nil
+	}
+	if g := globalBacking(v); g != nil {
+		return g
+	}
+	mm, ok := v.(*ssa.MakeMap)
+	if !ok {
+		return nil
+	}
+	refs := mm.Referrers()
+	if refs == nil {
+		return nil
+	}
+	for _, ref := range *refs {
+		store, ok := ref.(*ssa.Store)
+		if !ok || store.Val != mm {
+			continue
+		}
+		if g, ok := store.Addr.(*ssa.Global); ok {
+			return g
+		}
+	}
+	return nil
+}
+
+func globalBacking(v ssa.Value) *ssa.Global {
+	switch x := v.(type) {
+	case *ssa.UnOp:
+		if x.Op == token.MUL {
+			if g, ok := x.X.(*ssa.Global); ok {
+				return g
+			}
+		}
+	case *ssa.Global:
+		return x
+	}
+	return nil
 }
 
 func functionValues(v ssa.Value) []*ssa.Function {
