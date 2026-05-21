@@ -37,9 +37,15 @@ jobs:
         run: go run ./cmd/taint-eval list
 
       - name: Check snapshots
+        env:
+          TARGET: ${{ inputs.target }}
         run: |
-          if [ -n "${{ inputs.target }}" ]; then
-            go run ./cmd/taint-eval check -target "${{ inputs.target }}"
+          if [ -n "$TARGET" ]; then
+            if ! printf '%s' "$TARGET" | grep -Eq '^[A-Za-z0-9._/-]+$'; then
+              echo "::error::target must match ^[A-Za-z0-9._/-]+$" >&2
+              exit 1
+            fi
+            go run ./cmd/taint-eval check -target "$TARGET"
           else
             go run ./cmd/taint-eval check
           fi
