@@ -186,6 +186,24 @@ func exactSinkRule(id string) sinkRule {
 	switch id {
 	case "os/exec.Command", "os/exec.CommandContext":
 		selectArgs = execCommandSinkArguments
+	case "os.Open", "os.OpenFile", "os.Create", "os.ReadFile", "os.WriteFile",
+		"os.Remove", "os.RemoveAll", "os.Mkdir", "os.MkdirAll",
+		"io/ioutil.ReadFile", "io/ioutil.WriteFile", "io/ioutil.ReadDir":
+		selectArgs = sinkArgAt(0)
+	case "net/http.ServeFile":
+		selectArgs = sinkArgAt(2)
+	case "net/http.Get", "net/http.Post", "net/http.PostForm", "net/http.Head":
+		selectArgs = sinkArgAt(0)
+	case "net/http.NewRequest":
+		selectArgs = sinkArgAt(1)
+	case "net/http.NewRequestWithContext":
+		selectArgs = sinkArgAt(2)
+	case "(*net/http.Client).Post", "(*net/http.Client).PostForm":
+		// Method args (after the SSA-included receiver): [url, ...]. Only the
+		// URL is the SSRF channel; tainted body or form data is not.
+		selectArgs = sinkArgAt(1)
+	case "net.Dial", "net.DialTimeout":
+		selectArgs = sinkArgAt(1)
 	}
 	return sinkRule{
 		id: id,
@@ -193,6 +211,26 @@ func exactSinkRule(id string) sinkRule {
 			return edgeCallsSink(edge, id)
 		},
 		selectArgs: selectArgs,
+	}
+}
+
+// sinkArgAt returns a sink-argument selector that picks a single positional
+// argument by index from the underlying call. Indices are into the SSA call's
+// Args slice (which still contains the receiver for method invocations).
+func sinkArgAt(index int) func(*callgraph.Edge) []ssa.Value {
+	return func(edge *callgraph.Edge) []ssa.Value {
+		if edge == nil || edge.Site == nil {
+			return nil
+		}
+		common := edge.Site.Common()
+		if common == nil {
+			return nil
+		}
+		args := common.Args
+		if index < 0 || index >= len(args) {
+			return nil
+		}
+		return []ssa.Value{args[index]}
 	}
 }
 
@@ -296,6 +334,25 @@ func defaultPropagatorRules() []propagatorRule {
 		{id: "bytes.TrimSuffix", matchCall: exactCallMatcher("bytes.TrimSuffix"), selectArgs: firstArg},
 		{id: "net/url.PathEscape", matchCall: exactCallMatcher("net/url.PathEscape"), selectArgs: firstArg},
 		{id: "net/url.QueryEscape", matchCall: exactCallMatcher("net/url.QueryEscape"), selectArgs: firstArg},
+		{id: "net/url.Parse", matchCall: exactCallMatcher("net/url.Parse"), selectArgs: firstArg},
+		{id: "net/url.ParseRequestURI", matchCall: exactCallMatcher("net/url.ParseRequestURI"), selectArgs: firstArg},
+		// Path manipulation does not strip traversal segments enough to be
+		// treated as a sanitizer. filepath.Clean removes "./" and resolves ".."
+		// lexically but a tainted result of Clean can still escape an intended
+		// directory unless followed by a prefix check, so we propagate taint.
+		{id: "path.Join", matchCall: exactCallMatcher("path.Join"), selectArgs: allArgs},
+		{id: "path.Clean", matchCall: exactCallMatcher("path.Clean"), selectArgs: firstArg},
+		{id: "path.Base", matchCall: exactCallMatcher("path.Base"), selectArgs: firstArg},
+		{id: "path.Dir", matchCall: exactCallMatcher("path.Dir"), selectArgs: firstArg},
+		{id: "path/filepath.Join", matchCall: exactCallMatcher("path/filepath.Join"), selectArgs: allArgs},
+		{id: "path/filepath.Clean", matchCall: exactCallMatcher("path/filepath.Clean"), selectArgs: firstArg},
+		{id: "path/filepath.Abs", matchCall: exactCallMatcher("path/filepath.Abs"), selectArgs: firstArg},
+		{id: "path/filepath.Base", matchCall: exactCallMatcher("path/filepath.Base"), selectArgs: firstArg},
+		{id: "path/filepath.Dir", matchCall: exactCallMatcher("path/filepath.Dir"), selectArgs: firstArg},
+		{id: "path/filepath.Rel", matchCall: exactCallMatcher("path/filepath.Rel"), selectArgs: argsAt(0, 1)},
+		{id: "path/filepath.ToSlash", matchCall: exactCallMatcher("path/filepath.ToSlash"), selectArgs: firstArg},
+		{id: "path/filepath.FromSlash", matchCall: exactCallMatcher("path/filepath.FromSlash"), selectArgs: firstArg},
+		{id: "path/filepath.EvalSymlinks", matchCall: exactCallMatcher("path/filepath.EvalSymlinks"), selectArgs: firstArg},
 		{id: "strconv.AppendBool", matchCall: exactCallMatcher("strconv.AppendBool"), selectArgs: allArgs},
 		{id: "strconv.AppendFloat", matchCall: exactCallMatcher("strconv.AppendFloat"), selectArgs: allArgs},
 		{id: "strconv.AppendInt", matchCall: exactCallMatcher("strconv.AppendInt"), selectArgs: allArgs},
