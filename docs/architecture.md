@@ -2,7 +2,7 @@
 
 `taint` is a library-first static taint engine for Go SSA programs. The current
 stabilized detector families are SQL injection, log injection, command
-injection, and XSS.
+injection, XSS, path traversal, and server-side request forgery.
 
 ## Callgraph Construction
 
@@ -68,18 +68,22 @@ parameter mapping, sanitizer decisions, sink matches, and unresolved or
 synthetic modeling. Analyzers can report the concrete unsafe callsite and use
 the evidence for debug or future CLI output.
 
-Analyzer commands (`sqli`, `logi`, `cmdi`, and `xss`) support `-sarif` and
-`-sarif-output <path>`. SARIF mode runs the same analyzer through the standard
+Analyzer commands (`sqli`, `logi`, `cmdi`, `xss`, `ptrv`, and `ssrf`) support
+`-sarif` and `-sarif-output <path>`. SARIF mode runs the same analyzer through the standard
 singlechecker JSON path, then converts diagnostics into deterministic SARIF
 2.1.0 results with rule IDs matching analyzer names.
 
 ## Conservative Limits
 
 The engine is intentionally conservative where SSA or callgraph information is
-incomplete. Dynamic reflection, complex aliasing, data-dependent dispatch, and
-some indirect function-field flows may be unresolved. Callback arguments are
-linked at observed dispatch sites, plus a small set of known registration APIs
-such as `net/http.HandleFunc`; callbacks that are only passed to a function are
-not treated as reachable unless the callee invokes or registers them. Unknown or
-synthetic modeling is captured in diagnostic evidence instead of hidden from
-callers.
+incomplete. Dynamic reflection and some data-dependent dispatch may be
+unresolved. Indirect function-field flows are tracked through struct fields,
+package-level globals holding function values, `*ssa.Phi` joins, and map-valued
+dispatch — including the comma-ok form (`h, ok := handlers[key]; h(...)`) over
+package-level map literals whose entries are resolved by scanning the program
+for `*ssa.MapUpdate` instructions targeting the same backing global. Callback
+arguments are linked at observed dispatch sites, plus a small set of known
+registration APIs such as `net/http.HandleFunc`; callbacks that are only passed
+to a function are not treated as reachable unless the callee invokes or
+registers them. Unknown or synthetic modeling is captured in diagnostic evidence
+instead of hidden from callers.

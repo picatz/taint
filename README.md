@@ -184,9 +184,9 @@ n0:github.com/picatz/taint/cmd/taint/example.main → n6:(*net/http.ServeMux).Ha
 
 ### Analyzer CLI Options
 
-The `sqli`, `logi`, `cmdi`, and `xss` analyzer CLIs use the built-in taint callgraph
-by default. Pass `-callgraph=vta` to compare results with the alternate CHA+VTA
-builder.
+The `sqli`, `logi`, `cmdi`, `xss`, `ptrv`, and `ssrf` analyzer CLIs use the built-in
+taint callgraph by default. Pass `-callgraph=vta` to compare results with the alternate
+CHA+VTA builder.
 
 They also support SARIF output for code scanning integrations:
 
@@ -195,6 +195,8 @@ $ sqli -sarif ./... > sqli.sarif
 $ logi -sarif-output logi.sarif ./...
 $ cmdi -sarif-output cmdi.sarif ./...
 $ xss -sarif ./...
+$ ptrv -sarif-output ptrv.sarif ./...
+$ ssrf -sarif-output ssrf.sarif ./...
 ```
 
 ### `sqli`
@@ -345,4 +347,75 @@ func main() {
 }
 $ xss main.go
 ./xss/testdata/src/a/main.go:9:10: potential XSS
+```
+
+### `ptrv`
+
+The `ptrv` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer) finds
+potential path traversal vulnerabilities (CWE-22). It reports tainted file paths reaching
+`os.Open`, `os.OpenFile`, `os.Create`, `os.ReadFile`, `os.WriteFile`, `os.Remove`,
+`os.RemoveAll`, `os.Mkdir`, `os.MkdirAll`, `io/ioutil.ReadFile`, `io/ioutil.WriteFile`,
+`io/ioutil.ReadDir`, and the `name` argument of `net/http.ServeFile`.
+
+Path-manipulation helpers (`path.Join`, `path/filepath.Join`, `path/filepath.Clean`,
+`path/filepath.Abs`, and the rest of the `path` / `path/filepath` family) propagate taint
+because lexical cleaning alone does not prevent directory escape; combine with a
+prefix-check sanitizer if you rely on confinement.
+
+```console
+$ go install github.com/picatz/taint/cmd/ptrv@latest
+```
+
+```console
+$ cd command/pathtraversal/testdata/src/direct
+$ cat main.go
+package main
+
+import (
+	"net/http"
+	"os"
+)
+
+func run(r *http.Request) {
+	os.Open(r.FormValue("file")) // want "potential path traversal"
+}
+
+func main() {
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		run(r)
+	})
+}
+$ ptrv main.go
+./command/pathtraversal/testdata/src/direct/main.go:9:9: potential path traversal
+```
+
+### `ssrf`
+
+The `ssrf` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer) finds
+potential server-side request forgery vulnerabilities (CWE-918). It reports tainted URL
+or address values reaching outbound network APIs such as `net/http.Get`,
+`net/http.Post`, `net/http.PostForm`, `net/http.Head`, `net/http.NewRequest`,
+`net/http.NewRequestWithContext`, the `*net/http.Client` request methods (`Do`, `Get`,
+`Post`, `PostForm`, `Head`), and `net.Dial` / `net.DialTimeout`.
+
+```console
+$ go install github.com/picatz/taint/cmd/ssrf@latest
+```
+
+```console
+$ cd network/ssrf/testdata/src/direct
+$ cat main.go
+package main
+
+import (
+	"net/http"
+)
+
+func main() {
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = http.Get(r.URL.Query().Get("url")) // want "potential server-side request forgery"
+	})
+}
+$ ssrf main.go
+./network/ssrf/testdata/src/direct/main.go:9:18: potential server-side request forgery
 ```

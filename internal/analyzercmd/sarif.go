@@ -393,6 +393,10 @@ func ruleDescription(ruleID, driverName, driverDoc string) string {
 		return "finds potential command injection issues"
 	case "xss", "xss/potential-xss":
 		return "finds potential XSS issues"
+	case "ptrv", "ptrv/potential-path-traversal":
+		return "finds potential path traversal issues"
+	case "ssrf", "ssrf/potential-server-side-request-forgery":
+		return "finds potential server-side request forgery issues"
 	default:
 		return ruleID
 	}
@@ -430,6 +434,18 @@ func ruleMetadata(ruleID string) sarifRuleMeta {
 			helpURI: "https://cwe.mitre.org/data/definitions/79.html",
 			tags:    []string{"security", "external/cwe/cwe-79"},
 		}
+	case "ptrv/potential-path-traversal":
+		return sarifRuleMeta{
+			name:    "Potential path traversal",
+			helpURI: "https://cwe.mitre.org/data/definitions/22.html",
+			tags:    []string{"security", "external/cwe/cwe-22"},
+		}
+	case "ssrf/potential-server-side-request-forgery":
+		return sarifRuleMeta{
+			name:    "Potential server-side request forgery",
+			helpURI: "https://cwe.mitre.org/data/definitions/918.html",
+			tags:    []string{"security", "external/cwe/cwe-918"},
+		}
 	default:
 		return sarifRuleMeta{name: ruleID}
 	}
@@ -452,6 +468,14 @@ func detailedRuleID(analyzerName, message string) string {
 	case "xss":
 		if strings.EqualFold(message, "potential XSS") {
 			return "xss/potential-xss"
+		}
+	case "ptrv":
+		if strings.EqualFold(message, "potential path traversal") {
+			return "ptrv/potential-path-traversal"
+		}
+	case "ssrf":
+		if strings.EqualFold(message, "potential server-side request forgery") {
+			return "ssrf/potential-server-side-request-forgery"
 		}
 	}
 	return analyzerName
