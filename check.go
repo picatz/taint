@@ -899,25 +899,23 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 		}
 	case *ssa.UnOp:
 		if value.Op == token.MUL {
-			if stored, ok := storedValuesForLoad(value); ok {
-				for _, storedValue := range stored {
-					tainted, src, tv := checkSSAValueWithContext(path, ctx, storedValue, visited)
+			if effects, ok := reachingValuesForLoad(value); ok {
+				for _, effect := range effects {
+					effectPath := path
+					if effect.call != nil && effect.callee != nil {
+						effectPath = appendSummaryCallPath(path, effect.call, effect.callee)
+					}
+					tainted, src, tv := checkSSAValueWithContext(effectPath, ctx, effect.value, visited.clone())
 					if tainted {
 						return true, src, tv
 					}
 				}
-				if len(stored) == 0 {
+				if len(effects) == 0 {
 					if src, base := isExpressionDerivedFromSourceWithContext(value.X, ctx); src != "" {
 						return true, src, base
 					}
 				}
-				if tainted, src, tv := checkDirectCalleeStoresToLoad(path, ctx, value, visited); tainted {
-					return true, src, tv
-				}
 				return false, "", nil
-			}
-			if tainted, src, tv := checkDirectCalleeStoresToLoad(path, ctx, value, visited); tainted {
-				return true, src, tv
 			}
 		}
 		// Check the single operand.
@@ -994,29 +992,14 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 			return true, src, tv
 		}
 	case *ssa.Lookup:
-		// Check the string or map value being looked up.
-		tainted, src, tv := checkSSAValueWithContext(path, ctx, value.X, visited)
-		if tainted {
-			return true, src, tv
-		}
-
-		// Check the index value being looked up.
-		refs := value.Index.Referrers()
-		if refs != nil {
-			for _, ref := range *refs {
-				refVal, isVal := ref.(ssa.Value)
-				if isVal {
-					tainted, src, tv := checkSSAValueWithContext(path, ctx, refVal, visited)
-					if tainted {
-						return true, src, tv
-					}
-					continue
-				}
-
-				tainted, src, tv := checkSSAInstructionWithContext(path, ctx, ref, visited)
-				if tainted {
-					return true, src, tv
-				}
+		for _, effect := range reachingMapLookupValues(value) {
+			effectPath := path
+			if effect.call != nil && effect.callee != nil {
+				effectPath = appendSummaryCallPath(path, effect.call, effect.callee)
+			}
+			tainted, src, tv := checkSSAValueWithContext(effectPath, ctx, effect.value, visited.clone())
+			if tainted {
+				return true, src, tv
 			}
 		}
 	case *ssa.MakeMap:
@@ -1105,481 +1088,17 @@ func checkReceiverBufferedWrites(path callgraphutil.Path, ctx taintContext, call
 	if recv == nil {
 		return false, "", nil
 	}
-	for _, arg := range priorBufferedWriteArgs(recv, call) {
-		tainted, src, tv := checkSSAValueWithContext(path, ctx, arg, visited)
-		if tainted {
-			return true, src, tv
+	for _, effect := range priorBufferedWriteEffects(recv, call) {
+		effectPath := path
+		if effect.call != nil && effect.callee != nil {
+			effectPath = appendSummaryCallPath(path, effect.call, effect.callee)
 		}
-	}
-	for _, effect := range priorDirectCalleeBufferedWriteArgs(recv, call) {
-		effectPath := appendSummaryCallPath(path, effect.call, effect.callee)
 		tainted, src, tv := checkSSAValueWithContext(effectPath, ctx, effect.value, visited.clone())
 		if tainted {
 			return true, src, tv
 		}
 	}
 	return false, "", nil
-}
-
-type sideEffectValue struct {
-	value  ssa.Value
-	call   *ssa.Call
-	callee *ssa.Function
-}
-
-func appendSummaryCallPath(path callgraphutil.Path, call *ssa.Call, callee *ssa.Function) callgraphutil.Path {
-	if call == nil || callee == nil {
-		return path
-	}
-	out := make(callgraphutil.Path, 0, len(path)+1)
-	out = append(out, path...)
-	out = append(out, &callgraph.Edge{
-		Site:   call,
-		Callee: &callgraph.Node{Func: callee},
-	})
-	return out
-}
-
-func checkDirectCalleeStoresToLoad(path callgraphutil.Path, ctx taintContext, load *ssa.UnOp, visited valueSet) (bool, string, ssa.Value) {
-	if load == nil || load.Op != token.MUL || load.X == nil {
-		return false, "", nil
-	}
-	base := memoryBase(load.X)
-	if base == nil || load.Parent() == nil {
-		return false, "", nil
-	}
-	for _, effect := range priorDirectCalleeStores(base, load) {
-		effectPath := appendSummaryCallPath(path, effect.call, effect.callee)
-		tainted, src, tv := checkSSAValueWithContext(effectPath, ctx, effect.value, visited.clone())
-		if tainted {
-			return true, src, tv
-		}
-	}
-	return false, "", nil
-}
-
-func priorDirectCalleeStores(targetBase ssa.Value, use ssa.Instruction) []sideEffectValue {
-	if targetBase == nil || use == nil || use.Parent() == nil {
-		return nil
-	}
-	var out []sideEffectValue
-	for _, block := range use.Parent().Blocks {
-		for _, instr := range block.Instrs {
-			call, ok := instr.(*ssa.Call)
-			if !ok || !instructionMayReachUse(call, use) {
-				continue
-			}
-			out = append(out, directCalleeStores(call, targetBase)...)
-		}
-	}
-	return out
-}
-
-func priorDirectCalleeBufferedWriteArgs(recv ssa.Value, use ssa.Instruction) []sideEffectValue {
-	targetBase := memoryBase(recv)
-	if targetBase == nil || use == nil || use.Parent() == nil {
-		return nil
-	}
-	var out []sideEffectValue
-	for _, block := range use.Parent().Blocks {
-		for _, instr := range block.Instrs {
-			call, ok := instr.(*ssa.Call)
-			if !ok || !instructionMayReachUse(call, use) {
-				continue
-			}
-			out = append(out, directCalleeBufferedWriteArgs(call, targetBase)...)
-		}
-	}
-	return out
-}
-
-func directCalleeStores(call *ssa.Call, targetBase ssa.Value) []sideEffectValue {
-	callee, params := calleeParamsAliasingBase(call, targetBase)
-	if callee == nil || len(params) == 0 {
-		return nil
-	}
-	returns := calleeReturns(callee)
-	storesByReturn := map[*ssa.Return][]*ssa.Store{}
-	for _, block := range callee.Blocks {
-		for _, instr := range block.Instrs {
-			store, ok := instr.(*ssa.Store)
-			if !ok || store.Val == nil || !valueMayAliasAnyBase(store.Addr, params) {
-				continue
-			}
-			for _, ret := range returns {
-				if instructionMayReachUse(store, ret) {
-					storesByReturn[ret] = append(storesByReturn[ret], store)
-				}
-			}
-		}
-	}
-	var out []sideEffectValue
-	seen := map[ssa.Value]struct{}{}
-	for _, ret := range returns {
-		store := latestReachingStore(storesByReturn[ret], ret)
-		if store == nil || store.Val == nil {
-			continue
-		}
-		if _, ok := seen[store.Val]; ok {
-			continue
-		}
-		seen[store.Val] = struct{}{}
-		out = append(out, sideEffectValue{value: store.Val, call: call, callee: callee})
-	}
-	return out
-}
-
-func directCalleeBufferedWriteArgs(call *ssa.Call, targetBase ssa.Value) []sideEffectValue {
-	callee, params := calleeParamsAliasingBase(call, targetBase)
-	if callee == nil || len(params) == 0 {
-		return nil
-	}
-	returns := calleeReturns(callee)
-	var out []sideEffectValue
-	for _, block := range callee.Blocks {
-		for _, instr := range block.Instrs {
-			write, ok := instr.(*ssa.Call)
-			if !ok {
-				continue
-			}
-			dest, args, ok := bufferWriteDataArgs(&write.Call)
-			if !ok || !valueMayAliasAnyBase(dest, params) || !instructionMayReachAnyUse(write, returns) {
-				continue
-			}
-			for _, arg := range args {
-				out = append(out, sideEffectValue{value: arg, call: call, callee: callee})
-			}
-		}
-	}
-	return out
-}
-
-func calleeParamsAliasingBase(call *ssa.Call, targetBase ssa.Value) (*ssa.Function, map[ssa.Value]struct{}) {
-	if call == nil || targetBase == nil {
-		return nil, nil
-	}
-	callee := staticCallee(&call.Call)
-	if callee == nil || len(callee.Blocks) == 0 {
-		return nil, nil
-	}
-	params := map[ssa.Value]struct{}{}
-	for i, param := range callee.Params {
-		actual := callArgForParamIndex(&call.Call, callee, i)
-		if actual != nil && valueMayAliasBase(actual, targetBase) {
-			params[param] = struct{}{}
-		}
-	}
-	return callee, params
-}
-
-func valueMayAliasAnyBase(v ssa.Value, bases map[ssa.Value]struct{}) bool {
-	if len(bases) == 0 {
-		return false
-	}
-	for base := range bases {
-		if valueMayAliasBase(v, base) {
-			return true
-		}
-	}
-	return false
-}
-
-func calleeReturns(fn *ssa.Function) []*ssa.Return {
-	if fn == nil {
-		return nil
-	}
-	var out []*ssa.Return
-	for _, block := range fn.Blocks {
-		for _, instr := range block.Instrs {
-			if ret, ok := instr.(*ssa.Return); ok {
-				out = append(out, ret)
-			}
-		}
-	}
-	return out
-}
-
-func instructionMayReachAnyUse(def ssa.Instruction, uses []*ssa.Return) bool {
-	if len(uses) == 0 {
-		return true
-	}
-	for _, use := range uses {
-		if instructionMayReachUse(def, use) {
-			return true
-		}
-	}
-	return false
-}
-
-func bufferReadCall(call *ssa.CallCommon) bool {
-	switch callString(call) {
-	case "(*strings.Builder).String",
-		"(*bytes.Buffer).String",
-		"(*bytes.Buffer).Bytes":
-		return true
-	default:
-		return false
-	}
-}
-
-func bufferWriteDataArgs(call *ssa.CallCommon) (ssa.Value, []ssa.Value, bool) {
-	switch callString(call) {
-	case "(*strings.Builder).Write",
-		"(*strings.Builder).WriteString",
-		"(*bytes.Buffer).Write",
-		"(*bytes.Buffer).WriteString":
-		dest := receiverArg(call)
-		if dest == nil {
-			return nil, nil, false
-		}
-		args := call.Args
-		if len(args) > 0 && dest == args[0] {
-			args = args[1:]
-		}
-		return dest, args, true
-	case "fmt.Fprint",
-		"fmt.Fprintf",
-		"fmt.Fprintln",
-		"io.WriteString":
-		if call == nil || len(call.Args) == 0 {
-			return nil, nil, false
-		}
-		return call.Args[0], call.Args[1:], true
-	default:
-		return nil, nil, false
-	}
-}
-
-func receiverArg(call *ssa.CallCommon) ssa.Value {
-	if call == nil {
-		return nil
-	}
-	if call.IsInvoke() {
-		return call.Value
-	}
-	if call.Signature() != nil && call.Signature().Recv() != nil && len(call.Args) > 0 {
-		return call.Args[0]
-	}
-	return nil
-}
-
-func priorBufferedWriteArgs(recv ssa.Value, read ssa.Instruction) []ssa.Value {
-	base := memoryBase(recv)
-	if base == nil || read == nil {
-		return nil
-	}
-	var out []ssa.Value
-	if parent := read.Parent(); parent != nil {
-		for _, block := range parent.Blocks {
-			for _, instr := range block.Instrs {
-				write, ok := instr.(*ssa.Call)
-				if !ok || !instructionMayReachUse(write, read) {
-					continue
-				}
-				dest, args, ok := bufferWriteDataArgs(&write.Call)
-				if !ok || !valueMayAliasBase(dest, base) {
-					continue
-				}
-				out = append(out, args...)
-			}
-		}
-		return out
-	}
-	if refs := base.Referrers(); refs != nil {
-		for _, ref := range *refs {
-			write, ok := ref.(*ssa.Call)
-			if !ok || !instructionMayReachUse(write, read) {
-				continue
-			}
-			dest, args, ok := bufferWriteDataArgs(&write.Call)
-			if !ok || !valueMayAliasBase(dest, base) {
-				continue
-			}
-			out = append(out, args...)
-		}
-	}
-	return out
-}
-
-func valueMayAliasBase(v, base ssa.Value) bool {
-	seen := map[ssa.Value]struct{}{}
-	var visit func(ssa.Value) bool
-	visit = func(cur ssa.Value) bool {
-		if cur == nil {
-			return false
-		}
-		if _, ok := seen[cur]; ok {
-			return false
-		}
-		seen[cur] = struct{}{}
-		if memoryBase(cur) == base {
-			return true
-		}
-		switch value := cur.(type) {
-		case *ssa.ChangeInterface:
-			return visit(value.X)
-		case *ssa.ChangeType:
-			return visit(value.X)
-		case *ssa.Convert:
-			return visit(value.X)
-		case *ssa.MakeInterface:
-			return visit(value.X)
-		case *ssa.TypeAssert:
-			return visit(value.X)
-		case *ssa.Phi:
-			for _, edge := range value.Edges {
-				if visit(edge) {
-					return true
-				}
-			}
-		case *ssa.UnOp:
-			if value.Op != token.MUL {
-				return visit(value.X)
-			}
-			stored, ok := storedValuesForLoad(value)
-			if !ok {
-				return false
-			}
-			for _, storedValue := range stored {
-				if visit(storedValue) {
-					return true
-				}
-			}
-		}
-		return false
-	}
-	return visit(v)
-}
-
-func instructionMayReachUse(def, use ssa.Instruction) bool {
-	if def == nil || use == nil {
-		return true
-	}
-	if before, sameBlock := instructionPrecedesInSameBlock(def, use); sameBlock {
-		return before
-	}
-	if def.Block() == nil || use.Block() == nil {
-		return true
-	}
-	return blockMayReach(def.Block(), use.Block())
-}
-
-func memoryBase(v ssa.Value) ssa.Value {
-	seen := map[ssa.Value]struct{}{}
-	for v != nil {
-		if _, ok := seen[v]; ok {
-			return v
-		}
-		seen[v] = struct{}{}
-		switch value := v.(type) {
-		case *ssa.FieldAddr:
-			v = value.X
-		case *ssa.IndexAddr:
-			v = value.X
-		case *ssa.UnOp:
-			if value.Op != token.MUL {
-				return v
-			}
-			v = value.X
-		case *ssa.ChangeType:
-			v = value.X
-		case *ssa.Convert:
-			v = value.X
-		case *ssa.MakeInterface:
-			v = value.X
-		case *ssa.ChangeInterface:
-			v = value.X
-		default:
-			return v
-		}
-	}
-	return nil
-}
-
-func storedValuesForLoad(load *ssa.UnOp) ([]ssa.Value, bool) {
-	if load == nil || load.Op != token.MUL || load.X == nil {
-		return nil, false
-	}
-	stores := storesForAddress(load.X)
-	if len(stores) == 0 {
-		return nil, false
-	}
-	out := make([]ssa.Value, 0, len(stores))
-	for _, store := range stores {
-		if storeMayReachLoad(store, load) {
-			out = append(out, store.Val)
-		}
-	}
-	return out, true
-}
-
-func storesForAddress(addr ssa.Value) []*ssa.Store {
-	if addr == nil {
-		return nil
-	}
-	var out []*ssa.Store
-	if refs := addr.Referrers(); refs != nil {
-		for _, ref := range *refs {
-			store, ok := ref.(*ssa.Store)
-			if !ok || store.Addr != addr || store.Val == nil {
-				continue
-			}
-			out = append(out, store)
-		}
-	}
-	return out
-}
-
-func storeMayReachLoad(store *ssa.Store, load *ssa.UnOp) bool {
-	if store == nil || load == nil {
-		return true
-	}
-	if before, sameBlock := instructionPrecedesInSameBlock(store, load); sameBlock {
-		return before
-	}
-	if store.Block() == nil || load.Block() == nil {
-		return true
-	}
-	return blockMayReach(store.Block(), load.Block())
-}
-
-func instructionPrecedesInSameBlock(first, second ssa.Instruction) (bool, bool) {
-	if first == nil || second == nil || first.Block() == nil || first.Block() != second.Block() {
-		return false, false
-	}
-	for _, instr := range first.Block().Instrs {
-		if instr == first {
-			return true, true
-		}
-		if instr == second {
-			return false, true
-		}
-	}
-	return false, true
-}
-
-func blockMayReach(from, to *ssa.BasicBlock) bool {
-	if from == nil || to == nil {
-		return true
-	}
-	seen := map[*ssa.BasicBlock]struct{}{}
-	work := []*ssa.BasicBlock{from}
-	for len(work) > 0 {
-		block := work[len(work)-1]
-		work = work[:len(work)-1]
-		if block == nil {
-			continue
-		}
-		if block == to {
-			return true
-		}
-		if _, ok := seen[block]; ok {
-			continue
-		}
-		seen[block] = struct{}{}
-		work = append(work, block.Succs...)
-	}
-	return false
 }
 
 func parameterCallArgIndex(fn *ssa.Function, param *ssa.Parameter) int {

@@ -452,9 +452,13 @@ func (r *ruleRegistry) sanitizerForValue(v ssa.Value) (sanitizerRule, bool) {
 			return visit(value.X, depth, bindings)
 		case *ssa.UnOp:
 			if value.Op == token.MUL {
-				if stored, hasStores := storedValuesForLoad(value); hasStores {
-					return allValuesSanitized(stored, func(v ssa.Value) (sanitizerRule, bool) {
-						return visit(v, depth, bindings)
+				if effects, hasStores := reachingValuesForLoad(value); hasStores {
+					return allSideEffectValuesSanitized(effects, func(effect sideEffectValue) (sanitizerRule, bool) {
+						effectBindings := bindings
+						if effect.call != nil && effect.callee != nil {
+							effectBindings = sanitizerBindingsForCallEffect(bindings, effect.call, effect.callee)
+						}
+						return visit(effect.value, depth, effectBindings)
 					})
 				}
 				if rule, ok := allStoredValuesSanitized(value.X, func(v ssa.Value) (sanitizerRule, bool) {
@@ -607,7 +611,9 @@ func (r *ruleRegistry) expressionContainsSanitizerWithSeen(v ssa.Value, seen map
 		case *ssa.UnOp:
 			work = append(work, value.X)
 			if value.Op == token.MUL {
-				work = append(work, storedValuesFor(value.X)...)
+				if stored, ok := storedValuesForLoad(value); ok {
+					work = append(work, stored...)
+				}
 			}
 		case *ssa.Alloc:
 			work = append(work, storedValuesFor(value)...)
@@ -665,6 +671,23 @@ func allStoredValuesSanitized(addr ssa.Value, visit func(ssa.Value) (sanitizerRu
 	return allValuesSanitized(storedValuesFor(addr), visit)
 }
 
+func allSideEffectValuesSanitized(values []sideEffectValue, visit func(sideEffectValue) (sanitizerRule, bool)) (sanitizerRule, bool) {
+	if len(values) == 0 {
+		return sanitizerRule{}, false
+	}
+	var matched sanitizerRule
+	for _, value := range values {
+		rule, ok := visit(value)
+		if !ok {
+			return sanitizerRule{}, false
+		}
+		if matched.id == "" {
+			matched = rule
+		}
+	}
+	return matched, true
+}
+
 func allValuesSanitized(values []ssa.Value, visit func(ssa.Value) (sanitizerRule, bool)) (sanitizerRule, bool) {
 	if len(values) == 0 {
 		return sanitizerRule{}, false
@@ -680,6 +703,22 @@ func allValuesSanitized(values []ssa.Value, visit func(ssa.Value) (sanitizerRule
 		}
 	}
 	return matched, true
+}
+
+func sanitizerBindingsForCallEffect(bindings sanitizerBindings, call *ssa.Call, callee *ssa.Function) sanitizerBindings {
+	out := cloneSanitizerBindings(bindings)
+	if call == nil || callee == nil {
+		return out
+	}
+	for i, param := range callee.Params {
+		if param == nil {
+			continue
+		}
+		if actual := callArgForParamIndex(&call.Call, callee, i); actual != nil {
+			out[param] = actual
+		}
+	}
+	return out
 }
 
 func storedValuesFor(addr ssa.Value) []ssa.Value {
@@ -1016,6 +1055,68 @@ func intConstant(v ssa.Value) (int, bool) {
 
 func stringConstant(v ssa.Value) (string, bool) {
 	return stringConstantValue(v, map[ssa.Value]struct{}{})
+}
+
+func constantKey(v ssa.Value) (string, bool) {
+	return constantKeyValue(v, map[ssa.Value]struct{}{})
+}
+
+func constantKeyValue(v ssa.Value, seen map[ssa.Value]struct{}) (string, bool) {
+	if v == nil {
+		return "", false
+	}
+	if _, ok := seen[v]; ok {
+		return "", false
+	}
+	seen[v] = struct{}{}
+	switch value := v.(type) {
+	case *ssa.Const:
+		if value.Value == nil {
+			return "", false
+		}
+		return value.Value.Kind().String() + ":" + value.Value.ExactString(), true
+	case *ssa.ChangeInterface:
+		return constantKeyValue(value.X, seen)
+	case *ssa.ChangeType:
+		return constantKeyValue(value.X, seen)
+	case *ssa.Convert:
+		return constantKeyValue(value.X, seen)
+	case *ssa.MakeInterface:
+		return constantKeyValue(value.X, seen)
+	case *ssa.UnOp:
+		if value.Op != token.MUL {
+			return "", false
+		}
+		stored, ok := storedValuesForLoad(value)
+		if !ok {
+			return "", false
+		}
+		return commonConstantKey(stored, seen)
+	case *ssa.Phi:
+		return commonConstantKey(value.Edges, seen)
+	}
+	return "", false
+}
+
+func commonConstantKey(values []ssa.Value, seen map[ssa.Value]struct{}) (string, bool) {
+	if len(values) == 0 {
+		return "", false
+	}
+	var out string
+	for i, value := range values {
+		got, ok := constantKeyValue(value, cloneSSAValueSeen(seen))
+		if !ok {
+			return "", false
+		}
+		if i == 0 {
+			out = got
+			continue
+		}
+		if got != out {
+			return "", false
+		}
+	}
+	return out, true
 }
 
 func stringConstantValue(v ssa.Value, seen map[ssa.Value]struct{}) (string, bool) {

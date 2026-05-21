@@ -6,6 +6,7 @@ import (
 	"go/types"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/picatz/taint/callgraphutil"
@@ -462,7 +463,7 @@ func main() {
 `)
 
 	want := "*" + pkgPath + ".Req"
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		diagnostics := CheckDetailed(
 			cg,
 			NewSources("google.golang.org/protobuf/proto.Message", want),
@@ -782,6 +783,230 @@ func main() {
 	}
 }
 
+func TestCheckDetailedPointerLoadUsesLatestStoreBeforeLoad(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	q := source()
+	p := &q
+	q = "safe"
+	db.Query(*p)
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected overwritten pointer load to stay clean, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedDirectHelperScalarPointerWriteKilledByCallerStore(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func set(p *string, q string) {
+	*p = q
+}
+
+func main() {
+	db := &sql.DB{}
+	q := "select 1"
+	set(&q, source())
+	q = "safe"
+	db.Query(q)
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected caller overwrite to kill direct helper scalar write, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedConditionalDirectHelperStoreDoesNotKillCallerValue(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"database/sql"
+	"os"
+)
+
+func source() string { return "user" }
+
+func maybeSet(p *string) {
+	if len(os.Args) > 0 {
+		*p = "safe"
+	}
+}
+
+func main() {
+	db := &sql.DB{}
+	q := source()
+	maybeSet(&q)
+	db.Query(q)
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected conditional direct helper store to preserve caller taint, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedPointerLoadTaintedFromReachingBranchStore(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"database/sql"
+	"os"
+)
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	q := "safe"
+	p := &q
+	if len(os.Args) > 0 {
+		q = source()
+	} else {
+		q = "still safe"
+	}
+	db.Query(*p)
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected reaching branch pointer store to report, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedMapLookupIgnoresDifferentConstantKeyUpdate(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	m := map[string]string{}
+	m["other"] = source()
+	db.Query(m["q"])
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected different constant map key update to stay clean, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedMapLookupIgnoresLaterSameKeyUpdate(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	m := map[string]string{}
+	db.Query(m["q"])
+	m["q"] = source()
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected later map update to stay clean, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedMapLookupUnknownKeyRemainsConservative(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func key() string { return "q" }
+
+func main() {
+	db := &sql.DB{}
+	m := map[string]string{}
+	m["q"] = source()
+	db.Query(m[key()])
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected unknown map lookup key to report reaching tainted update, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedMapLiteralTaintReachesLookup(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	m := map[string]string{"q": source()}
+	db.Query(m["q"])
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected map literal taint to reach lookup, got %d diagnostics", len(diagnostics))
+	}
+}
+
 func TestCheckDetailedDirectHelperWritesStringsBuilder(t *testing.T) {
 	cg, pkgPath := detailedGraphForSource(t, `package main
 
@@ -1024,6 +1249,189 @@ func main() {
 	)
 	if len(diagnostics) != 1 {
 		t.Fatalf("expected one diagnostic through direct io.WriteString buffer helper write, got %d", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedStringsBuilderResetClearsPriorTaint(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"database/sql"
+	"strings"
+)
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	var b strings.Builder
+	b.WriteString(source())
+	b.Reset()
+	b.WriteString("select 1")
+	db.Query(b.String())
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected strings.Builder Reset to clear prior taint, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedBytesBufferResetClearsPriorTaintBeforeBytes(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"bytes"
+	"database/sql"
+)
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	var b bytes.Buffer
+	b.WriteString(source())
+	b.Reset()
+	b.WriteString("select 1")
+	db.Query(string(b.Bytes()))
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected bytes.Buffer Reset to clear prior taint before Bytes, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedBytesBufferTruncateZeroClearsPriorTaint(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"bytes"
+	"database/sql"
+)
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	var b bytes.Buffer
+	b.WriteString(source())
+	b.Truncate(0)
+	b.WriteString("select 1")
+	db.Query(b.String())
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected bytes.Buffer Truncate(0) to clear prior taint, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedBytesBufferTruncateNonZeroPreservesPriorTaint(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"bytes"
+	"database/sql"
+)
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	var b bytes.Buffer
+	b.WriteString("x" + source())
+	b.Truncate(1)
+	db.Query(b.String())
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected non-zero bytes.Buffer Truncate to preserve prior taint, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedBytesBufferTruncateUnknownPreservesPriorTaint(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"bytes"
+	"database/sql"
+	"os"
+)
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	var b bytes.Buffer
+	b.WriteString(source())
+	b.Truncate(len(os.Args))
+	db.Query(b.String())
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected unknown bytes.Buffer Truncate to preserve prior taint, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedDirectHelperBufferResetClearsPriorHelperWrite(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"database/sql"
+	"strings"
+)
+
+func source() string { return "user" }
+
+func fill(b *strings.Builder, q string) {
+	b.WriteString(q)
+	b.Reset()
+}
+
+func main() {
+	db := &sql.DB{}
+	var b strings.Builder
+	fill(&b, source())
+	b.WriteString("select 1")
+	db.Query(b.String())
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected direct helper Reset to clear prior helper write, got %d diagnostics", len(diagnostics))
 	}
 }
 
@@ -1284,6 +1692,480 @@ func main() {
 	}
 }
 
+func TestCheckDetailedPropagatesThroughBufferWriteByte(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"bytes"
+	"database/sql"
+)
+
+func source() byte { return 'x' }
+
+func main() {
+	db := &sql.DB{}
+	var b bytes.Buffer
+	b.WriteString("select ")
+	b.WriteByte(source())
+	db.Query(b.String())
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected WriteByte taint to propagate, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedPropagatesThroughBufferWriteRune(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"bytes"
+	"database/sql"
+)
+
+func source() rune { return 'x' }
+
+func main() {
+	db := &sql.DB{}
+	var b bytes.Buffer
+	b.WriteString("select ")
+	b.WriteRune(source())
+	db.Query(b.String())
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected WriteRune taint to propagate, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedPropagatesThroughBuilderWriteByte(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"database/sql"
+	"strings"
+)
+
+func source() byte { return 'x' }
+
+func main() {
+	db := &sql.DB{}
+	var b strings.Builder
+	b.WriteString("select ")
+	b.WriteByte(source())
+	db.Query(b.String())
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected strings.Builder.WriteByte taint to propagate, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedPropagatesThroughBufferNextRead(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"bytes"
+	"database/sql"
+)
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	var b bytes.Buffer
+	b.WriteString(source())
+	db.Query(string(b.Next(5)))
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected bytes.Buffer.Next read to propagate buffered taint, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedMapDeleteClearsPriorTaint(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	m := map[string]string{}
+	m["q"] = source()
+	delete(m, "q")
+	db.Query(m["q"])
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected delete(m, \"q\") to kill prior taint, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedMapDeleteWithUnknownKeyPreservesTaint(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func key() string { return "other" }
+
+func main() {
+	db := &sql.DB{}
+	m := map[string]string{}
+	m["q"] = source()
+	delete(m, key())
+	db.Query(m["q"])
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected delete with unknown key to preserve taint, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedMapDeleteDifferentKeyPreservesTaint(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	m := map[string]string{}
+	m["q"] = source()
+	delete(m, "other")
+	db.Query(m["q"])
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected delete on different key to preserve taint, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedMapClearKillsPriorTaint(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	m := map[string]string{}
+	m["q"] = source()
+	clear(m)
+	db.Query(m["q"])
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected clear(m) to kill prior taint, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedHelperMapWriteReachesLookup(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func put(m map[string]string, k, v string) {
+	m[k] = v
+}
+
+func main() {
+	db := &sql.DB{}
+	m := map[string]string{}
+	put(m, "q", source())
+	db.Query(m["q"])
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected helper map write to reach lookup, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedHelperMapDeleteKillsPriorTaint(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func drop(m map[string]string, k string) {
+	delete(m, k)
+}
+
+func main() {
+	db := &sql.DB{}
+	m := map[string]string{}
+	m["q"] = source()
+	drop(m, "q")
+	db.Query(m["q"])
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected helper delete to kill prior taint, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedHelperMapClearKillsPriorTaint(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func wipe(m map[string]string) {
+	clear(m)
+}
+
+func main() {
+	db := &sql.DB{}
+	m := map[string]string{}
+	m["q"] = source()
+	wipe(m)
+	db.Query(m["q"])
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected helper clear(m) to kill prior taint, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedAggregateUnrelatedFieldFromHelperWriteStaysClean(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+type S struct {
+	A string
+	B string
+}
+
+func source() string { return "user" }
+
+func setA(s *S, v string) {
+	s.A = v
+}
+
+func main() {
+	db := &sql.DB{}
+	s := &S{B: "select 1"}
+	setA(s, source())
+	db.Query(s.B)
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected unrelated field load to stay clean after helper field write, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedAggregateSameFieldFromHelperWritePropagates(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+type S struct {
+	A string
+	B string
+}
+
+func source() string { return "user" }
+
+func setA(s *S, v string) {
+	s.A = v
+}
+
+func main() {
+	db := &sql.DB{}
+	s := &S{}
+	setA(s, source())
+	db.Query(s.A)
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected same-field helper write to propagate, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedAggregateUnrelatedIndexFromHelperWriteStaysClean(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func setFirst(a *[2]string, v string) {
+	a[0] = v
+}
+
+func main() {
+	db := &sql.DB{}
+	var a [2]string
+	a[1] = "select 1"
+	setFirst(&a, source())
+	db.Query(a[1])
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected unrelated array index load to stay clean after helper write, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedLoopCarriedHelperStoreReachesLaterLoad(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func set(p *string, q string) {
+	*p = q
+}
+
+func main() {
+	db := &sql.DB{}
+	q := "safe"
+	for i := 0; i < 3; i++ {
+		if i == 1 {
+			set(&q, source())
+		}
+	}
+	db.Query(q)
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected loop-carried helper store to reach later load, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedLoopCarriedFieldStoreReachesLaterLoad(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+type S struct {
+	V string
+}
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	s := &S{V: "safe"}
+	for i := 0; i < 3; i++ {
+		if i == 1 {
+			s.V = source()
+		}
+	}
+	db.Query(s.V)
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected loop-carried field store to reach later load, got %d diagnostics", len(diagnostics))
+	}
+}
+
 func evidenceKinds(evidence []Evidence) []EvidenceKind {
 	kinds := make([]EvidenceKind, 0, len(evidence))
 	for _, entry := range evidence {
@@ -1294,10 +2176,8 @@ func evidenceKinds(evidence []Evidence) []EvidenceKind {
 
 func assertEvidenceContains(t *testing.T, kinds []EvidenceKind, want EvidenceKind) {
 	t.Helper()
-	for _, kind := range kinds {
-		if kind == want {
-			return
-		}
+	if slices.Contains(kinds, want) {
+		return
 	}
 	t.Fatalf("expected evidence kind %s in %v", want, kinds)
 }
