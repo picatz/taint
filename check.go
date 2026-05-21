@@ -300,9 +300,11 @@ func checkPathDetailed(path callgraphutil.Path, rules *ruleRegistry, sink sinkRu
 	if sink.selectArgs != nil {
 		args = sink.selectArgs(last)
 	}
+	ctx := newTaintContextFromRegistry(rules)
 	for _, arg := range args {
+		argTrace := &traceRecorder{}
 		if sanitizer, ok := rules.sanitizerForValue(arg); ok {
-			trace.add(Evidence{
+			argTrace.add(Evidence{
 				Kind:    EvidenceSanitizerApplied,
 				Message: "sink argument is sanitizer result",
 				Rule:    sanitizer.id,
@@ -312,7 +314,7 @@ func checkPathDetailed(path callgraphutil.Path, rules *ruleRegistry, sink sinkRu
 			continue
 		}
 		if sanitizer, ok := rules.expressionContainsSanitizer(arg); ok {
-			trace.add(Evidence{
+			argTrace.add(Evidence{
 				Kind:    EvidenceSanitizerRejected,
 				Message: "sanitizer appears inside an expression that is not fully sanitized",
 				Rule:    sanitizer.id,
@@ -320,19 +322,20 @@ func checkPathDetailed(path callgraphutil.Path, rules *ruleRegistry, sink sinkRu
 				Edge:    last,
 			})
 		}
-		tainted, src, tv := checkSSAValue(path, rules.sources, arg, valueSet{})
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, arg, valueSet{})
 		if tainted {
 			if _, sanitized := rules.sanitizerForValue(tv); sanitized {
 				continue
 			}
 			if _, ok := rules.expressionContainsSanitizer(arg); !ok {
-				trace.add(Evidence{
+				argTrace.add(Evidence{
 					Kind:    EvidenceSanitizerRejected,
 					Message: "no configured sanitizer matched sink argument",
 					Value:   arg,
 					Edge:    last,
 				})
 			}
+			trace.addAll(argTrace.evidence)
 			return true, src, tv
 		}
 	}
@@ -463,14 +466,104 @@ func clonePath(path callgraphutil.Path) callgraphutil.Path {
 	return out
 }
 
-// checkSSAValue implements the core taint analysis algorithm. It identifies
+type taintContext struct {
+	sourceRules     []sourceRule
+	propagators     []propagatorRule
+	maxSummaryDepth int
+}
+
+func newTaintContext(sources Sources, maxSummaryDepth int) taintContext {
+	if maxSummaryDepth <= 0 {
+		maxSummaryDepth = defaultMaxSummaryDepth
+	}
+	sourceRules := make([]sourceRule, 0, len(sources))
+	for _, source := range sortedKeys(sources) {
+		sourceRules = append(sourceRules, exactSourceRule(source))
+	}
+	return taintContext{
+		sourceRules:     sourceRules,
+		propagators:     defaultPropagators,
+		maxSummaryDepth: maxSummaryDepth,
+	}
+}
+
+func newTaintContextFromRegistry(rules *ruleRegistry) taintContext {
+	if rules == nil {
+		return newTaintContext(nil, defaultMaxSummaryDepth)
+	}
+	maxSummaryDepth := rules.maxSummaryDepth
+	if maxSummaryDepth <= 0 {
+		maxSummaryDepth = defaultMaxSummaryDepth
+	}
+	return taintContext{
+		sourceRules:     rules.sourceRules,
+		propagators:     rules.propagators,
+		maxSummaryDepth: maxSummaryDepth,
+	}
+}
+
+func (ctx taintContext) matchSourceType(t types.Type) (string, bool) {
+	for _, rule := range ctx.sourceRules {
+		if rule.matchType != nil && rule.matchType(t) {
+			return rule.id, true
+		}
+	}
+	return "", false
+}
+
+func (ctx taintContext) matchSourceCall(call *ssa.CallCommon) (string, bool) {
+	for _, rule := range ctx.sourceRules {
+		if rule.matchCall != nil && rule.matchCall(call) {
+			return rule.id, true
+		}
+	}
+	return "", false
+}
+
+func (ctx taintContext) matchSourceValue(v ssa.Value) (string, bool) {
+	if v == nil || v.Type() == nil {
+		return "", false
+	}
+	if src, ok := ctx.matchSourceType(v.Type()); ok {
+		return src, true
+	}
+	for _, rule := range ctx.sourceRules {
+		if rule.matchValue != nil && rule.matchValue(v) {
+			return rule.id, true
+		}
+	}
+	return "", false
+}
+
+func (ctx taintContext) propagatorForCall(call *ssa.CallCommon) (propagatorRule, []ssa.Value, bool) {
+	propagators := ctx.propagators
+	if len(propagators) == 0 {
+		propagators = defaultPropagators
+	}
+	for _, rule := range propagators {
+		if rule.matchCall != nil && rule.matchCall(call) {
+			args := call.Args
+			if rule.selectArgs != nil {
+				args = rule.selectArgs(call)
+			}
+			return rule, args, true
+		}
+	}
+	return propagatorRule{}, nil, false
+}
+
+func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visited valueSet) (bool, string, ssa.Value) {
+	return checkSSAValueWithContext(path, newTaintContext(sources, defaultMaxSummaryDepth), v, visited)
+}
+
+// checkSSAValueWithContext implements the core taint analysis algorithm. It identifies
 // if the given value "v" comes from any of the given sources (user input).
 //
 // It keeps track of nodes it has previously visted/checked, and recursively
 // calls itself (or checkSSAInstruction) as nessecary.
 //
 // It returns true if the given SSA value is tained by any of the given sources.
-func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visited valueSet) (bool, string, ssa.Value) {
+func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.Value, visited valueSet) (bool, string, ssa.Value) {
 	// First, check if this value has already been visited.
 	//
 	// If so, we can assume it is safe.
@@ -511,7 +604,7 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 	case *ssa.Parameter:
 		// Check if the parameter's type is a source.
 		paramType := value.Type()
-		if src, ok := matchSourceType(sources, paramType); ok {
+		if src, ok := ctx.matchSourceType(paramType); ok {
 			return true, src, value
 		}
 
@@ -535,11 +628,11 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 				continue
 			}
 			if arg := callArgForParameter(edge, value); arg != nil {
-				ta, src, tv := checkSSAValue(path, sources, arg, visited)
+				ta, src, tv := checkSSAValueWithContext(path, ctx, arg, visited)
 				if ta {
 					return true, src, tv
 				}
-				if src, base := isExpressionDerivedFromSource(arg, sources); src != "" {
+				if src, base := isExpressionDerivedFromSourceWithContext(arg, ctx); src != "" {
 					return true, src, base
 				}
 			}
@@ -550,10 +643,10 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 		// 3. See if the call value calls a source (anonymous functions).
 	case *ssa.Call:
 		// 1. Handle the case where we finally called a source.
-		if src, ok := matchSourceCall(sources, &value.Call); ok {
+		if src, ok := ctx.matchSourceCall(&value.Call); ok {
 			return true, src, value.Call.Value
 		}
-		if tainted, src, tv := checkReceiverBufferedWrites(path, sources, value, visited); tainted {
+		if tainted, src, tv := checkReceiverBufferedWrites(path, ctx, value, visited); tainted {
 			return true, src, tv
 		}
 
@@ -573,7 +666,7 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 		bodyAnalyzable := callee != nil && len(callee.Blocks) > 0
 
 		if bodyAnalyzable {
-			if tainted, src, tv := checkCallReturnValues(path, sources, value, -1, visited.clone()); tainted {
+			if tainted, src, tv := checkCallReturnValues(path, ctx, value, -1, visited.clone()); tainted {
 				return true, src, tv
 			}
 			// Body was inspected and showed no source-derived data reaching a
@@ -592,23 +685,23 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 			// still fires (e.g. a foreign reader returning ([]byte, error)
 			// where the bytes legitimately carry receiver data).
 			recv := value.Call.Args[0]
-			if src, ok := matchSourceType(sources, recv.Type()); ok {
+			if src, ok := ctx.matchSourceType(recv.Type()); ok {
 				return true, src, recv
 			}
-			if tainted, src, tv := checkSSAValue(path, sources, recv, visited); tainted {
+			if tainted, src, tv := checkSSAValueWithContext(path, ctx, recv, visited); tainted {
 				return true, src, tv
 			}
-			if src, base := derivedFromSource(recv, sources); src != "" {
+			if src, base := derivedFromSourceWithContext(recv, ctx); src != "" {
 				return true, src, base
 			}
-			if src, base := isExpressionDerivedFromSource(recv, sources); src != "" {
+			if src, base := isExpressionDerivedFromSourceWithContext(recv, ctx); src != "" {
 				return true, src, base
 			}
 		}
 
-		if _, args, ok := defaultPropagatorForCall(&value.Call); ok {
+		if _, args, ok := ctx.propagatorForCall(&value.Call); ok {
 			for _, arg := range args {
-				tainted, src, tv := checkSSAValue(path, sources, arg, visited)
+				tainted, src, tv := checkSSAValueWithContext(path, ctx, arg, visited)
 				if tainted {
 					return true, src, tv
 				}
@@ -616,7 +709,7 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 		}
 
 		// 3. Handle the case of a *ssa.Call from an anonymous function (*ssa.MakeClosure).
-		tainted, src, tv := checkSSAValue(path, sources, value.Call.Value, visited)
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, value.Call.Value, visited)
 		if tainted {
 			return true, src, tv
 		}
@@ -628,14 +721,14 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 			for _, ref := range *refs {
 				refVal, isVal := ref.(ssa.Value)
 				if isVal {
-					tainted, src, tv := checkSSAValue(path, sources, refVal, visited)
+					tainted, src, tv := checkSSAValueWithContext(path, ctx, refVal, visited)
 					if tainted {
 						return true, src, tv
 					}
 					continue
 				}
 
-				tainted, src, tv := checkSSAInstruction(path, sources, ref, visited)
+				tainted, src, tv := checkSSAInstructionWithContext(path, ctx, ref, visited)
 				if tainted {
 					return true, src, tv
 				}
@@ -652,13 +745,13 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 		if refs := value.Referrers(); refs != nil {
 			for _, ref := range *refs {
 				if rv, ok := ref.(ssa.Value); ok {
-					tainted, src, tv := checkSSAValue(path, sources, rv, visited)
+					tainted, src, tv := checkSSAValueWithContext(path, ctx, rv, visited)
 					if tainted {
 						return true, src, tv
 					}
 					continue
 				}
-				tainted, src, tv := checkSSAInstruction(path, sources, ref, visited)
+				tainted, src, tv := checkSSAInstructionWithContext(path, ctx, ref, visited)
 				if tainted {
 					return true, src, tv
 				}
@@ -677,7 +770,7 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 						}
 						if alloc, ok := v2.(*ssa.Alloc); ok {
 							if alloc.Comment == value.Name() {
-								tainted, src, tv := checkSSAValue(path, sources, v2, visited)
+								tainted, src, tv := checkSSAValueWithContext(path, ctx, v2, visited)
 								if tainted {
 									return true, src, tv
 								}
@@ -685,7 +778,7 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 							continue
 						}
 						// Fallback: analyze the value as an expression root to see if it derives from a source.
-						tainted, src, tv := checkSSAValue(path, sources, v2, valueSet{})
+						tainted, src, tv := checkSSAValueWithContext(path, ctx, v2, valueSet{})
 						if tainted {
 							return true, src, tv
 						}
@@ -699,20 +792,20 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 			for _, ref := range *refs {
 				refVal, isVal := ref.(ssa.Value)
 				if isVal {
-					tainted, src, tv := checkSSAValue(path, sources, refVal, visited)
+					tainted, src, tv := checkSSAValueWithContext(path, ctx, refVal, visited)
 					if tainted {
 						return true, src, tv
 					}
 					continue
 				}
 
-				tainted, src, tv := checkSSAInstruction(path, sources, ref, visited)
+				tainted, src, tv := checkSSAInstructionWithContext(path, ctx, ref, visited)
 				if tainted {
 					return true, src, tv
 				}
 			}
 		}
-		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, value.X, visited)
 		if tainted {
 			return true, src, tv
 		}
@@ -727,15 +820,15 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 		*/
 		// If the base of the field address is a source (directly or via proto message),
 		// then any field access derived from it is also tainted.
-		if src, ok := matchSourceType(sources, value.X.Type()); ok {
+		if src, ok := ctx.matchSourceType(value.X.Type()); ok {
 			return true, src, value
 		}
 		// Also check if the base expression derives from a source via operand chains.
-		if src, base := isExpressionDerivedFromSource(value.X, sources); src != "" {
+		if src, base := isExpressionDerivedFromSourceWithContext(value.X, ctx); src != "" {
 			return true, src, base
 		}
 
-		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, value.X, visited)
 		if tainted {
 			return true, src, tv
 		}
@@ -745,14 +838,14 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 			for _, ref := range *refs {
 				refVal, isVal := ref.(ssa.Value)
 				if isVal {
-					tainted, src, tv := checkSSAValue(path, sources, refVal, visited)
+					tainted, src, tv := checkSSAValueWithContext(path, ctx, refVal, visited)
 					if tainted {
 						return true, src, tv
 					}
 					continue
 				}
 
-				tainted, src, tv := checkSSAInstruction(path, sources, ref, visited)
+				tainted, src, tv := checkSSAInstructionWithContext(path, ctx, ref, visited)
 				if tainted {
 					return true, src, tv
 				}
@@ -763,43 +856,43 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 			for _, ref := range *indexableValueRefs {
 				refVal, isVal := ref.(ssa.Value)
 				if isVal {
-					tainted, src, tv := checkSSAValue(path, sources, refVal, visited)
+					tainted, src, tv := checkSSAValueWithContext(path, ctx, refVal, visited)
 					if tainted {
 						return true, src, tv
 					}
 					continue
 				}
 
-				tainted, src, tv := checkSSAInstruction(path, sources, ref, visited)
+				tainted, src, tv := checkSSAInstructionWithContext(path, ctx, ref, visited)
 				if tainted {
 					return true, src, tv
 				}
 			}
 		}
 	case *ssa.MakeClosure:
-		tainted, src, tv := checkSSAValue(path, sources, value.Fn, visited)
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, value.Fn, visited)
 		if tainted {
 			return true, src, tv
 		}
 		for _, binding := range value.Bindings {
-			tainted, src, tv := checkSSAValue(path, sources, binding, visited)
+			tainted, src, tv := checkSSAValueWithContext(path, ctx, binding, visited)
 			if tainted {
 				return true, src, tv
 			}
 		}
 	case *ssa.BinOp:
 		// Check the left hand side operands of the binary operations.
-		tainted, src, tv := checkSSAValue(path, sources, value.X, visited) // left
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, value.X, visited) // left
 		if tainted {
 			return true, src, tv
 		}
-		tainted, src, tv = checkSSAValue(path, sources, value.Y, visited) // right
+		tainted, src, tv = checkSSAValueWithContext(path, ctx, value.Y, visited) // right
 		if tainted {
 			return true, src, tv
 		}
 	case *ssa.Phi:
 		for _, edge := range value.Edges {
-			tainted, src, tv := checkSSAValue(path, sources, edge, visited)
+			tainted, src, tv := checkSSAValueWithContext(path, ctx, edge, visited)
 			if tainted {
 				return true, src, tv
 			}
@@ -808,39 +901,45 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 		if value.Op == token.MUL {
 			if stored, ok := storedValuesForLoad(value); ok {
 				for _, storedValue := range stored {
-					tainted, src, tv := checkSSAValue(path, sources, storedValue, visited)
+					tainted, src, tv := checkSSAValueWithContext(path, ctx, storedValue, visited)
 					if tainted {
 						return true, src, tv
 					}
 				}
 				if len(stored) == 0 {
-					if src, base := isExpressionDerivedFromSource(value.X, sources); src != "" {
+					if src, base := isExpressionDerivedFromSourceWithContext(value.X, ctx); src != "" {
 						return true, src, base
 					}
 				}
+				if tainted, src, tv := checkDirectCalleeStoresToLoad(path, ctx, value, visited); tainted {
+					return true, src, tv
+				}
 				return false, "", nil
+			}
+			if tainted, src, tv := checkDirectCalleeStoresToLoad(path, ctx, value, visited); tainted {
+				return true, src, tv
 			}
 		}
 		// Check the single operand.
-		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, value.X, visited)
 		if tainted {
 			return true, src, tv
 		}
 	case *ssa.Slice:
 		// Check the sliced value.
-		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, value.X, visited)
 		if tainted {
 			return true, src, tv
 		}
 	case *ssa.MakeInterface:
 		// Check the value being made into an interface.
-		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, value.X, visited)
 		if tainted {
 			return true, src, tv
 		}
 	case *ssa.ChangeInterface:
 		// Check the value being changed into an interface.
-		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, value.X, visited)
 		if tainted {
 			return true, src, tv
 		}
@@ -851,14 +950,14 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 			for _, ref := range *refs {
 				refVal, isVal := ref.(ssa.Value)
 				if isVal {
-					tainted, src, tv := checkSSAValue(path, sources, refVal, visited)
+					tainted, src, tv := checkSSAValueWithContext(path, ctx, refVal, visited)
 					if tainted {
 						return true, src, tv
 					}
 					continue
 				}
 
-				tainted, src, tv := checkSSAInstruction(path, sources, ref, visited)
+				tainted, src, tv := checkSSAInstructionWithContext(path, ctx, ref, visited)
 				if tainted {
 					return true, src, tv
 				}
@@ -866,37 +965,37 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 		}
 	case *ssa.TypeAssert:
 		// Check the value being type asserted.
-		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, value.X, visited)
 		if tainted {
 			return true, src, tv
 		}
 	case *ssa.ChangeType:
 		// Check the value being changed to an identical underlying type.
-		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, value.X, visited)
 		if tainted {
 			return true, src, tv
 		}
 	case *ssa.Convert:
 		// Check the value being converted.
-		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, value.X, visited)
 		if tainted {
 			return true, src, tv
 		}
 	case *ssa.Extract:
 		if call, ok := value.Tuple.(*ssa.Call); ok {
-			tainted, src, tv := checkCallReturnValues(path, sources, call, value.Index, visited.clone())
+			tainted, src, tv := checkCallReturnValues(path, ctx, call, value.Index, visited.clone())
 			if tainted {
 				return true, src, tv
 			}
 		}
 		// Check the value being extracted.
-		tainted, src, tv := checkSSAValue(path, sources, value.Tuple, visited)
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, value.Tuple, visited)
 		if tainted {
 			return true, src, tv
 		}
 	case *ssa.Lookup:
 		// Check the string or map value being looked up.
-		tainted, src, tv := checkSSAValue(path, sources, value.X, visited)
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, value.X, visited)
 		if tainted {
 			return true, src, tv
 		}
@@ -907,14 +1006,14 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 			for _, ref := range *refs {
 				refVal, isVal := ref.(ssa.Value)
 				if isVal {
-					tainted, src, tv := checkSSAValue(path, sources, refVal, visited)
+					tainted, src, tv := checkSSAValueWithContext(path, ctx, refVal, visited)
 					if tainted {
 						return true, src, tv
 					}
 					continue
 				}
 
-				tainted, src, tv := checkSSAInstruction(path, sources, ref, visited)
+				tainted, src, tv := checkSSAInstructionWithContext(path, ctx, ref, visited)
 				if tainted {
 					return true, src, tv
 				}
@@ -926,14 +1025,14 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 			for _, ref := range *refs {
 				refVal, isVal := ref.(ssa.Value)
 				if isVal {
-					tainted, src, tv := checkSSAValue(path, sources, refVal, visited)
+					tainted, src, tv := checkSSAValueWithContext(path, ctx, refVal, visited)
 					if tainted {
 						return true, src, tv
 					}
 					continue
 				}
 
-				tainted, src, tv := checkSSAInstruction(path, sources, ref, visited)
+				tainted, src, tv := checkSSAInstructionWithContext(path, ctx, ref, visited)
 				if tainted {
 					return true, src, tv
 				}
@@ -949,17 +1048,21 @@ func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visite
 // checkSSAInstruction is used internally by checkSSAValue when it needs to traverse
 // SSA instructions, like the contents of a calling function.
 func checkSSAInstruction(path callgraphutil.Path, sources Sources, i ssa.Instruction, visited valueSet) (bool, string, ssa.Value) {
+	return checkSSAInstructionWithContext(path, newTaintContext(sources, defaultMaxSummaryDepth), i, visited)
+}
+
+func checkSSAInstructionWithContext(path callgraphutil.Path, ctx taintContext, i ssa.Instruction, visited valueSet) (bool, string, ssa.Value) {
 	// fmt.Printf("! check SSA instr %s: %[1]T\n", i)
 
 	switch instr := i.(type) {
 	case *ssa.Store:
 		// Store instructions need to be checked for both the value being stored,
 		// and the address being stored to.
-		tainted, src, tv := checkSSAValue(path, sources, instr.Val, visited)
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, instr.Val, visited)
 		if tainted {
 			return true, src, tv
 		}
-		tainted, src, tv = checkSSAValue(path, sources, instr.Addr, visited)
+		tainted, src, tv = checkSSAValueWithContext(path, ctx, instr.Addr, visited)
 		if tainted {
 			return true, src, tv
 		}
@@ -970,7 +1073,7 @@ func checkSSAInstruction(path callgraphutil.Path, sources Sources, i ssa.Instruc
 				continue
 			}
 			iv := *instrValue
-			tainted, src, tv := checkSSAValue(path, sources, iv, visited)
+			tainted, src, tv := checkSSAValueWithContext(path, ctx, iv, visited)
 			if tainted {
 				return true, src, tv
 			}
@@ -978,12 +1081,12 @@ func checkSSAInstruction(path callgraphutil.Path, sources Sources, i ssa.Instruc
 	case *ssa.MapUpdate:
 		// Map update instructions need to be checked for both the map being updated,
 		// and the key and value being updated.
-		tainted, src, tv := checkSSAValue(path, sources, instr.Key, visited)
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, instr.Key, visited)
 		if tainted {
 			return true, src, tv
 		}
 
-		tainted, src, tv = checkSSAValue(path, sources, instr.Value, visited)
+		tainted, src, tv = checkSSAValueWithContext(path, ctx, instr.Value, visited)
 		if tainted {
 			return true, src, tv
 		}
@@ -994,7 +1097,7 @@ func checkSSAInstruction(path callgraphutil.Path, sources Sources, i ssa.Instruc
 	return false, "", nil
 }
 
-func checkReceiverBufferedWrites(path callgraphutil.Path, sources Sources, call *ssa.Call, visited valueSet) (bool, string, ssa.Value) {
+func checkReceiverBufferedWrites(path callgraphutil.Path, ctx taintContext, call *ssa.Call, visited valueSet) (bool, string, ssa.Value) {
 	if call == nil || !bufferReadCall(&call.Call) {
 		return false, "", nil
 	}
@@ -1003,12 +1106,209 @@ func checkReceiverBufferedWrites(path callgraphutil.Path, sources Sources, call 
 		return false, "", nil
 	}
 	for _, arg := range priorBufferedWriteArgs(recv, call) {
-		tainted, src, tv := checkSSAValue(path, sources, arg, visited)
+		tainted, src, tv := checkSSAValueWithContext(path, ctx, arg, visited)
+		if tainted {
+			return true, src, tv
+		}
+	}
+	for _, effect := range priorDirectCalleeBufferedWriteArgs(recv, call) {
+		effectPath := appendSummaryCallPath(path, effect.call, effect.callee)
+		tainted, src, tv := checkSSAValueWithContext(effectPath, ctx, effect.value, visited.clone())
 		if tainted {
 			return true, src, tv
 		}
 	}
 	return false, "", nil
+}
+
+type sideEffectValue struct {
+	value  ssa.Value
+	call   *ssa.Call
+	callee *ssa.Function
+}
+
+func appendSummaryCallPath(path callgraphutil.Path, call *ssa.Call, callee *ssa.Function) callgraphutil.Path {
+	if call == nil || callee == nil {
+		return path
+	}
+	out := make(callgraphutil.Path, 0, len(path)+1)
+	out = append(out, path...)
+	out = append(out, &callgraph.Edge{
+		Site:   call,
+		Callee: &callgraph.Node{Func: callee},
+	})
+	return out
+}
+
+func checkDirectCalleeStoresToLoad(path callgraphutil.Path, ctx taintContext, load *ssa.UnOp, visited valueSet) (bool, string, ssa.Value) {
+	if load == nil || load.Op != token.MUL || load.X == nil {
+		return false, "", nil
+	}
+	base := memoryBase(load.X)
+	if base == nil || load.Parent() == nil {
+		return false, "", nil
+	}
+	for _, effect := range priorDirectCalleeStores(base, load) {
+		effectPath := appendSummaryCallPath(path, effect.call, effect.callee)
+		tainted, src, tv := checkSSAValueWithContext(effectPath, ctx, effect.value, visited.clone())
+		if tainted {
+			return true, src, tv
+		}
+	}
+	return false, "", nil
+}
+
+func priorDirectCalleeStores(targetBase ssa.Value, use ssa.Instruction) []sideEffectValue {
+	if targetBase == nil || use == nil || use.Parent() == nil {
+		return nil
+	}
+	var out []sideEffectValue
+	for _, block := range use.Parent().Blocks {
+		for _, instr := range block.Instrs {
+			call, ok := instr.(*ssa.Call)
+			if !ok || !instructionMayReachUse(call, use) {
+				continue
+			}
+			out = append(out, directCalleeStores(call, targetBase)...)
+		}
+	}
+	return out
+}
+
+func priorDirectCalleeBufferedWriteArgs(recv ssa.Value, use ssa.Instruction) []sideEffectValue {
+	targetBase := memoryBase(recv)
+	if targetBase == nil || use == nil || use.Parent() == nil {
+		return nil
+	}
+	var out []sideEffectValue
+	for _, block := range use.Parent().Blocks {
+		for _, instr := range block.Instrs {
+			call, ok := instr.(*ssa.Call)
+			if !ok || !instructionMayReachUse(call, use) {
+				continue
+			}
+			out = append(out, directCalleeBufferedWriteArgs(call, targetBase)...)
+		}
+	}
+	return out
+}
+
+func directCalleeStores(call *ssa.Call, targetBase ssa.Value) []sideEffectValue {
+	callee, params := calleeParamsAliasingBase(call, targetBase)
+	if callee == nil || len(params) == 0 {
+		return nil
+	}
+	returns := calleeReturns(callee)
+	storesByReturn := map[*ssa.Return][]*ssa.Store{}
+	for _, block := range callee.Blocks {
+		for _, instr := range block.Instrs {
+			store, ok := instr.(*ssa.Store)
+			if !ok || store.Val == nil || !valueMayAliasAnyBase(store.Addr, params) {
+				continue
+			}
+			for _, ret := range returns {
+				if instructionMayReachUse(store, ret) {
+					storesByReturn[ret] = append(storesByReturn[ret], store)
+				}
+			}
+		}
+	}
+	var out []sideEffectValue
+	seen := map[ssa.Value]struct{}{}
+	for _, ret := range returns {
+		store := latestReachingStore(storesByReturn[ret], ret)
+		if store == nil || store.Val == nil {
+			continue
+		}
+		if _, ok := seen[store.Val]; ok {
+			continue
+		}
+		seen[store.Val] = struct{}{}
+		out = append(out, sideEffectValue{value: store.Val, call: call, callee: callee})
+	}
+	return out
+}
+
+func directCalleeBufferedWriteArgs(call *ssa.Call, targetBase ssa.Value) []sideEffectValue {
+	callee, params := calleeParamsAliasingBase(call, targetBase)
+	if callee == nil || len(params) == 0 {
+		return nil
+	}
+	returns := calleeReturns(callee)
+	var out []sideEffectValue
+	for _, block := range callee.Blocks {
+		for _, instr := range block.Instrs {
+			write, ok := instr.(*ssa.Call)
+			if !ok {
+				continue
+			}
+			dest, args, ok := bufferWriteDataArgs(&write.Call)
+			if !ok || !valueMayAliasAnyBase(dest, params) || !instructionMayReachAnyUse(write, returns) {
+				continue
+			}
+			for _, arg := range args {
+				out = append(out, sideEffectValue{value: arg, call: call, callee: callee})
+			}
+		}
+	}
+	return out
+}
+
+func calleeParamsAliasingBase(call *ssa.Call, targetBase ssa.Value) (*ssa.Function, map[ssa.Value]struct{}) {
+	if call == nil || targetBase == nil {
+		return nil, nil
+	}
+	callee := staticCallee(&call.Call)
+	if callee == nil || len(callee.Blocks) == 0 {
+		return nil, nil
+	}
+	params := map[ssa.Value]struct{}{}
+	for i, param := range callee.Params {
+		actual := callArgForParamIndex(&call.Call, callee, i)
+		if actual != nil && valueMayAliasBase(actual, targetBase) {
+			params[param] = struct{}{}
+		}
+	}
+	return callee, params
+}
+
+func valueMayAliasAnyBase(v ssa.Value, bases map[ssa.Value]struct{}) bool {
+	if len(bases) == 0 {
+		return false
+	}
+	for base := range bases {
+		if valueMayAliasBase(v, base) {
+			return true
+		}
+	}
+	return false
+}
+
+func calleeReturns(fn *ssa.Function) []*ssa.Return {
+	if fn == nil {
+		return nil
+	}
+	var out []*ssa.Return
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if ret, ok := instr.(*ssa.Return); ok {
+				out = append(out, ret)
+			}
+		}
+	}
+	return out
+}
+
+func instructionMayReachAnyUse(def ssa.Instruction, uses []*ssa.Return) bool {
+	if len(uses) == 0 {
+		return true
+	}
+	for _, use := range uses {
+		if instructionMayReachUse(def, use) {
+			return true
+		}
+	}
+	return false
 }
 
 func bufferReadCall(call *ssa.CallCommon) bool {
@@ -1022,15 +1322,31 @@ func bufferReadCall(call *ssa.CallCommon) bool {
 	}
 }
 
-func bufferWriteCall(call *ssa.CallCommon) bool {
+func bufferWriteDataArgs(call *ssa.CallCommon) (ssa.Value, []ssa.Value, bool) {
 	switch callString(call) {
 	case "(*strings.Builder).Write",
 		"(*strings.Builder).WriteString",
 		"(*bytes.Buffer).Write",
 		"(*bytes.Buffer).WriteString":
-		return true
+		dest := receiverArg(call)
+		if dest == nil {
+			return nil, nil, false
+		}
+		args := call.Args
+		if len(args) > 0 && dest == args[0] {
+			args = args[1:]
+		}
+		return dest, args, true
+	case "fmt.Fprint",
+		"fmt.Fprintf",
+		"fmt.Fprintln",
+		"io.WriteString":
+		if call == nil || len(call.Args) == 0 {
+			return nil, nil, false
+		}
+		return call.Args[0], call.Args[1:], true
 	default:
-		return false
+		return nil, nil, false
 	}
 }
 
@@ -1052,27 +1368,87 @@ func priorBufferedWriteArgs(recv ssa.Value, read ssa.Instruction) []ssa.Value {
 	if base == nil || read == nil {
 		return nil
 	}
-	refs := base.Referrers()
-	if refs == nil {
-		return nil
-	}
 	var out []ssa.Value
-	for _, ref := range *refs {
-		write, ok := ref.(*ssa.Call)
-		if !ok || !bufferWriteCall(&write.Call) || !instructionMayReachUse(write, read) {
-			continue
+	if parent := read.Parent(); parent != nil {
+		for _, block := range parent.Blocks {
+			for _, instr := range block.Instrs {
+				write, ok := instr.(*ssa.Call)
+				if !ok || !instructionMayReachUse(write, read) {
+					continue
+				}
+				dest, args, ok := bufferWriteDataArgs(&write.Call)
+				if !ok || !valueMayAliasBase(dest, base) {
+					continue
+				}
+				out = append(out, args...)
+			}
 		}
-		writeRecv := receiverArg(&write.Call)
-		if writeRecv == nil || memoryBase(writeRecv) != base {
-			continue
+		return out
+	}
+	if refs := base.Referrers(); refs != nil {
+		for _, ref := range *refs {
+			write, ok := ref.(*ssa.Call)
+			if !ok || !instructionMayReachUse(write, read) {
+				continue
+			}
+			dest, args, ok := bufferWriteDataArgs(&write.Call)
+			if !ok || !valueMayAliasBase(dest, base) {
+				continue
+			}
+			out = append(out, args...)
 		}
-		args := write.Call.Args
-		if len(args) > 0 && writeRecv == args[0] {
-			args = args[1:]
-		}
-		out = append(out, args...)
 	}
 	return out
+}
+
+func valueMayAliasBase(v, base ssa.Value) bool {
+	seen := map[ssa.Value]struct{}{}
+	var visit func(ssa.Value) bool
+	visit = func(cur ssa.Value) bool {
+		if cur == nil {
+			return false
+		}
+		if _, ok := seen[cur]; ok {
+			return false
+		}
+		seen[cur] = struct{}{}
+		if memoryBase(cur) == base {
+			return true
+		}
+		switch value := cur.(type) {
+		case *ssa.ChangeInterface:
+			return visit(value.X)
+		case *ssa.ChangeType:
+			return visit(value.X)
+		case *ssa.Convert:
+			return visit(value.X)
+		case *ssa.MakeInterface:
+			return visit(value.X)
+		case *ssa.TypeAssert:
+			return visit(value.X)
+		case *ssa.Phi:
+			for _, edge := range value.Edges {
+				if visit(edge) {
+					return true
+				}
+			}
+		case *ssa.UnOp:
+			if value.Op != token.MUL {
+				return visit(value.X)
+			}
+			stored, ok := storedValuesForLoad(value)
+			if !ok {
+				return false
+			}
+			for _, storedValue := range stored {
+				if visit(storedValue) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return visit(v)
 }
 
 func instructionMayReachUse(def, use ssa.Instruction) bool {
@@ -1309,7 +1685,7 @@ func staticCallee(cc *ssa.CallCommon) *ssa.Function {
 	return nil
 }
 
-func checkCallReturnValues(path callgraphutil.Path, sources Sources, call *ssa.Call, resultIndex int, visited valueSet) (bool, string, ssa.Value) {
+func checkCallReturnValues(path callgraphutil.Path, ctx taintContext, call *ssa.Call, resultIndex int, visited valueSet) (bool, string, ssa.Value) {
 	if call == nil {
 		return false, "", nil
 	}
@@ -1317,7 +1693,7 @@ func checkCallReturnValues(path callgraphutil.Path, sources Sources, call *ssa.C
 	if callee == nil || len(callee.Blocks) == 0 {
 		return false, "", nil
 	}
-	if summaryDepth(path) >= defaultMaxSummaryDepth {
+	if summaryDepth(path) >= ctx.maxSummaryDepth {
 		return false, "", nil
 	}
 
@@ -1338,13 +1714,13 @@ func checkCallReturnValues(path callgraphutil.Path, sources Sources, call *ssa.C
 				if resultIndex >= len(ret.Results) {
 					continue
 				}
-				if tainted, src, tv := checkSSAValue(summaryPath, sources, ret.Results[resultIndex], visited); tainted {
+				if tainted, src, tv := checkSSAValueWithContext(summaryPath, ctx, ret.Results[resultIndex], visited); tainted {
 					return true, src, tv
 				}
 				continue
 			}
 			for _, result := range ret.Results {
-				if tainted, src, tv := checkSSAValue(summaryPath, sources, result, visited); tainted {
+				if tainted, src, tv := checkSSAValueWithContext(summaryPath, ctx, result, visited); tainted {
 					return true, src, tv
 				}
 			}
@@ -1427,6 +1803,10 @@ func receiverTypeCandidatesForTaint(t types.Type) []types.Type {
 // to find a base value whose static type matches a declared source. Returns the source string and
 // the base value if found.
 func derivedFromSource(v ssa.Value, sources Sources) (string, ssa.Value) {
+	return derivedFromSourceWithContext(v, newTaintContext(sources, defaultMaxSummaryDepth))
+}
+
+func derivedFromSourceWithContext(v ssa.Value, ctx taintContext) (string, ssa.Value) {
 	seen := map[ssa.Value]struct{}{}
 	var work []ssa.Value
 	work = append(work, v)
@@ -1437,7 +1817,7 @@ func derivedFromSource(v ssa.Value, sources Sources) (string, ssa.Value) {
 			continue
 		}
 		seen[cur] = struct{}{}
-		if src, ok := matchSourceValue(sources, cur); ok {
+		if src, ok := ctx.matchSourceValue(cur); ok {
 			return src, cur
 		}
 		switch c := cur.(type) {
@@ -1477,6 +1857,10 @@ func derivedFromSource(v ssa.Value, sources Sources) (string, ssa.Value) {
 // from a source type. Unlike derivedFromSource which follows referrer chains outward,
 // this function follows operand chains inward.
 func isExpressionDerivedFromSource(v ssa.Value, sources Sources) (string, ssa.Value) {
+	return isExpressionDerivedFromSourceWithContext(v, newTaintContext(sources, defaultMaxSummaryDepth))
+}
+
+func isExpressionDerivedFromSourceWithContext(v ssa.Value, ctx taintContext) (string, ssa.Value) {
 	seen := map[ssa.Value]struct{}{}
 	var work []ssa.Value
 	work = append(work, v)
@@ -1491,7 +1875,7 @@ func isExpressionDerivedFromSource(v ssa.Value, sources Sources) (string, ssa.Va
 		seen[cur] = struct{}{}
 
 		// Check if this value's type is a source.
-		if src, ok := matchSourceValue(sources, cur); ok {
+		if src, ok := ctx.matchSourceValue(cur); ok {
 			return src, cur
 		}
 

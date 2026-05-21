@@ -64,3 +64,10 @@ func (t *traceRecorder) add(e Evidence) {
 	}
 	t.evidence = append(t.evidence, e)
 }
+
+func (t *traceRecorder) addAll(evidence []Evidence) {
+	if t == nil || len(evidence) == 0 {
+		return
+	}
+	t.evidence = append(t.evidence, evidence...)
+}

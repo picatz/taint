@@ -53,6 +53,15 @@ func WithSanitizers(functions ...string) Option {
 	}
 }
 
+// WithMaxSummaryDepth sets the maximum number of nested return-value summaries
+// the engine will inspect when following calls without explicit callgraph
+// edges. Non-positive values use the default depth.
+func WithMaxSummaryDepth(depth int) Option {
+	return func(cfg *checkConfig) {
+		cfg.maxSummaryDepth = depth
+	}
+}
+
 type sourceRule struct {
 	id         string
 	matchType  func(types.Type) bool
@@ -97,10 +106,15 @@ func newRuleRegistry(sources Sources, sinks Sinks, cfg checkConfig) *ruleRegistr
 		mergedSinks[sink] = struct{}{}
 	}
 
+	maxSummaryDepth := cfg.maxSummaryDepth
+	if maxSummaryDepth <= 0 {
+		maxSummaryDepth = defaultMaxSummaryDepth
+	}
+
 	registry := &ruleRegistry{
 		sources:         Sources(mergedSources),
 		sinks:           Sinks(mergedSinks),
-		maxSummaryDepth: cfg.maxSummaryDepth,
+		maxSummaryDepth: maxSummaryDepth,
 	}
 	// Iterate maps in deterministic order so the resulting rule slices have a
 	// stable order. Downstream traversal records the first rule that matches
@@ -116,7 +130,7 @@ func newRuleRegistry(sources Sources, sinks Sinks, cfg checkConfig) *ruleRegistr
 	for _, sanitizer := range cfg.sanitizers {
 		registry.sanitizers = append(registry.sanitizers, exactSanitizerRule(sanitizer))
 	}
-	registry.propagators = defaultPropagatorRules()
+	registry.propagators = defaultPropagators
 	return registry
 }
 
@@ -233,9 +247,13 @@ func defaultPropagatorRules() []propagatorRule {
 		{id: "log/slog.Group", matchCall: exactCallMatcher("log/slog.Group"), selectArgs: allArgs},
 		{id: "log/slog.String", matchCall: exactCallMatcher("log/slog.String"), selectArgs: allArgs},
 		{id: "strings.Clone", matchCall: exactCallMatcher("strings.Clone"), selectArgs: firstArg},
+		{id: "strings.Cut", matchCall: exactCallMatcher("strings.Cut"), selectArgs: firstArg},
+		{id: "strings.CutPrefix", matchCall: exactCallMatcher("strings.CutPrefix"), selectArgs: firstArg},
+		{id: "strings.CutSuffix", matchCall: exactCallMatcher("strings.CutSuffix"), selectArgs: firstArg},
 		{id: "strings.Join", matchCall: exactCallMatcher("strings.Join"), selectArgs: allArgs},
 		{id: "strings.Map", matchCall: exactCallMatcher("strings.Map"), selectArgs: allArgs},
 		{id: "strings.NewReader", matchCall: exactCallMatcher("strings.NewReader"), selectArgs: firstArg},
+		{id: "strings.Repeat", matchCall: exactCallMatcher("strings.Repeat"), selectArgs: firstArg},
 		{id: "strings.Replace", matchCall: exactCallMatcher("strings.Replace"), selectArgs: argsAt(0, 2)},
 		{id: "strings.ReplaceAll", matchCall: exactCallMatcher("strings.ReplaceAll"), selectArgs: argsAt(0, 2)},
 		{id: "strings.ToLower", matchCall: exactCallMatcher("strings.ToLower"), selectArgs: firstArg},
@@ -252,11 +270,15 @@ func defaultPropagatorRules() []propagatorRule {
 		{id: "strings.TrimSpace", matchCall: exactCallMatcher("strings.TrimSpace"), selectArgs: firstArg},
 		{id: "strings.TrimSuffix", matchCall: exactCallMatcher("strings.TrimSuffix"), selectArgs: firstArg},
 		{id: "bytes.Clone", matchCall: exactCallMatcher("bytes.Clone"), selectArgs: firstArg},
+		{id: "bytes.Cut", matchCall: exactCallMatcher("bytes.Cut"), selectArgs: firstArg},
+		{id: "bytes.CutPrefix", matchCall: exactCallMatcher("bytes.CutPrefix"), selectArgs: firstArg},
+		{id: "bytes.CutSuffix", matchCall: exactCallMatcher("bytes.CutSuffix"), selectArgs: firstArg},
 		{id: "bytes.Join", matchCall: exactCallMatcher("bytes.Join"), selectArgs: allArgs},
 		{id: "bytes.Map", matchCall: exactCallMatcher("bytes.Map"), selectArgs: allArgs},
 		{id: "bytes.NewBuffer", matchCall: exactCallMatcher("bytes.NewBuffer"), selectArgs: firstArg},
 		{id: "bytes.NewBufferString", matchCall: exactCallMatcher("bytes.NewBufferString"), selectArgs: firstArg},
 		{id: "bytes.NewReader", matchCall: exactCallMatcher("bytes.NewReader"), selectArgs: firstArg},
+		{id: "bytes.Repeat", matchCall: exactCallMatcher("bytes.Repeat"), selectArgs: firstArg},
 		{id: "bytes.Replace", matchCall: exactCallMatcher("bytes.Replace"), selectArgs: argsAt(0, 2)},
 		{id: "bytes.ReplaceAll", matchCall: exactCallMatcher("bytes.ReplaceAll"), selectArgs: argsAt(0, 2)},
 		{id: "bytes.ToLower", matchCall: exactCallMatcher("bytes.ToLower"), selectArgs: firstArg},
@@ -272,11 +294,38 @@ func defaultPropagatorRules() []propagatorRule {
 		{id: "bytes.TrimRightFunc", matchCall: exactCallMatcher("bytes.TrimRightFunc"), selectArgs: firstArg},
 		{id: "bytes.TrimSpace", matchCall: exactCallMatcher("bytes.TrimSpace"), selectArgs: firstArg},
 		{id: "bytes.TrimSuffix", matchCall: exactCallMatcher("bytes.TrimSuffix"), selectArgs: firstArg},
+		{id: "net/url.PathEscape", matchCall: exactCallMatcher("net/url.PathEscape"), selectArgs: firstArg},
+		{id: "net/url.QueryEscape", matchCall: exactCallMatcher("net/url.QueryEscape"), selectArgs: firstArg},
+		{id: "strconv.AppendBool", matchCall: exactCallMatcher("strconv.AppendBool"), selectArgs: allArgs},
+		{id: "strconv.AppendFloat", matchCall: exactCallMatcher("strconv.AppendFloat"), selectArgs: allArgs},
+		{id: "strconv.AppendInt", matchCall: exactCallMatcher("strconv.AppendInt"), selectArgs: allArgs},
+		{id: "strconv.AppendQuote", matchCall: exactCallMatcher("strconv.AppendQuote"), selectArgs: allArgs},
+		{id: "strconv.AppendQuoteRune", matchCall: exactCallMatcher("strconv.AppendQuoteRune"), selectArgs: allArgs},
+		{id: "strconv.AppendQuoteRuneToASCII", matchCall: exactCallMatcher("strconv.AppendQuoteRuneToASCII"), selectArgs: allArgs},
+		{id: "strconv.AppendQuoteRuneToGraphic", matchCall: exactCallMatcher("strconv.AppendQuoteRuneToGraphic"), selectArgs: allArgs},
+		{id: "strconv.AppendQuoteToASCII", matchCall: exactCallMatcher("strconv.AppendQuoteToASCII"), selectArgs: allArgs},
+		{id: "strconv.AppendQuoteToGraphic", matchCall: exactCallMatcher("strconv.AppendQuoteToGraphic"), selectArgs: allArgs},
+		{id: "strconv.AppendUint", matchCall: exactCallMatcher("strconv.AppendUint"), selectArgs: allArgs},
+		{id: "strconv.FormatBool", matchCall: exactCallMatcher("strconv.FormatBool"), selectArgs: allArgs},
+		{id: "strconv.FormatFloat", matchCall: exactCallMatcher("strconv.FormatFloat"), selectArgs: allArgs},
+		{id: "strconv.FormatInt", matchCall: exactCallMatcher("strconv.FormatInt"), selectArgs: allArgs},
+		{id: "strconv.FormatUint", matchCall: exactCallMatcher("strconv.FormatUint"), selectArgs: allArgs},
+		{id: "strconv.Itoa", matchCall: exactCallMatcher("strconv.Itoa"), selectArgs: allArgs},
+		{id: "strconv.Quote", matchCall: exactCallMatcher("strconv.Quote"), selectArgs: firstArg},
+		{id: "strconv.QuoteRune", matchCall: exactCallMatcher("strconv.QuoteRune"), selectArgs: firstArg},
+		{id: "strconv.QuoteRuneToASCII", matchCall: exactCallMatcher("strconv.QuoteRuneToASCII"), selectArgs: firstArg},
+		{id: "strconv.QuoteRuneToGraphic", matchCall: exactCallMatcher("strconv.QuoteRuneToGraphic"), selectArgs: firstArg},
+		{id: "strconv.QuoteToASCII", matchCall: exactCallMatcher("strconv.QuoteToASCII"), selectArgs: firstArg},
+		{id: "strconv.QuoteToGraphic", matchCall: exactCallMatcher("strconv.QuoteToGraphic"), selectArgs: firstArg},
+		{id: "strconv.Unquote", matchCall: exactCallMatcher("strconv.Unquote"), selectArgs: firstArg},
+		{id: "strconv.UnquoteChar", matchCall: exactCallMatcher("strconv.UnquoteChar"), selectArgs: firstArg},
 	}
 }
 
+var defaultPropagators = defaultPropagatorRules()
+
 func defaultPropagatorForCall(call *ssa.CallCommon) (propagatorRule, []ssa.Value, bool) {
-	for _, rule := range defaultPropagatorRules() {
+	for _, rule := range defaultPropagators {
 		if rule.matchCall != nil && rule.matchCall(call) {
 			args := call.Args
 			if rule.selectArgs != nil {
@@ -328,7 +377,7 @@ func (r *ruleRegistry) matchSourceValue(v ssa.Value) (string, bool) {
 }
 
 func matchSourceType(sources Sources, t types.Type) (string, bool) {
-	for source := range sources {
+	for _, source := range sortedKeys(sources) {
 		rule := exactSourceRule(source)
 		if rule.matchType != nil && rule.matchType(t) {
 			return source, true
@@ -338,7 +387,7 @@ func matchSourceType(sources Sources, t types.Type) (string, bool) {
 }
 
 func matchSourceCall(sources Sources, call *ssa.CallCommon) (string, bool) {
-	for source := range sources {
+	for _, source := range sortedKeys(sources) {
 		rule := exactSourceRule(source)
 		if rule.matchCall != nil && rule.matchCall(call) {
 			return source, true
@@ -354,54 +403,170 @@ func matchSourceValue(sources Sources, v ssa.Value) (string, bool) {
 	return matchSourceType(sources, v.Type())
 }
 
+type sanitizerBindings map[*ssa.Parameter]ssa.Value
+
 func (r *ruleRegistry) sanitizerForValue(v ssa.Value) (sanitizerRule, bool) {
-	seen := map[ssa.Value]struct{}{}
-	var visit func(ssa.Value) (sanitizerRule, bool)
-	visit = func(cur ssa.Value) (sanitizerRule, bool) {
+	type seenKey struct {
+		value ssa.Value
+		bound ssa.Value
+	}
+	seen := map[seenKey]struct{}{}
+	var visit func(ssa.Value, int, sanitizerBindings) (sanitizerRule, bool)
+	visit = func(cur ssa.Value, depth int, bindings sanitizerBindings) (sanitizerRule, bool) {
 		if cur == nil {
 			return sanitizerRule{}, false
 		}
-		if _, ok := seen[cur]; ok {
+		key := seenKey{value: cur}
+		if param, ok := cur.(*ssa.Parameter); ok && bindings != nil {
+			key.bound = bindings[param]
+		}
+		if _, ok := seen[key]; ok {
 			return sanitizerRule{}, false
 		}
-		seen[cur] = struct{}{}
+		seen[key] = struct{}{}
 
 		if call, ok := cur.(*ssa.Call); ok {
-			return r.sanitizerForCall(&call.Call)
+			if rule, ok := r.sanitizerForCall(&call.Call); ok {
+				return rule, true
+			}
+			return r.callReturnSanitized(&call.Call, -1, depth+1, bindings, visit)
 		}
 		switch value := cur.(type) {
+		case *ssa.Const:
+			return sanitizerRule{}, true
+		case *ssa.Parameter:
+			if bindings != nil {
+				if actual := bindings[value]; actual != nil {
+					return visit(actual, depth, bindings)
+				}
+			}
 		case *ssa.MakeInterface:
-			return visit(value.X)
+			return visit(value.X, depth, bindings)
 		case *ssa.ChangeInterface:
-			return visit(value.X)
+			return visit(value.X, depth, bindings)
 		case *ssa.ChangeType:
-			return visit(value.X)
+			return visit(value.X, depth, bindings)
 		case *ssa.Convert:
-			return visit(value.X)
+			return visit(value.X, depth, bindings)
 		case *ssa.TypeAssert:
-			return visit(value.X)
+			return visit(value.X, depth, bindings)
 		case *ssa.UnOp:
 			if value.Op == token.MUL {
 				if stored, hasStores := storedValuesForLoad(value); hasStores {
-					return allValuesSanitized(stored, visit)
+					return allValuesSanitized(stored, func(v ssa.Value) (sanitizerRule, bool) {
+						return visit(v, depth, bindings)
+					})
 				}
-				if rule, ok := allStoredValuesSanitized(value.X, visit); ok {
+				if rule, ok := allStoredValuesSanitized(value.X, func(v ssa.Value) (sanitizerRule, bool) {
+					return visit(v, depth, bindings)
+				}); ok {
 					return rule, true
 				}
 			}
-			return visit(value.X)
+			return visit(value.X, depth, bindings)
 		case *ssa.Alloc:
-			return allStoredValuesSanitized(value, visit)
+			return allStoredValuesSanitized(value, func(v ssa.Value) (sanitizerRule, bool) {
+				return visit(v, depth, bindings)
+			})
 		case *ssa.Phi:
-			return allValuesSanitized(value.Edges, visit)
+			return allValuesSanitized(value.Edges, func(v ssa.Value) (sanitizerRule, bool) {
+				return visit(v, depth, bindings)
+			})
+		case *ssa.Extract:
+			if call, ok := value.Tuple.(*ssa.Call); ok {
+				return r.callReturnSanitized(&call.Call, value.Index, depth+1, bindings, visit)
+			}
+			return visit(value.Tuple, depth, bindings)
 		}
 		return sanitizerRule{}, false
 	}
-	return visit(v)
+	rule, ok := visit(v, 0, nil)
+	return rule, ok && rule.id != ""
+}
+
+func (r *ruleRegistry) callReturnSanitized(call *ssa.CallCommon, resultIndex, depth int, bindings sanitizerBindings, visit func(ssa.Value, int, sanitizerBindings) (sanitizerRule, bool)) (sanitizerRule, bool) {
+	if call == nil || visit == nil {
+		return sanitizerRule{}, false
+	}
+	maxDepth := r.maxSummaryDepth
+	if maxDepth <= 0 {
+		maxDepth = defaultMaxSummaryDepth
+	}
+	if depth > maxDepth {
+		return sanitizerRule{}, false
+	}
+	callee := staticCallee(call)
+	if callee == nil || len(callee.Blocks) == 0 {
+		return sanitizerRule{}, false
+	}
+	summaryBindings := cloneSanitizerBindings(bindings)
+	for i, param := range callee.Params {
+		if param == nil {
+			continue
+		}
+		if actual := callArgForParamIndex(call, callee, i); actual != nil {
+			summaryBindings[param] = actual
+		}
+	}
+	var matched sanitizerRule
+	foundReturn := false
+	for _, block := range callee.Blocks {
+		for _, instr := range block.Instrs {
+			ret, ok := instr.(*ssa.Return)
+			if !ok {
+				continue
+			}
+			if resultIndex >= 0 {
+				if resultIndex >= len(ret.Results) {
+					continue
+				}
+				rule, ok := visit(ret.Results[resultIndex], depth, summaryBindings)
+				if !ok {
+					return sanitizerRule{}, false
+				}
+				if matched.id == "" {
+					matched = rule
+				}
+				foundReturn = true
+				continue
+			}
+			if len(ret.Results) == 0 {
+				return sanitizerRule{}, false
+			}
+			for _, result := range ret.Results {
+				rule, ok := visit(result, depth, summaryBindings)
+				if !ok {
+					return sanitizerRule{}, false
+				}
+				if matched.id == "" {
+					matched = rule
+				}
+			}
+			foundReturn = true
+		}
+	}
+	if !foundReturn {
+		return sanitizerRule{}, false
+	}
+	return matched, matched.id != ""
+}
+
+func cloneSanitizerBindings(in sanitizerBindings) sanitizerBindings {
+	out := sanitizerBindings{}
+	for param, value := range in {
+		out[param] = value
+	}
+	return out
 }
 
 func (r *ruleRegistry) expressionContainsSanitizer(v ssa.Value) (sanitizerRule, bool) {
-	seen := map[ssa.Value]struct{}{}
+	return r.expressionContainsSanitizerWithSeen(v, map[ssa.Value]struct{}{})
+}
+
+func (r *ruleRegistry) expressionContainsSanitizerWithSeen(v ssa.Value, seen map[ssa.Value]struct{}) (sanitizerRule, bool) {
+	if seen == nil {
+		seen = map[ssa.Value]struct{}{}
+	}
 	work := []ssa.Value{v}
 	for len(work) > 0 {
 		cur := work[len(work)-1]
@@ -417,6 +582,9 @@ func (r *ruleRegistry) expressionContainsSanitizer(v ssa.Value) (sanitizerRule, 
 			if rule, matched := r.sanitizerForCall(&call.Call); matched {
 				return rule, true
 			}
+			if rule, matched := r.callReturnContainsSanitizer(&call.Call, 1, seen); matched {
+				return rule, true
+			}
 		}
 		if instr, ok := cur.(ssa.Instruction); ok {
 			for _, operand := range instr.Operands(nil) {
@@ -424,7 +592,6 @@ func (r *ruleRegistry) expressionContainsSanitizer(v ssa.Value) (sanitizerRule, 
 					work = append(work, *operand)
 				}
 			}
-			continue
 		}
 		switch value := cur.(type) {
 		case *ssa.MakeInterface:
@@ -444,12 +611,51 @@ func (r *ruleRegistry) expressionContainsSanitizer(v ssa.Value) (sanitizerRule, 
 			}
 		case *ssa.Alloc:
 			work = append(work, storedValuesFor(value)...)
+		case *ssa.Phi:
+			work = append(work, value.Edges...)
 		case *ssa.Extract:
 			work = append(work, value.Tuple)
 		case *ssa.BinOp:
 			work = append(work, value.X, value.Y)
 		case *ssa.Slice:
 			work = append(work, value.X)
+		case *ssa.FieldAddr:
+			work = append(work, value.X)
+		case *ssa.IndexAddr:
+			work = append(work, value.X, value.Index)
+		case *ssa.Lookup:
+			work = append(work, value.X, value.Index)
+		}
+	}
+	return sanitizerRule{}, false
+}
+
+func (r *ruleRegistry) callReturnContainsSanitizer(call *ssa.CallCommon, depth int, seen map[ssa.Value]struct{}) (sanitizerRule, bool) {
+	if call == nil {
+		return sanitizerRule{}, false
+	}
+	maxDepth := r.maxSummaryDepth
+	if maxDepth <= 0 {
+		maxDepth = defaultMaxSummaryDepth
+	}
+	if depth > maxDepth {
+		return sanitizerRule{}, false
+	}
+	callee := staticCallee(call)
+	if callee == nil || len(callee.Blocks) == 0 {
+		return sanitizerRule{}, false
+	}
+	for _, block := range callee.Blocks {
+		for _, instr := range block.Instrs {
+			ret, ok := instr.(*ssa.Return)
+			if !ok {
+				continue
+			}
+			for _, result := range ret.Results {
+				if rule, matched := r.expressionContainsSanitizerWithSeen(result, seen); matched {
+					return rule, true
+				}
+			}
 		}
 	}
 	return sanitizerRule{}, false
@@ -541,19 +747,19 @@ func execCommandSinkArguments(edge *callgraph.Edge) []ssa.Value {
 	}
 
 	selected := []ssa.Value{args[nameIndex]}
-	if command := shellCommandStringArg(args, nameIndex); command != nil {
+	if command := shellCommandStringArg(args, nameIndex, edge.Site); command != nil {
 		selected = append(selected, command)
 	}
 	return selected
 }
 
-func shellCommandStringArg(args []ssa.Value, nameIndex int) ssa.Value {
+func shellCommandStringArg(args []ssa.Value, nameIndex int, use ssa.Instruction) ssa.Value {
 	shell, ok := stringConstant(args[nameIndex])
 	if !ok || !isShellExecutable(shell) {
 		return nil
 	}
-	flagValue := execCommandVariadicArg(args, nameIndex, 0)
-	commandValue := execCommandVariadicArg(args, nameIndex, 1)
+	flagValue := execCommandVariadicArg(args, nameIndex, 0, use)
+	commandValue := execCommandVariadicArg(args, nameIndex, 1, use)
 	if flagValue == nil || commandValue == nil {
 		return nil
 	}
@@ -564,10 +770,10 @@ func shellCommandStringArg(args []ssa.Value, nameIndex int) ssa.Value {
 	return commandValue
 }
 
-func execCommandVariadicArg(args []ssa.Value, nameIndex, offset int) ssa.Value {
+func execCommandVariadicArg(args []ssa.Value, nameIndex, offset int, use ssa.Instruction) ssa.Value {
 	variadicIndex := nameIndex + 1
 	if variadicIndex < len(args) && isStringSlice(args[variadicIndex].Type()) {
-		return sliceElementAt(args[variadicIndex], offset)
+		return sliceElementAt(args[variadicIndex], offset, use)
 	}
 	directIndex := variadicIndex + offset
 	if directIndex >= 0 && directIndex < len(args) {
@@ -588,7 +794,7 @@ func isStringSlice(t types.Type) bool {
 	return ok && elem.Kind() == types.String
 }
 
-func sliceElementAt(v ssa.Value, index int) ssa.Value {
+func sliceElementAt(v ssa.Value, index int, use ssa.Instruction) ssa.Value {
 	type visitKey struct {
 		value ssa.Value
 		index int
@@ -604,6 +810,9 @@ func sliceElementAt(v ssa.Value, index int) ssa.Value {
 			return nil
 		}
 		seen[key] = struct{}{}
+		if store := latestSliceElementStore(cur, curIndex, use); store != nil {
+			return store.Val
+		}
 		switch value := cur.(type) {
 		case *ssa.Slice:
 			low := 0
@@ -633,38 +842,155 @@ func sliceElementAt(v ssa.Value, index int) ssa.Value {
 			}
 			return visit(stored[0], curIndex)
 		case *ssa.Alloc:
-			return storedArrayElement(value, curIndex)
+			return storedArrayElement(value, curIndex, use)
 		}
 		return nil
 	}
 	return visit(v, index)
 }
 
-func storedArrayElement(array ssa.Value, index int) ssa.Value {
-	if array == nil || array.Referrers() == nil {
+func storedArrayElement(array ssa.Value, index int, use ssa.Instruction) ssa.Value {
+	if store := latestSliceElementStore(array, index, use); store != nil {
+		return store.Val
+	}
+	return nil
+}
+
+func latestSliceElementStore(v ssa.Value, index int, use ssa.Instruction) *ssa.Store {
+	stores := collectSliceElementStores(v, index, use, map[ssa.Value]struct{}{})
+	if len(stores) == 0 {
 		return nil
 	}
-	for _, ref := range *array.Referrers() {
+	return latestReachingStore(stores, use)
+}
+
+func collectSliceElementStores(v ssa.Value, index int, use ssa.Instruction, seen map[ssa.Value]struct{}) []*ssa.Store {
+	if v == nil || index < 0 {
+		return nil
+	}
+	if _, ok := seen[v]; ok {
+		return nil
+	}
+	seen[v] = struct{}{}
+
+	var out []*ssa.Store
+	switch value := v.(type) {
+	case *ssa.ChangeInterface:
+		return collectSliceElementStores(value.X, index, use, seen)
+	case *ssa.ChangeType:
+		return collectSliceElementStores(value.X, index, use, seen)
+	case *ssa.Convert:
+		return collectSliceElementStores(value.X, index, use, seen)
+	case *ssa.MakeInterface:
+		return collectSliceElementStores(value.X, index, use, seen)
+	case *ssa.Phi:
+		for _, edge := range value.Edges {
+			out = append(out, collectSliceElementStores(edge, index, use, seen)...)
+		}
+		return out
+	case *ssa.Slice:
+		low := 0
+		if value.Low != nil {
+			var ok bool
+			low, ok = intConstant(value.Low)
+			if !ok {
+				return directElementStores(value, index, use)
+			}
+		}
+		out = append(out, directElementStores(value, index, use)...)
+		out = append(out, collectSliceElementStores(value.X, index+low, use, seen)...)
+		return out
+	case *ssa.UnOp:
+		if value.Op != token.MUL {
+			return collectSliceElementStores(value.X, index, use, seen)
+		}
+		out = append(out, directElementStores(value, index, use)...)
+		out = append(out, collectSliceElementStores(value.X, index, use, seen)...)
+		for _, store := range storesForAddress(value.X) {
+			if store.Val == nil || !instructionMayReachUse(store, use) {
+				continue
+			}
+			out = append(out, collectSliceElementStores(store.Val, index, use, seen)...)
+		}
+		return out
+	case *ssa.Alloc:
+		out = append(out, directElementStores(value, index, use)...)
+		if refs := value.Referrers(); refs != nil {
+			for _, ref := range *refs {
+				refValue, ok := ref.(ssa.Value)
+				if !ok {
+					continue
+				}
+				out = append(out, collectSliceElementStores(refValue, index, use, seen)...)
+			}
+		}
+		return out
+	default:
+		return directElementStores(value, index, use)
+	}
+}
+
+func directElementStores(container ssa.Value, index int, use ssa.Instruction) []*ssa.Store {
+	if container == nil || container.Referrers() == nil {
+		return nil
+	}
+	var out []*ssa.Store
+	for _, ref := range *container.Referrers() {
 		switch ref := ref.(type) {
 		case *ssa.Store:
 			addr, ok := ref.Addr.(*ssa.IndexAddr)
-			if !ok || addr.X != array || !intConstantEquals(addr.Index, index) {
+			if !ok || addr.X != container || !intConstantEquals(addr.Index, index) || !instructionMayReachUse(ref, use) {
 				continue
 			}
-			return ref.Val
+			out = append(out, ref)
 		case *ssa.IndexAddr:
-			if ref.X != array || !intConstantEquals(ref.Index, index) || ref.Referrers() == nil {
+			if ref.X != container || !intConstantEquals(ref.Index, index) || ref.Referrers() == nil {
 				continue
 			}
 			for _, indexRef := range *ref.Referrers() {
 				store, ok := indexRef.(*ssa.Store)
-				if ok && store.Addr == ref {
-					return store.Val
+				if ok && store.Addr == ref && instructionMayReachUse(store, use) {
+					out = append(out, store)
 				}
 			}
 		}
 	}
-	return nil
+	return out
+}
+
+func latestReachingStore(stores []*ssa.Store, use ssa.Instruction) *ssa.Store {
+	if len(stores) == 0 {
+		return nil
+	}
+	best := stores[0]
+	for _, candidate := range stores[1:] {
+		if storeIsLater(candidate, best, use) {
+			best = candidate
+		}
+	}
+	return best
+}
+
+func storeIsLater(candidate, current *ssa.Store, use ssa.Instruction) bool {
+	if candidate == nil || current == nil {
+		return candidate != nil
+	}
+	if use != nil && candidate.Block() == use.Block() && current.Block() != use.Block() {
+		return true
+	}
+	if use != nil && candidate.Block() != use.Block() && current.Block() == use.Block() {
+		return false
+	}
+	if before, sameBlock := instructionPrecedesInSameBlock(current, candidate); sameBlock && before {
+		return true
+	}
+	if before, sameBlock := instructionPrecedesInSameBlock(candidate, current); sameBlock && before {
+		return false
+	}
+	if current.Block() != nil && candidate.Block() != nil && blockMayReach(current.Block(), candidate.Block()) {
+		return true
+	}
+	return false
 }
 
 func intConstantEquals(v ssa.Value, want int) bool {
