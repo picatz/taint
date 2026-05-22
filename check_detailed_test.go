@@ -2166,6 +2166,314 @@ func main() {
 	}
 }
 
+func TestCheckDetailedChannelSendReachesReceive(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	ch := make(chan string, 1)
+	ch <- source()
+	db.Query(<-ch)
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected channel send to reach receive, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedChannelReceiveIgnoresLaterSend(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	ch := make(chan string, 1)
+	db.Query(<-ch)
+	ch <- source()
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected receive before send to stay clean, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedChannelReceiveIgnoresOtherChannelSend(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	ch := make(chan string, 1)
+	other := make(chan string, 1)
+	other <- source()
+	db.Query(<-ch)
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected unrelated channel send to stay clean, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedGlobalStoreBeforeRunReachesLoad(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+var q string
+
+func source() string { return "user" }
+func set() { q = source() }
+func run() {
+	db := &sql.DB{}
+	db.Query(q)
+}
+
+func main() {
+	set()
+	run()
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected prior global store to reach load, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedGlobalStoreAfterRunStaysClean(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+var q string
+
+func source() string { return "user" }
+func set() { q = source() }
+func run() {
+	db := &sql.DB{}
+	db.Query(q)
+}
+
+func main() {
+	run()
+	set()
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected global store after run to stay clean, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedNestedPointerHelperStoreReachesLoad(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+func set1(p *string) { set2(p) }
+func set2(p *string) { *p = source() }
+
+func main() {
+	db := &sql.DB{}
+	q := "safe"
+	set1(&q)
+	db.Query(q)
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected nested pointer helper store to reach load, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedNestedMapHelperWriteReachesLookup(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+func put1(m map[string]string, k, v string) { put2(m, k, v) }
+func put2(m map[string]string, k, v string) { m[k] = v }
+
+func main() {
+	db := &sql.DB{}
+	m := map[string]string{}
+	put1(m, "q", source())
+	db.Query(m["q"])
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected nested map helper write to reach lookup, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedNestedMapHelperDeleteKillsPriorTaint(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+func drop1(m map[string]string, k string) { drop2(m, k) }
+func drop2(m map[string]string, k string) { delete(m, k) }
+
+func main() {
+	db := &sql.DB{}
+	m := map[string]string{}
+	m["q"] = source()
+	drop1(m, "q")
+	db.Query(m["q"])
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected nested map helper delete to kill prior taint, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedNestedMapHelperClearKillsPriorTaint(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+func source() string { return "user" }
+func wipe1(m map[string]string) { wipe2(m) }
+func wipe2(m map[string]string) { clear(m) }
+
+func main() {
+	db := &sql.DB{}
+	m := map[string]string{}
+	m["q"] = source()
+	wipe1(m)
+	db.Query(m["q"])
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected nested map helper clear to kill prior taint, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedNestedBufferHelperWriteReachesRead(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"bytes"
+	"database/sql"
+)
+
+func source() string { return "user" }
+func fill1(b *bytes.Buffer, q string) { fill2(b, q) }
+func fill2(b *bytes.Buffer, q string) { b.WriteString(q) }
+
+func main() {
+	db := &sql.DB{}
+	var b bytes.Buffer
+	fill1(&b, source())
+	db.Query(b.String())
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected nested buffer helper write to reach read, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedNestedBufferHelperResetKillsPriorTaint(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"bytes"
+	"database/sql"
+)
+
+func source() string { return "user" }
+func reset1(b *bytes.Buffer) { reset2(b) }
+func reset2(b *bytes.Buffer) { b.Reset() }
+
+func main() {
+	db := &sql.DB{}
+	var b bytes.Buffer
+	b.WriteString(source())
+	reset1(&b)
+	b.WriteString("select 1")
+	db.Query(b.String())
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected nested buffer helper reset to kill prior taint, got %d diagnostics", len(diagnostics))
+	}
+}
+
 func evidenceKinds(evidence []Evidence) []EvidenceKind {
 	kinds := make([]EvidenceKind, 0, len(evidence))
 	for _, entry := range evidence {

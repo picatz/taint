@@ -898,8 +898,30 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 			}
 		}
 	case *ssa.UnOp:
+		if value.Op == token.ARROW {
+			for _, effect := range reachingChannelReceiveValues(value) {
+				tainted, src, tv := checkSSAValueWithContext(path, ctx, effect.value, visited.clone())
+				if tainted {
+					return true, src, tv
+				}
+			}
+			return false, "", nil
+		}
 		if value.Op == token.MUL {
-			if effects, ok := reachingValuesForLoad(value); ok {
+			if effects, ok := reachingGlobalValuesForLoad(path, value, remainingSummaryDepth(path, ctx)); ok {
+				for _, effect := range effects {
+					effectPath := path
+					if effect.call != nil && effect.callee != nil {
+						effectPath = appendSummaryCallPath(path, effect.call, effect.callee)
+					}
+					tainted, src, tv := checkSSAValueWithContext(effectPath, ctx, effect.value, visited.clone())
+					if tainted {
+						return true, src, tv
+					}
+				}
+				return false, "", nil
+			}
+			if effects, ok := reachingValuesForLoadWithLimit(value, remainingSummaryDepth(path, ctx)); ok {
 				for _, effect := range effects {
 					effectPath := path
 					if effect.call != nil && effect.callee != nil {
@@ -992,7 +1014,7 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 			return true, src, tv
 		}
 	case *ssa.Lookup:
-		for _, effect := range reachingMapLookupValues(value) {
+		for _, effect := range reachingMapLookupValuesWithLimit(value, remainingSummaryDepth(path, ctx)) {
 			effectPath := path
 			if effect.call != nil && effect.callee != nil {
 				effectPath = appendSummaryCallPath(path, effect.call, effect.callee)
@@ -1088,7 +1110,7 @@ func checkReceiverBufferedWrites(path callgraphutil.Path, ctx taintContext, call
 	if recv == nil {
 		return false, "", nil
 	}
-	for _, effect := range priorBufferedWriteEffects(recv, call) {
+	for _, effect := range priorBufferedWriteEffectsWithLimit(recv, call, remainingSummaryDepth(path, ctx)) {
 		effectPath := path
 		if effect.call != nil && effect.callee != nil {
 			effectPath = appendSummaryCallPath(path, effect.call, effect.callee)
@@ -1256,6 +1278,18 @@ func summaryDepth(path callgraphutil.Path) int {
 		}
 	}
 	return depth
+}
+
+func remainingSummaryDepth(path callgraphutil.Path, ctx taintContext) int {
+	maxDepth := ctx.maxSummaryDepth
+	if maxDepth <= 0 {
+		maxDepth = defaultMaxSummaryDepth
+	}
+	remaining := maxDepth - summaryDepth(path)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 // hasProtoMessageMethod reports if the given type implements either the legacy

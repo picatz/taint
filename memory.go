@@ -362,6 +362,54 @@ func blockScanStart(block *ssa.BasicBlock, before ssa.Instruction) int {
 	return len(block.Instrs)
 }
 
+func summaryLimit(depth int) int {
+	if depth <= 0 {
+		return defaultMaxSummaryDepth
+	}
+	return depth
+}
+
+func callParamArgs(callee *ssa.Function, call *ssa.Call) map[ssa.Value]ssa.Value {
+	if callee == nil || call == nil {
+		return nil
+	}
+	out := map[ssa.Value]ssa.Value{}
+	for i, param := range callee.Params {
+		if arg := callArgForParamIndex(&call.Call, callee, i); arg != nil {
+			out[param] = arg
+		}
+	}
+	return out
+}
+
+func resolveWithParamArgs(v ssa.Value, paramArgs map[ssa.Value]ssa.Value) ssa.Value {
+	if v == nil || len(paramArgs) == 0 {
+		return v
+	}
+	if arg, ok := paramArgs[v]; ok {
+		return arg
+	}
+	return v
+}
+
+func composeParamArgs(callee *ssa.Function, call *ssa.Call, resolve func(ssa.Value) ssa.Value) map[ssa.Value]ssa.Value {
+	if callee == nil || call == nil {
+		return nil
+	}
+	out := map[ssa.Value]ssa.Value{}
+	for i, param := range callee.Params {
+		actual := callArgForParamIndex(&call.Call, callee, i)
+		if actual == nil {
+			continue
+		}
+		if resolve != nil {
+			actual = resolve(actual)
+		}
+		out[param] = actual
+	}
+	return out
+}
+
 // -----------------------------------------------------------------------------
 // Call-site / helper-summary plumbing
 // -----------------------------------------------------------------------------
@@ -459,7 +507,11 @@ func resolveCalleeValue(v ssa.Value, callee *ssa.Function, call *ssa.Call) ssa.V
 // -----------------------------------------------------------------------------
 
 func reachingValuesForLoad(load *ssa.UnOp) ([]sideEffectValue, bool) {
-	defs, ok := reachingMemoryDefsForLoad(load, true)
+	return reachingValuesForLoadWithLimit(load, defaultMaxSummaryDepth)
+}
+
+func reachingValuesForLoadWithLimit(load *ssa.UnOp, maxDepth int) ([]sideEffectValue, bool) {
+	defs, ok := reachingMemoryDefsForLoadWithLimit(load, true, maxDepth)
 	if !ok {
 		return nil, false
 	}
@@ -474,7 +526,7 @@ func reachingValuesForLoad(load *ssa.UnOp) ([]sideEffectValue, bool) {
 }
 
 func storedValuesForLoad(load *ssa.UnOp) ([]ssa.Value, bool) {
-	defs, ok := reachingMemoryDefsForLoad(load, true)
+	defs, ok := reachingMemoryDefsForLoadWithLimit(load, true, defaultMaxSummaryDepth)
 	if !ok {
 		return nil, false
 	}
@@ -488,7 +540,7 @@ func storedValuesForLoad(load *ssa.UnOp) ([]ssa.Value, bool) {
 }
 
 func storedLocalValuesForLoad(load *ssa.UnOp) ([]ssa.Value, bool) {
-	defs, ok := reachingMemoryDefsForLoad(load, false)
+	defs, ok := reachingMemoryDefsForLoadWithLimit(load, false, defaultMaxSummaryDepth)
 	if !ok {
 		return nil, false
 	}
@@ -502,10 +554,14 @@ func storedLocalValuesForLoad(load *ssa.UnOp) ([]ssa.Value, bool) {
 }
 
 func reachingMemoryDefsForLoad(load *ssa.UnOp, includeSynthetic bool) ([]memoryDef, bool) {
+	return reachingMemoryDefsForLoadWithLimit(load, includeSynthetic, defaultMaxSummaryDepth)
+}
+
+func reachingMemoryDefsForLoadWithLimit(load *ssa.UnOp, includeSynthetic bool, maxDepth int) ([]memoryDef, bool) {
 	if load == nil || load.Op != token.MUL || load.X == nil {
 		return nil, false
 	}
-	defs := memoryDefsForLoad(load, includeSynthetic)
+	defs := memoryDefsForLoadWithLimit(load, includeSynthetic, maxDepth)
 	if len(defs) == 0 {
 		return nil, false
 	}
@@ -513,11 +569,15 @@ func reachingMemoryDefsForLoad(load *ssa.UnOp, includeSynthetic bool) ([]memoryD
 }
 
 func memoryDefsForLoad(load *ssa.UnOp, includeSynthetic bool) []memoryDef {
+	return memoryDefsForLoadWithLimit(load, includeSynthetic, defaultMaxSummaryDepth)
+}
+
+func memoryDefsForLoadWithLimit(load *ssa.UnOp, includeSynthetic bool, maxDepth int) []memoryDef {
 	var defs []memoryDef
 	for _, store := range storesForAddress(load.X) {
 		defs = append(defs, memoryDef{instr: store, value: store.Val, definite: true})
 	}
-	if !includeSynthetic || load == nil || load.Parent() == nil {
+	if !includeSynthetic || load == nil || load.Parent() == nil || maxDepth <= 0 {
 		return defs
 	}
 	base := memoryBase(load.X)
@@ -530,7 +590,7 @@ func memoryDefsForLoad(load *ssa.UnOp, includeSynthetic bool) []memoryDef {
 			if !ok {
 				continue
 			}
-			for _, effect := range directCalleeStores(call, load.X) {
+			for _, effect := range directCalleeStoresWithLimit(call, load.X, maxDepth) {
 				defs = append(defs, memoryDef{
 					instr:    call,
 					value:    effect.value,
@@ -688,6 +748,22 @@ func storesForAddress(addr ssa.Value) []*ssa.Store {
 // slot than the load reads; otherwise the result falls back to coarse base-
 // level aliasing to stay sound.
 func directCalleeStores(call *ssa.Call, loadAddr ssa.Value) []sideEffectValue {
+	return directCalleeStoresWithLimit(call, loadAddr, defaultMaxSummaryDepth)
+}
+
+func directCalleeStoresWithLimit(call *ssa.Call, loadAddr ssa.Value, maxDepth int) []sideEffectValue {
+	return directCalleeStoresRecursive(call, loadAddr, summaryLimit(maxDepth), map[storeSummaryKey]struct{}{})
+}
+
+type storeSummaryKey struct {
+	call     *ssa.Call
+	loadBase ssa.Value
+}
+
+func directCalleeStoresRecursive(call *ssa.Call, loadAddr ssa.Value, depth int, seen map[storeSummaryKey]struct{}) []sideEffectValue {
+	if depth <= 0 {
+		return nil
+	}
 	targetBase := memoryBase(loadAddr)
 	if targetBase == nil {
 		return nil
@@ -696,6 +772,15 @@ func directCalleeStores(call *ssa.Call, loadAddr ssa.Value) []sideEffectValue {
 	if callee == nil || len(paramArgs) == 0 {
 		return nil
 	}
+	key := storeSummaryKey{call: call, loadBase: targetBase}
+	if _, ok := seen[key]; ok {
+		return nil
+	}
+	nextSeen := make(map[storeSummaryKey]struct{}, len(seen)+1)
+	for seenKey := range seen {
+		nextSeen[seenKey] = struct{}{}
+	}
+	nextSeen[key] = struct{}{}
 	params := map[ssa.Value]struct{}{}
 	for param := range paramArgs {
 		params[param] = struct{}{}
@@ -706,13 +791,33 @@ func directCalleeStores(call *ssa.Call, loadAddr ssa.Value) []sideEffectValue {
 	for _, block := range callee.Blocks {
 		for _, instr := range block.Instrs {
 			store, ok := instr.(*ssa.Store)
-			if !ok || store.Val == nil || !valueMayAliasAnyBase(store.Addr, params) {
+			if ok && store.Val != nil && valueMayAliasAnyBase(store.Addr, params) {
+				if loadPathOK && !storeMatchesLoadPath(store.Addr, loadSteps, paramArgs, targetBase) {
+					continue
+				}
+				defs = append(defs, memoryDef{instr: store, value: store.Val, definite: true})
 				continue
 			}
-			if loadPathOK && !storeMatchesLoadPath(store.Addr, loadSteps, paramArgs, targetBase) {
+			if depth <= 1 {
 				continue
 			}
-			defs = append(defs, memoryDef{instr: store, value: store.Val, definite: true})
+			nestedCall, ok := instr.(*ssa.Call)
+			if !ok {
+				continue
+			}
+			for param := range params {
+				for _, effect := range directCalleeStoresRecursive(nestedCall, param, depth-1, nextSeen) {
+					value := effect.value
+					if effect.call != nil && effect.callee != nil {
+						value = resolveCalleeValue(value, effect.callee, effect.call)
+					}
+					defs = append(defs, memoryDef{
+						instr:    nestedCall,
+						value:    value,
+						definite: effect.definite,
+					})
+				}
+			}
 		}
 	}
 	var states []memoryDefState
@@ -727,16 +832,16 @@ func directCalleeStores(call *ssa.Call, loadAddr ssa.Value) []sideEffectValue {
 		}
 	}
 	var out []sideEffectValue
-	seen := map[ssa.Value]struct{}{}
+	seenValues := map[ssa.Value]struct{}{}
 	for _, state := range states {
 		for _, def := range state.defs {
 			if def.value == nil {
 				continue
 			}
-			if _, ok := seen[def.value]; ok {
+			if _, ok := seenValues[def.value]; ok {
 				continue
 			}
-			seen[def.value] = struct{}{}
+			seenValues[def.value] = struct{}{}
 			out = append(out, sideEffectValue{value: def.value, call: call, callee: callee, definite: definite})
 		}
 	}
@@ -876,11 +981,15 @@ func receiverArg(call *ssa.CallCommon) ssa.Value {
 // priorBufferedWriteEffects gathers the writes that survive any intervening
 // Reset/Truncate(0) along all paths from `read` back to function entry.
 func priorBufferedWriteEffects(recv ssa.Value, read ssa.Instruction) []sideEffectValue {
+	return priorBufferedWriteEffectsWithLimit(recv, read, defaultMaxSummaryDepth)
+}
+
+func priorBufferedWriteEffectsWithLimit(recv ssa.Value, read ssa.Instruction, maxDepth int) []sideEffectValue {
 	base := memoryBase(recv)
 	if base == nil || read == nil || read.Parent() == nil || read.Block() == nil {
 		return nil
 	}
-	events := bufferEventsForBase(base, read.Parent())
+	events := bufferEventsForBaseWithLimit(base, read.Parent(), maxDepth)
 	if len(events) == 0 {
 		return nil
 	}
@@ -893,6 +1002,10 @@ func priorBufferedWriteEffects(recv ssa.Value, read ssa.Instruction) []sideEffec
 }
 
 func bufferEventsForBase(base ssa.Value, fn *ssa.Function) []bufferEvent {
+	return bufferEventsForBaseWithLimit(base, fn, defaultMaxSummaryDepth)
+}
+
+func bufferEventsForBaseWithLimit(base ssa.Value, fn *ssa.Function, maxDepth int) []bufferEvent {
 	if base == nil || fn == nil {
 		return nil
 	}
@@ -909,7 +1022,9 @@ func bufferEventsForBase(base ssa.Value, fn *ssa.Function) []bufferEvent {
 			if dest, ok := bufferClearCall(&call.Call); ok && valueMayAliasBase(dest, base) {
 				out = append(out, bufferEvent{kind: bufferClearEvent, instr: call})
 			}
-			out = append(out, directCalleeBufferedEvents(call, base)...)
+			if maxDepth > 0 {
+				out = append(out, directCalleeBufferedEventsWithLimit(call, base, maxDepth)...)
+			}
 		}
 	}
 	return out
@@ -992,25 +1107,40 @@ func bufferEventsAt(events []bufferEvent, instr ssa.Instruction) []bufferEvent {
 // (only when EVERY return path ends with a clear). This is the buffer-shaped
 // analog of directCalleeStores / directCalleeMapEvents.
 func directCalleeBufferedEvents(call *ssa.Call, targetBase ssa.Value) []bufferEvent {
+	return directCalleeBufferedEventsWithLimit(call, targetBase, defaultMaxSummaryDepth)
+}
+
+func directCalleeBufferedEventsWithLimit(call *ssa.Call, targetBase ssa.Value, maxDepth int) []bufferEvent {
+	return directCalleeBufferedEventsRecursive(call, targetBase, summaryLimit(maxDepth), map[bufferSummaryKey]struct{}{})
+}
+
+type bufferSummaryKey struct {
+	call *ssa.Call
+	base ssa.Value
+}
+
+func directCalleeBufferedEventsRecursive(call *ssa.Call, targetBase ssa.Value, depth int, seen map[bufferSummaryKey]struct{}) []bufferEvent {
+	if depth <= 0 {
+		return nil
+	}
 	callee, params := calleeParamsAliasingBase(call, targetBase)
 	if callee == nil || len(params) == 0 {
 		return nil
 	}
-	var calleeEvents []bufferEvent
-	for _, block := range callee.Blocks {
-		for _, instr := range block.Instrs {
-			write, ok := instr.(*ssa.Call)
-			if !ok {
-				continue
-			}
-			if dest, args, ok := bufferWriteDataArgs(&write.Call); ok && valueMayAliasAnyBase(dest, params) {
-				calleeEvents = append(calleeEvents, bufferEvent{kind: bufferWriteEvent, instr: write, values: args, call: call, callee: callee})
-			}
-			if dest, ok := bufferClearCall(&write.Call); ok && valueMayAliasAnyBase(dest, params) {
-				calleeEvents = append(calleeEvents, bufferEvent{kind: bufferClearEvent, instr: write, call: call, callee: callee})
-			}
-		}
+	key := bufferSummaryKey{call: call, base: targetBase}
+	if _, ok := seen[key]; ok {
+		return nil
 	}
+	nextSeen := make(map[bufferSummaryKey]struct{}, len(seen)+1)
+	for seenKey := range seen {
+		nextSeen[seenKey] = struct{}{}
+	}
+	nextSeen[key] = struct{}{}
+	paramArgs := callParamArgs(callee, call)
+	resolve := func(v ssa.Value) ssa.Value {
+		return resolveWithParamArgs(v, paramArgs)
+	}
+	calleeEvents := calleeBufferedEvents(callee, params, resolve, depth, nextSeen)
 	returns := calleeReturns(callee)
 	if len(calleeEvents) == 0 || len(returns) == 0 {
 		return nil
@@ -1045,6 +1175,66 @@ func directCalleeBufferedEvents(call *ssa.Call, targetBase ssa.Value) []bufferEv
 	return out
 }
 
+func calleeBufferedEvents(callee *ssa.Function, params map[ssa.Value]struct{}, resolve func(ssa.Value) ssa.Value, depth int, seen map[bufferSummaryKey]struct{}) []bufferEvent {
+	if callee == nil || len(params) == 0 {
+		return nil
+	}
+	var out []bufferEvent
+	for _, block := range callee.Blocks {
+		for _, instr := range block.Instrs {
+			call, ok := instr.(*ssa.Call)
+			if !ok {
+				continue
+			}
+			if dest, args, ok := bufferWriteDataArgs(&call.Call); ok && valueMayAliasAnyBase(dest, params) {
+				values := make([]ssa.Value, 0, len(args))
+				for _, arg := range args {
+					if resolve != nil {
+						arg = resolve(arg)
+					}
+					values = append(values, arg)
+				}
+				out = append(out, bufferEvent{kind: bufferWriteEvent, instr: call, values: values})
+			}
+			if dest, ok := bufferClearCall(&call.Call); ok && valueMayAliasAnyBase(dest, params) {
+				out = append(out, bufferEvent{kind: bufferClearEvent, instr: call})
+			}
+			if depth <= 1 {
+				continue
+			}
+			nestedCallee := staticCallee(&call.Call)
+			if nestedCallee == nil || len(nestedCallee.Blocks) == 0 {
+				continue
+			}
+			nestedParams := map[ssa.Value]struct{}{}
+			for i, param := range nestedCallee.Params {
+				actual := callArgForParamIndex(&call.Call, nestedCallee, i)
+				if actual != nil && valueMayAliasAnyBase(actual, params) {
+					nestedParams[param] = struct{}{}
+				}
+			}
+			if len(nestedParams) == 0 {
+				continue
+			}
+			nestedParamArgs := composeParamArgs(nestedCallee, call, resolve)
+			nestedResolve := func(v ssa.Value) ssa.Value {
+				return resolveWithParamArgs(v, nestedParamArgs)
+			}
+			nestedEvents := calleeBufferedEvents(nestedCallee, nestedParams, nestedResolve, depth-1, seen)
+			if len(nestedEvents) == 0 {
+				continue
+			}
+			var remapped []bufferEvent
+			for _, event := range nestedEvents {
+				event.instr = call
+				remapped = append(remapped, event)
+			}
+			out = append(out, remapped...)
+		}
+	}
+	return out
+}
+
 // -----------------------------------------------------------------------------
 // Map model (m[k] = v, m[k], delete(m, k), clear(m))
 //
@@ -1074,10 +1264,14 @@ type mapPathState struct {
 }
 
 func reachingMapLookupValues(lookup *ssa.Lookup) []sideEffectValue {
+	return reachingMapLookupValuesWithLimit(lookup, defaultMaxSummaryDepth)
+}
+
+func reachingMapLookupValuesWithLimit(lookup *ssa.Lookup, maxDepth int) []sideEffectValue {
 	if lookup == nil || lookup.X == nil || lookup.Parent() == nil || lookup.Block() == nil {
 		return nil
 	}
-	events := mapEventsForLookup(lookup)
+	events := mapEventsForLookupWithLimit(lookup, maxDepth)
 	if len(events) == 0 {
 		return nil
 	}
@@ -1129,6 +1323,10 @@ func reachingMapLookupValues(lookup *ssa.Lookup) []sideEffectValue {
 }
 
 func mapEventsForLookup(lookup *ssa.Lookup) []mapEvent {
+	return mapEventsForLookupWithLimit(lookup, defaultMaxSummaryDepth)
+}
+
+func mapEventsForLookupWithLimit(lookup *ssa.Lookup, maxDepth int) []mapEvent {
 	if lookup == nil || lookup.X == nil || lookup.Parent() == nil {
 		return nil
 	}
@@ -1155,8 +1353,10 @@ func mapEventsForLookup(lookup *ssa.Lookup) []mapEvent {
 				if events := mapBuiltinEventsForCall(v, lookup); len(events) > 0 {
 					out = append(out, events...)
 				}
-				if events := directCalleeMapEvents(v, lookup); len(events) > 0 {
-					out = append(out, events...)
+				if maxDepth > 0 {
+					if events := directCalleeMapEventsWithLimit(v, lookup, maxDepth); len(events) > 0 {
+						out = append(out, events...)
+					}
 				}
 			}
 		}
@@ -1223,6 +1423,22 @@ func mapKeysMayMatch(a, b ssa.Value) (bool, bool) {
 // most one write event (with the union of possibly-written values) and one
 // kill event (only when all return paths end with a definite kill).
 func directCalleeMapEvents(call *ssa.Call, lookup *ssa.Lookup) []mapEvent {
+	return directCalleeMapEventsWithLimit(call, lookup, defaultMaxSummaryDepth)
+}
+
+func directCalleeMapEventsWithLimit(call *ssa.Call, lookup *ssa.Lookup, maxDepth int) []mapEvent {
+	return directCalleeMapEventsRecursive(call, lookup, summaryLimit(maxDepth), map[mapSummaryKey]struct{}{})
+}
+
+type mapSummaryKey struct {
+	call *ssa.Call
+	mapv ssa.Value
+}
+
+func directCalleeMapEventsRecursive(call *ssa.Call, lookup *ssa.Lookup, depth int, seen map[mapSummaryKey]struct{}) []mapEvent {
+	if depth <= 0 {
+		return nil
+	}
 	if call == nil || lookup == nil {
 		return nil
 	}
@@ -1230,6 +1446,15 @@ func directCalleeMapEvents(call *ssa.Call, lookup *ssa.Lookup) []mapEvent {
 	if callee == nil || len(callee.Blocks) == 0 {
 		return nil
 	}
+	key := mapSummaryKey{call: call, mapv: lookup.X}
+	if _, ok := seen[key]; ok {
+		return nil
+	}
+	nextSeen := make(map[mapSummaryKey]struct{}, len(seen)+1)
+	for seenKey := range seen {
+		nextSeen[seenKey] = struct{}{}
+	}
+	nextSeen[key] = struct{}{}
 	params := map[ssa.Value]struct{}{}
 	for i, param := range callee.Params {
 		actual := callArgForParamIndex(&call.Call, callee, i)
@@ -1240,70 +1465,11 @@ func directCalleeMapEvents(call *ssa.Call, lookup *ssa.Lookup) []mapEvent {
 	if len(params) == 0 {
 		return nil
 	}
-	resolve := func(v ssa.Value) ssa.Value { return resolveCalleeValue(v, callee, call) }
-	var helperEvents []mapEvent
-	for _, block := range callee.Blocks {
-		for _, instr := range block.Instrs {
-			switch v := instr.(type) {
-			case *ssa.MapUpdate:
-				if v.Value == nil {
-					continue
-				}
-				if _, ok := params[v.Map]; !ok {
-					continue
-				}
-				matches, definite := mapKeysMayMatch(resolve(v.Key), lookup.Index)
-				if !matches {
-					continue
-				}
-				helperEvents = append(helperEvents, mapEvent{
-					kind:     mapEventWrite,
-					instr:    v,
-					values:   []sideEffectValue{{value: v.Value, definite: definite}},
-					matches:  true,
-					definite: definite,
-				})
-			case *ssa.Call:
-				common := &v.Call
-				builtin, ok := common.Value.(*ssa.Builtin)
-				if !ok {
-					continue
-				}
-				switch builtin.Name() {
-				case "delete":
-					if len(common.Args) < 2 {
-						continue
-					}
-					if _, ok := params[common.Args[0]]; !ok {
-						continue
-					}
-					matches, definite := mapKeysMayMatch(resolve(common.Args[1]), lookup.Index)
-					if !matches {
-						continue
-					}
-					helperEvents = append(helperEvents, mapEvent{
-						kind:     mapEventKill,
-						instr:    v,
-						matches:  true,
-						definite: definite,
-					})
-				case "clear":
-					if len(common.Args) == 0 {
-						continue
-					}
-					if _, ok := params[common.Args[0]]; !ok {
-						continue
-					}
-					helperEvents = append(helperEvents, mapEvent{
-						kind:     mapEventKill,
-						instr:    v,
-						matches:  true,
-						definite: true,
-					})
-				}
-			}
-		}
+	paramArgs := callParamArgs(callee, call)
+	resolve := func(v ssa.Value) ssa.Value {
+		return resolveWithParamArgs(v, paramArgs)
 	}
+	helperEvents := calleeMapEvents(callee, params, lookup, resolve, depth, nextSeen)
 	if len(helperEvents) == 0 {
 		return nil
 	}
@@ -1349,6 +1515,114 @@ func directCalleeMapEvents(call *ssa.Call, lookup *ssa.Lookup) []mapEvent {
 			matches:  true,
 			definite: true,
 		})
+	}
+	return out
+}
+
+func calleeMapEvents(callee *ssa.Function, params map[ssa.Value]struct{}, lookup *ssa.Lookup, resolve func(ssa.Value) ssa.Value, depth int, seen map[mapSummaryKey]struct{}) []mapEvent {
+	if callee == nil || len(params) == 0 || lookup == nil {
+		return nil
+	}
+	var out []mapEvent
+	for _, block := range callee.Blocks {
+		for _, instr := range block.Instrs {
+			switch v := instr.(type) {
+			case *ssa.MapUpdate:
+				if v.Value == nil {
+					continue
+				}
+				if _, ok := params[v.Map]; !ok {
+					continue
+				}
+				key := v.Key
+				value := v.Value
+				if resolve != nil {
+					key = resolve(key)
+					value = resolve(value)
+				}
+				matches, definite := mapKeysMayMatch(key, lookup.Index)
+				if !matches {
+					continue
+				}
+				out = append(out, mapEvent{
+					kind:     mapEventWrite,
+					instr:    v,
+					values:   []sideEffectValue{{value: value, definite: definite}},
+					matches:  true,
+					definite: definite,
+				})
+			case *ssa.Call:
+				common := &v.Call
+				if builtin, ok := common.Value.(*ssa.Builtin); ok {
+					switch builtin.Name() {
+					case "delete":
+						if len(common.Args) < 2 {
+							continue
+						}
+						if _, ok := params[common.Args[0]]; !ok {
+							continue
+						}
+						key := common.Args[1]
+						if resolve != nil {
+							key = resolve(key)
+						}
+						matches, definite := mapKeysMayMatch(key, lookup.Index)
+						if !matches {
+							continue
+						}
+						out = append(out, mapEvent{
+							kind:     mapEventKill,
+							instr:    v,
+							matches:  true,
+							definite: definite,
+						})
+					case "clear":
+						if len(common.Args) == 0 {
+							continue
+						}
+						if _, ok := params[common.Args[0]]; !ok {
+							continue
+						}
+						out = append(out, mapEvent{
+							kind:     mapEventKill,
+							instr:    v,
+							matches:  true,
+							definite: true,
+						})
+					}
+					continue
+				}
+				if depth <= 1 {
+					continue
+				}
+				nestedCallee := staticCallee(common)
+				if nestedCallee == nil || len(nestedCallee.Blocks) == 0 {
+					continue
+				}
+				nestedParams := map[ssa.Value]struct{}{}
+				for i, param := range nestedCallee.Params {
+					actual := callArgForParamIndex(common, nestedCallee, i)
+					for currentParam := range params {
+						if sameMapValue(actual, currentParam) {
+							nestedParams[param] = struct{}{}
+							break
+						}
+					}
+				}
+				if len(nestedParams) == 0 {
+					continue
+				}
+				nestedParamArgs := composeParamArgs(nestedCallee, v, resolve)
+				nestedResolve := func(value ssa.Value) ssa.Value {
+					return resolveWithParamArgs(value, nestedParamArgs)
+				}
+				nestedEvents := calleeMapEvents(nestedCallee, nestedParams, lookup, nestedResolve, depth-1, seen)
+				for _, event := range nestedEvents {
+					event.instr = v
+					out = append(out, event)
+				}
+			}
+		}
 	}
 	return out
 }
@@ -1437,4 +1711,324 @@ func mapUpdateMatchesLookup(update *ssa.MapUpdate, lookup *ssa.Lookup) (bool, bo
 		return updateKey == lookupKey, updateKey == lookupKey
 	}
 	return true, false
+}
+
+// -----------------------------------------------------------------------------
+// Channel receive model
+//
+// A receive expression (<-ch) observes values sent to the same channel on
+// paths that reach the receive. The channel object itself is not treated as
+// tainted; only reaching send payloads are.
+// -----------------------------------------------------------------------------
+
+func reachingChannelReceiveValues(recv *ssa.UnOp) []sideEffectValue {
+	if recv == nil || recv.Op != token.ARROW || recv.X == nil || recv.Parent() == nil || recv.Block() == nil {
+		return nil
+	}
+	var sends []*ssa.Send
+	for _, block := range recv.Parent().Blocks {
+		for _, instr := range block.Instrs {
+			send, ok := instr.(*ssa.Send)
+			if !ok || send.X == nil || !sameChannelValue(send.Chan, recv.X) {
+				continue
+			}
+			sends = append(sends, send)
+		}
+	}
+	if len(sends) == 0 {
+		return nil
+	}
+	type cursorKey struct {
+		block  *ssa.BasicBlock
+		before ssa.Instruction
+	}
+	seen := map[cursorKey]struct{}{}
+	var out []sideEffectValue
+	var visit func(*ssa.BasicBlock, ssa.Instruction)
+	visit = func(block *ssa.BasicBlock, before ssa.Instruction) {
+		if block == nil {
+			return
+		}
+		key := cursorKey{block: block, before: before}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		for i := blockScanStart(block, before) - 1; i >= 0; i-- {
+			for _, send := range sends {
+				if send != block.Instrs[i] {
+					continue
+				}
+				out = append(out, sideEffectValue{value: send.X, definite: true})
+			}
+		}
+		for _, pred := range block.Preds {
+			visit(pred, nil)
+		}
+	}
+	visit(recv.Block(), recv)
+	return dedupeSideEffectValues(out)
+}
+
+func sameChannelValue(candidate, target ssa.Value) bool {
+	if candidate == nil || target == nil {
+		return false
+	}
+	if candidate == target {
+		return true
+	}
+	cBase := memoryBase(candidate)
+	tBase := memoryBase(target)
+	return cBase != nil && cBase == tBase
+}
+
+// -----------------------------------------------------------------------------
+// Global/package state
+//
+// Global loads can observe stores in earlier functions on the active call path,
+// such as main calling set(); run() where run reads the package variable set()
+// wrote. This model stays scoped to the same *ssa.Global address.
+// -----------------------------------------------------------------------------
+
+func reachingGlobalValuesForLoad(path callgraphutil.Path, load *ssa.UnOp, maxDepth int) ([]sideEffectValue, bool) {
+	if load == nil || load.Op != token.MUL {
+		return nil, false
+	}
+	global := globalAddress(load.X)
+	if global == nil {
+		return nil, false
+	}
+	states := reachingGlobalDefStates(path, load.Parent(), load, global, maxDepth, map[globalCursorKey]struct{}{})
+	var defs []memoryDef
+	for _, state := range states {
+		defs = append(defs, state.defs...)
+	}
+	defs = dedupeMemoryDefs(defs)
+	out := make([]sideEffectValue, 0, len(defs))
+	for _, def := range defs {
+		if def.value == nil {
+			continue
+		}
+		out = append(out, sideEffectValue{
+			value:    def.value,
+			call:     def.call,
+			callee:   def.callee,
+			definite: def.definite,
+		})
+	}
+	return dedupeSideEffectValues(out), true
+}
+
+type globalCursorKey struct {
+	fn     *ssa.Function
+	before ssa.Instruction
+	global *ssa.Global
+}
+
+func reachingGlobalDefStates(path callgraphutil.Path, fn *ssa.Function, before ssa.Instruction, global *ssa.Global, maxDepth int, seen map[globalCursorKey]struct{}) []memoryDefState {
+	if fn == nil || before == nil || global == nil {
+		return nil
+	}
+	key := globalCursorKey{fn: fn, before: before, global: global}
+	if _, ok := seen[key]; ok {
+		return nil
+	}
+	nextSeen := make(map[globalCursorKey]struct{}, len(seen)+1)
+	for seenKey := range seen {
+		nextSeen[seenKey] = struct{}{}
+	}
+	nextSeen[key] = struct{}{}
+
+	localDefs := globalDefsInFunction(fn, global, maxDepth)
+	localStates := reachingMemoryDefStates(localDefs, before)
+	if len(localStates) == 0 {
+		localStates = []memoryDefState{{}}
+	}
+	callerEdge := callerEdgeForFunction(path, fn)
+	if callerEdge == nil {
+		return localStates
+	}
+	site, ok := callerEdge.Site.(ssa.Instruction)
+	if !ok || site == nil || site.Parent() == nil {
+		return localStates
+	}
+
+	var out []memoryDefState
+	for _, state := range localStates {
+		if state.complete {
+			out = append(out, state)
+			continue
+		}
+		parentStates := reachingGlobalDefStates(path, site.Parent(), site, global, maxDepth, nextSeen)
+		if len(parentStates) == 0 {
+			out = append(out, state)
+			continue
+		}
+		for _, parent := range parentStates {
+			combined := memoryDefState{
+				defs:     append(append([]memoryDef(nil), state.defs...), parent.defs...),
+				complete: parent.complete,
+			}
+			out = append(out, combined)
+		}
+	}
+	return out
+}
+
+func callerEdgeForFunction(path callgraphutil.Path, fn *ssa.Function) *callgraph.Edge {
+	for i := len(path) - 1; i >= 0; i-- {
+		edge := path[i]
+		if edge == nil || edge.Callee == nil || edge.Callee.Func != fn || edge.Site == nil {
+			continue
+		}
+		return edge
+	}
+	return nil
+}
+
+func globalDefsInFunction(fn *ssa.Function, global *ssa.Global, maxDepth int) []memoryDef {
+	if fn == nil || global == nil {
+		return nil
+	}
+	var defs []memoryDef
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			switch v := instr.(type) {
+			case *ssa.Store:
+				if v.Val != nil && sameGlobalAddress(v.Addr, global) {
+					defs = append(defs, memoryDef{instr: v, value: v.Val, definite: true})
+				}
+			case *ssa.Call:
+				if maxDepth <= 0 {
+					continue
+				}
+				for _, effect := range directCalleeGlobalStoresWithLimit(v, global, maxDepth) {
+					defs = append(defs, memoryDef{
+						instr:    v,
+						value:    effect.value,
+						call:     effect.call,
+						callee:   effect.callee,
+						definite: effect.definite,
+					})
+				}
+			}
+		}
+	}
+	return defs
+}
+
+func directCalleeGlobalStoresWithLimit(call *ssa.Call, global *ssa.Global, maxDepth int) []sideEffectValue {
+	return directCalleeGlobalStoresRecursive(call, global, summaryLimit(maxDepth), map[globalSummaryKey]struct{}{})
+}
+
+type globalSummaryKey struct {
+	call   *ssa.Call
+	global *ssa.Global
+}
+
+func directCalleeGlobalStoresRecursive(call *ssa.Call, global *ssa.Global, depth int, seen map[globalSummaryKey]struct{}) []sideEffectValue {
+	if call == nil || global == nil || depth <= 0 {
+		return nil
+	}
+	callee := staticCallee(&call.Call)
+	if callee == nil || len(callee.Blocks) == 0 {
+		return nil
+	}
+	key := globalSummaryKey{call: call, global: global}
+	if _, ok := seen[key]; ok {
+		return nil
+	}
+	nextSeen := make(map[globalSummaryKey]struct{}, len(seen)+1)
+	for seenKey := range seen {
+		nextSeen[seenKey] = struct{}{}
+	}
+	nextSeen[key] = struct{}{}
+
+	var defs []memoryDef
+	for _, block := range callee.Blocks {
+		for _, instr := range block.Instrs {
+			switch v := instr.(type) {
+			case *ssa.Store:
+				if v.Val != nil && sameGlobalAddress(v.Addr, global) {
+					defs = append(defs, memoryDef{instr: v, value: v.Val, definite: true})
+				}
+			case *ssa.Call:
+				if depth <= 1 {
+					continue
+				}
+				for _, effect := range directCalleeGlobalStoresRecursive(v, global, depth-1, nextSeen) {
+					value := effect.value
+					if effect.call != nil && effect.callee != nil {
+						value = resolveCalleeValue(value, effect.callee, effect.call)
+					}
+					defs = append(defs, memoryDef{
+						instr:    v,
+						value:    value,
+						definite: effect.definite,
+					})
+				}
+			}
+		}
+	}
+	returns := calleeReturns(callee)
+	if len(defs) == 0 || len(returns) == 0 {
+		return nil
+	}
+	var states []memoryDefState
+	for _, ret := range returns {
+		states = append(states, reachingMemoryDefStates(defs, ret)...)
+	}
+	definite := len(states) > 0
+	for _, state := range states {
+		if !state.complete {
+			definite = false
+			break
+		}
+	}
+	var out []sideEffectValue
+	seenValues := map[ssa.Value]struct{}{}
+	for _, state := range states {
+		for _, def := range state.defs {
+			if def.value == nil {
+				continue
+			}
+			if _, ok := seenValues[def.value]; ok {
+				continue
+			}
+			seenValues[def.value] = struct{}{}
+			out = append(out, sideEffectValue{value: def.value, call: call, callee: callee, definite: definite})
+		}
+	}
+	return out
+}
+
+func globalAddress(v ssa.Value) *ssa.Global {
+	if v == nil {
+		return nil
+	}
+	switch value := v.(type) {
+	case *ssa.Global:
+		return value
+	case *ssa.FieldAddr:
+		return globalAddress(value.X)
+	case *ssa.IndexAddr:
+		return globalAddress(value.X)
+	case *ssa.UnOp:
+		if value.Op == token.MUL {
+			return globalAddress(value.X)
+		}
+	case *ssa.ChangeType:
+		return globalAddress(value.X)
+	case *ssa.Convert:
+		return globalAddress(value.X)
+	case *ssa.MakeInterface:
+		return globalAddress(value.X)
+	case *ssa.ChangeInterface:
+		return globalAddress(value.X)
+	}
+	return nil
+}
+
+func sameGlobalAddress(addr ssa.Value, global *ssa.Global) bool {
+	return global != nil && globalAddress(addr) == global
 }

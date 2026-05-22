@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"go/types"
 	"sort"
+	"strings"
 	"sync"
 
 	"golang.org/x/tools/go/callgraph"
@@ -565,19 +566,19 @@ func checkBlockInstructionOptimized(root *ssa.Function, allFns map[*ssa.Function
 				case *ssa.Field:
 					instrCalls = append(instrCalls, findFunctionsInFieldValue(fa, allFns)...)
 				case *ssa.Global:
-					instrCalls = append(instrCalls, findFunctionsStoredAt(fa, allFns)...)
+					instrCalls = append(instrCalls, findFunctionsStoredAt(fa, instructionForCallSite(callSite), allFns)...)
 				}
 			}
 
 		case *ssa.Lookup:
 			// Map-valued function dispatch: handlers["foo"](w, r).
-			instrCalls = append(instrCalls, findFunctionsInMap(callt, allFns)...)
+			instrCalls = append(instrCalls, findFunctionsInMap(callt, instructionForCallSite(callSite), allFns)...)
 
 		case *ssa.Extract:
 			// Comma-ok map dispatch: h, ok := handlers["foo"]; h(...).
 			// The tuple producer is the Lookup we actually want to resolve.
 			if lookup, ok := callt.Tuple.(*ssa.Lookup); ok && callt.Index == 0 {
-				instrCalls = append(instrCalls, findFunctionsInMap(lookup, allFns)...)
+				instrCalls = append(instrCalls, findFunctionsInMap(lookup, instructionForCallSite(callSite), allFns)...)
 			}
 
 		case *ssa.Phi:
@@ -1214,16 +1215,24 @@ func findFunctionsInFieldValue(field *ssa.Field, allFns map[*ssa.Function]bool) 
 	return dedupeFunctions(fallback)
 }
 
+func instructionForCallSite(site ssa.CallInstruction) ssa.Instruction {
+	if instr, ok := site.(ssa.Instruction); ok {
+		return instr
+	}
+	return nil
+}
+
 // findFunctionsStoredAt scans the program for stores targeting the given
-// address-valued SSA value (typically a *ssa.Global holding a function-typed
-// variable) and returns every distinct function that flows into the address.
-// This lets indirect calls through a global function variable resolve to its
-// possible callees.
-func findFunctionsStoredAt(addr ssa.Value, allFns map[*ssa.Function]bool) []*ssa.Function {
+// address-valued SSA value and returns the functions from stores that can
+// reach use. Package init stores are used as a fallback for globals that have
+// no reaching assignment in the caller function.
+func findFunctionsStoredAt(addr ssa.Value, use ssa.Instruction, allFns map[*ssa.Function]bool) []*ssa.Function {
 	if addr == nil {
 		return nil
 	}
-	var out []*ssa.Function
+	var sameFnStores []*ssa.Store
+	var initStores []*ssa.Store
+	var fallback []*ssa.Store
 	for fn := range allFns {
 		for _, blk := range fn.Blocks {
 			for _, ins := range blk.Instrs {
@@ -1231,18 +1240,42 @@ func findFunctionsStoredAt(addr ssa.Value, allFns map[*ssa.Function]bool) []*ssa
 				if !ok || store.Addr != addr {
 					continue
 				}
-				out = append(out, functionValues(store.Val)...)
+				if use != nil && store.Parent() == use.Parent() {
+					sameFnStores = append(sameFnStores, store)
+					continue
+				}
+				if isPackageInit(store.Parent()) {
+					initStores = append(initStores, store)
+					continue
+				}
+				fallback = append(fallback, store)
 			}
 		}
 	}
-	return dedupeFunctions(out)
+	if use != nil {
+		if len(sameFnStores) > 0 {
+			reaching := reachingStoresForUse(sameFnStores, use)
+			if len(reaching) > 0 {
+				return functionsFromStores(reaching)
+			}
+			if len(initStores) > 0 {
+				return functionsFromStores(initStores)
+			}
+			return nil
+		}
+		if len(initStores) > 0 {
+			return functionsFromStores(initStores)
+		}
+		return nil
+	}
+	return functionsFromStores(append(append(sameFnStores, initStores...), fallback...))
 }
 
 // findFunctionsInMap resolves a map-valued function dispatch
 // (handlers[key](...)) to the set of functions previously stored into the same
-// map. Stores reach across functions, mirroring how findFunctionsInField scans
-// the whole program for field assignments.
-func findFunctionsInMap(lookup *ssa.Lookup, allFns map[*ssa.Function]bool) []*ssa.Function {
+// map. Constant keys are matched precisely when both sides are known; unknown
+// keys stay conservative.
+func findFunctionsInMap(lookup *ssa.Lookup, use ssa.Instruction, allFns map[*ssa.Function]bool) []*ssa.Function {
 	if lookup == nil {
 		return nil
 	}
@@ -1250,7 +1283,9 @@ func findFunctionsInMap(lookup *ssa.Lookup, allFns map[*ssa.Function]bool) []*ss
 	if mapValue == nil {
 		return nil
 	}
-	var out []*ssa.Function
+	var sameFnUpdates []*ssa.MapUpdate
+	var initUpdates []*ssa.MapUpdate
+	var fallback []*ssa.MapUpdate
 	for fn := range allFns {
 		for _, blk := range fn.Blocks {
 			for _, ins := range blk.Instrs {
@@ -1258,11 +1293,262 @@ func findFunctionsInMap(lookup *ssa.Lookup, allFns map[*ssa.Function]bool) []*ss
 				if !ok || !sameMapBase(upd.Map, mapValue) {
 					continue
 				}
-				out = append(out, functionValues(upd.Value)...)
+				if !mapUpdateMayMatchLookupKey(upd.Key, lookup.Index) {
+					continue
+				}
+				if use != nil && upd.Parent() == use.Parent() {
+					sameFnUpdates = append(sameFnUpdates, upd)
+					continue
+				}
+				if isPackageInit(upd.Parent()) {
+					initUpdates = append(initUpdates, upd)
+					continue
+				}
+				fallback = append(fallback, upd)
 			}
 		}
 	}
+	if use != nil {
+		if len(sameFnUpdates) > 0 {
+			reaching := reachingMapUpdatesForUse(sameFnUpdates, use)
+			if len(reaching) > 0 {
+				return functionsFromMapUpdates(reaching)
+			}
+			if len(initUpdates) > 0 {
+				return functionsFromMapUpdates(initUpdates)
+			}
+			return nil
+		}
+		if len(initUpdates) > 0 {
+			return functionsFromMapUpdates(initUpdates)
+		}
+		return nil
+	}
+	return functionsFromMapUpdates(append(append(sameFnUpdates, initUpdates...), fallback...))
+}
+
+func functionsFromStores(stores []*ssa.Store) []*ssa.Function {
+	var out []*ssa.Function
+	for _, store := range stores {
+		if store == nil {
+			continue
+		}
+		out = append(out, functionValues(store.Val)...)
+	}
 	return dedupeFunctions(out)
+}
+
+func functionsFromMapUpdates(updates []*ssa.MapUpdate) []*ssa.Function {
+	var out []*ssa.Function
+	for _, update := range updates {
+		if update == nil {
+			continue
+		}
+		out = append(out, functionValues(update.Value)...)
+	}
+	return dedupeFunctions(out)
+}
+
+func reachingStoresForUse(stores []*ssa.Store, use ssa.Instruction) []*ssa.Store {
+	if len(stores) == 0 || use == nil || use.Block() == nil {
+		return nil
+	}
+	type cursorKey struct {
+		block  *ssa.BasicBlock
+		before ssa.Instruction
+	}
+	seen := map[cursorKey]struct{}{}
+	var out []*ssa.Store
+	var visit func(*ssa.BasicBlock, ssa.Instruction)
+	visit = func(block *ssa.BasicBlock, before ssa.Instruction) {
+		if block == nil {
+			return
+		}
+		key := cursorKey{block: block, before: before}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		for i := graphBlockScanStart(block, before) - 1; i >= 0; i-- {
+			var group []*ssa.Store
+			for _, store := range stores {
+				if store == block.Instrs[i] {
+					group = append(group, store)
+				}
+			}
+			if len(group) > 0 {
+				out = append(out, group...)
+				return
+			}
+		}
+		for _, pred := range block.Preds {
+			visit(pred, nil)
+		}
+	}
+	visit(use.Block(), use)
+	return dedupeStores(out)
+}
+
+func reachingMapUpdatesForUse(updates []*ssa.MapUpdate, use ssa.Instruction) []*ssa.MapUpdate {
+	if len(updates) == 0 || use == nil || use.Block() == nil {
+		return nil
+	}
+	type cursorKey struct {
+		block  *ssa.BasicBlock
+		before ssa.Instruction
+	}
+	seen := map[cursorKey]struct{}{}
+	var out []*ssa.MapUpdate
+	var visit func(*ssa.BasicBlock, ssa.Instruction)
+	visit = func(block *ssa.BasicBlock, before ssa.Instruction) {
+		if block == nil {
+			return
+		}
+		key := cursorKey{block: block, before: before}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		for i := graphBlockScanStart(block, before) - 1; i >= 0; i-- {
+			var group []*ssa.MapUpdate
+			for _, update := range updates {
+				if update == block.Instrs[i] {
+					group = append(group, update)
+				}
+			}
+			if len(group) > 0 {
+				out = append(out, group...)
+				return
+			}
+		}
+		for _, pred := range block.Preds {
+			visit(pred, nil)
+		}
+	}
+	visit(use.Block(), use)
+	return dedupeMapUpdates(out)
+}
+
+func graphBlockScanStart(block *ssa.BasicBlock, before ssa.Instruction) int {
+	if block == nil {
+		return 0
+	}
+	if before == nil {
+		return len(block.Instrs)
+	}
+	for i, instr := range block.Instrs {
+		if instr == before {
+			return i
+		}
+	}
+	return len(block.Instrs)
+}
+
+func dedupeStores(stores []*ssa.Store) []*ssa.Store {
+	if len(stores) < 2 {
+		return stores
+	}
+	seen := map[*ssa.Store]struct{}{}
+	out := make([]*ssa.Store, 0, len(stores))
+	for _, store := range stores {
+		if store == nil {
+			continue
+		}
+		if _, ok := seen[store]; ok {
+			continue
+		}
+		seen[store] = struct{}{}
+		out = append(out, store)
+	}
+	return out
+}
+
+func dedupeMapUpdates(updates []*ssa.MapUpdate) []*ssa.MapUpdate {
+	if len(updates) < 2 {
+		return updates
+	}
+	seen := map[*ssa.MapUpdate]struct{}{}
+	out := make([]*ssa.MapUpdate, 0, len(updates))
+	for _, update := range updates {
+		if update == nil {
+			continue
+		}
+		if _, ok := seen[update]; ok {
+			continue
+		}
+		seen[update] = struct{}{}
+		out = append(out, update)
+	}
+	return out
+}
+
+func isPackageInit(fn *ssa.Function) bool {
+	return fn != nil && (fn.Synthetic == "package initializer" || strings.HasPrefix(fn.Name(), "init"))
+}
+
+func mapUpdateMayMatchLookupKey(updateKey, lookupKey ssa.Value) bool {
+	uk, uOK := graphConstantKey(updateKey)
+	lk, lOK := graphConstantKey(lookupKey)
+	if uOK && lOK {
+		return uk == lk
+	}
+	return true
+}
+
+func graphConstantKey(v ssa.Value) (string, bool) {
+	return graphConstantKeyValue(v, map[ssa.Value]struct{}{})
+}
+
+func graphConstantKeyValue(v ssa.Value, seen map[ssa.Value]struct{}) (string, bool) {
+	if v == nil {
+		return "", false
+	}
+	if _, ok := seen[v]; ok {
+		return "", false
+	}
+	seen[v] = struct{}{}
+	switch value := v.(type) {
+	case *ssa.Const:
+		if value.Value == nil {
+			return "", false
+		}
+		return value.Value.Kind().String() + ":" + value.Value.ExactString(), true
+	case *ssa.ChangeInterface:
+		return graphConstantKeyValue(value.X, seen)
+	case *ssa.ChangeType:
+		return graphConstantKeyValue(value.X, seen)
+	case *ssa.Convert:
+		return graphConstantKeyValue(value.X, seen)
+	case *ssa.MakeInterface:
+		return graphConstantKeyValue(value.X, seen)
+	case *ssa.UnOp:
+		if value.Op != token.MUL {
+			return "", false
+		}
+		for _, stored := range graphStoredValuesForAddress(value.X) {
+			if key, ok := graphConstantKeyValue(stored, seen); ok {
+				return key, true
+			}
+		}
+	}
+	return "", false
+}
+
+func graphStoredValuesForAddress(addr ssa.Value) []ssa.Value {
+	if addr == nil {
+		return nil
+	}
+	var out []ssa.Value
+	if refs := addr.Referrers(); refs != nil {
+		for _, ref := range *refs {
+			store, ok := ref.(*ssa.Store)
+			if !ok || store.Addr != addr || store.Val == nil {
+				continue
+			}
+			out = append(out, store.Val)
+		}
+	}
+	return out
 }
 
 // findFunctionsInPhi resolves a phi-valued indirect call: f := cond ? a : b;

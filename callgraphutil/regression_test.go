@@ -230,6 +230,100 @@ func main() {
 	}
 }
 
+func TestGlobalFunctionDispatchUsesReachingStore(t *testing.T) {
+	cg, pkgPath := graphForSource(t, `package main
+
+var dispatch func(string)
+
+func source() string { return "user" }
+func safe(string) {}
+func unsafe(string) {}
+
+func main() {
+	dispatch = safe
+	dispatch(source())
+	dispatch = unsafe
+}
+`)
+
+	if paths := PathsSearchCallTo(cg.Root, pkgPath+".safe"); len(paths) == 0 {
+		t.Fatal("expected dispatch to call reaching safe function")
+	}
+	if paths := PathsSearchCallTo(cg.Root, pkgPath+".unsafe"); len(paths) != 0 {
+		t.Fatalf("did not expect later global function store to create unsafe edge, got %d paths", len(paths))
+	}
+}
+
+func TestGlobalFunctionDispatchUsesPriorUnsafeStore(t *testing.T) {
+	cg, pkgPath := graphForSource(t, `package main
+
+var dispatch func(string)
+
+func source() string { return "user" }
+func unsafe(string) {}
+
+func main() {
+	dispatch = unsafe
+	dispatch(source())
+}
+`)
+
+	if paths := PathsSearchCallTo(cg.Root, pkgPath+".unsafe"); len(paths) == 0 {
+		t.Fatal("expected dispatch to call prior unsafe function")
+	}
+}
+
+func TestMapFunctionDispatchFiltersConstantKey(t *testing.T) {
+	cg, pkgPath := graphForSource(t, `package main
+
+var handlers = map[string]func(string){
+	"safe": safe,
+	"unsafe": unsafe,
+}
+
+func source() string { return "user" }
+func safe(string) {}
+func unsafe(string) {}
+
+func main() {
+	handlers["safe"](source())
+}
+`)
+
+	if paths := PathsSearchCallTo(cg.Root, pkgPath+".safe"); len(paths) == 0 {
+		t.Fatal("expected constant safe key to call safe handler")
+	}
+	if paths := PathsSearchCallTo(cg.Root, pkgPath+".unsafe"); len(paths) != 0 {
+		t.Fatalf("did not expect constant safe key to call unsafe handler, got %d paths", len(paths))
+	}
+}
+
+func TestMapFunctionDispatchUnknownKeyStaysConservative(t *testing.T) {
+	cg, pkgPath := graphForSource(t, `package main
+
+var handlers = map[string]func(string){
+	"safe": safe,
+	"unsafe": unsafe,
+}
+
+func source() string { return "user" }
+func key() string { return "safe" }
+func safe(string) {}
+func unsafe(string) {}
+
+func main() {
+	handlers[key()](source())
+}
+`)
+
+	if paths := PathsSearchCallTo(cg.Root, pkgPath+".safe"); len(paths) == 0 {
+		t.Fatal("expected unknown key to conservatively call safe handler")
+	}
+	if paths := PathsSearchCallTo(cg.Root, pkgPath+".unsafe"); len(paths) == 0 {
+		t.Fatal("expected unknown key to conservatively call unsafe handler")
+	}
+}
+
 // assertEdgesCanonical fails the test if edges is not sorted by edgeLess.
 func assertEdgesCanonical(t *testing.T, label string, edges []*callgraph.Edge) {
 	t.Helper()
