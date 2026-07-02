@@ -1,0 +1,166 @@
+# GoReleaser configuration for the taint CLIs.
+#
+# Builds the interactive `taint` shell plus the six SARIF-capable analyzer
+# CLIs (sqli, cmdi, ptrv, ssrf, xss, logi) for linux/darwin/windows on
+# amd64/arm64.
+#
+# Validate locally with:
+#   go run github.com/goreleaser/goreleaser/v2@latest check
+#
+# Try a snapshot build (no tag/publish required) for the host platform only:
+#   go run github.com/goreleaser/goreleaser/v2@latest release --snapshot --clean --single-target
+#
+# cmd/taint-eval and cmd/ssadump are internal development tools and are
+# intentionally not released here.
+version: 2
+
+project_name: taint
+
+builds:
+  - id: taint
+    main: ./cmd/taint
+    binary: taint
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  - id: sqli
+    main: ./cmd/sqli
+    binary: sqli
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  - id: cmdi
+    main: ./cmd/cmdi
+    binary: cmdi
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  - id: ptrv
+    main: ./cmd/ptrv
+    binary: ptrv
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  - id: ssrf
+    main: ./cmd/ssrf
+    binary: ssrf
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  - id: xss
+    main: ./cmd/xss
+    binary: xss
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  - id: logi
+    main: ./cmd/logi
+    binary: logi
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+# A single archive per platform bundling all seven CLIs together.
+archives:
+  - id: default
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  github:
+    owner: picatz
+    name: taint
