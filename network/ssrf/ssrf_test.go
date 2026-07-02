@@ -24,6 +24,14 @@ func TestClientDo(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "clientdo")
 }
 
+func TestClientPostBoundMethodValue(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "clientpostbound")
+}
+
+func TestClientCleanHelpers(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "clientclean")
+}
+
 func TestConstantsClean(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "clean")
 }

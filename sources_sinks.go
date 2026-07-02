@@ -19,11 +19,10 @@ func (v valueSet) includes(sv ssa.Value) bool {
 	return ok
 }
 
-// add adds the value to the set.
+// add adds the value to the set. The set must be non-nil: reassigning a
+// nil receiver would only update the local copy and silently drop the
+// insert, defeating the cycle protection this set exists to provide.
 func (v valueSet) add(sv ssa.Value) {
-	if v == nil {
-		v = valueSet{}
-	}
 	v[sv] = struct{}{}
 }
 

@@ -434,6 +434,57 @@ func main() {
 	}
 }
 
+func TestCheckDetailedSafeHTTPRequestPassedThroughHelperStaysClean(t *testing.T) {
+	cg, _ := detailedGraphForSource(t, `package main
+
+import "net/http"
+
+func fetch(client *http.Client, req *http.Request) {
+	client.Do(req)
+}
+
+func main() {
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", "https://example.com", nil)
+	fetch(client, req)
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources("*net/http.Request"),
+		NewSinks("(*net/http.Client).Do"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected helper-passed safe request to stay clean, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedHTTPHandlerRequestSourceStillReports(t *testing.T) {
+	cg, _ := detailedGraphForSource(t, `package main
+
+import (
+	"log"
+	"net/http"
+)
+
+func main() {
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		log.Print(r.URL.Query().Get("q"))
+	})
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources("*net/http.Request"),
+		NewSinks("log.Print"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected handler request source to report once, got %d diagnostics", len(diagnostics))
+	}
+}
+
 func TestSourceRegistryMatchesTypes(t *testing.T) {
 	pkg := types.NewPackage("net/http", "http")
 	obj := types.NewTypeName(token.NoPos, pkg, "Request", nil)
@@ -445,7 +496,7 @@ func TestSourceRegistryMatchesTypes(t *testing.T) {
 }
 
 func TestCheckDetailedOverlappingSourceRulesAreDeterministic(t *testing.T) {
-	cg, pkgPath := detailedGraphForSource(t, `package main
+	cg, pkgPath := detailedGraphForSourceRoot(t, `package main
 
 type Req struct{}
 
@@ -457,10 +508,8 @@ func handle(r *Req) {
 	sink(r)
 }
 
-func main() {
-	handle(&Req{})
-}
-`)
+func main() {}
+`, "handle")
 
 	want := "*" + pkgPath + ".Req"
 	for i := range 20 {
@@ -513,13 +562,15 @@ import (
 	"net/http"
 )
 
-func invoke(cb func(*http.Request)) {
-	cb(nil)
+func invoke(cb func(*http.Request), r *http.Request) {
+	cb(r)
 }
 
 func main() {
-	invoke(func(r *http.Request) {
-		log.Print(r.URL.Query().Get("q"))
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		invoke(func(req *http.Request) {
+			log.Print(req.URL.Query().Get("q"))
+		}, r)
 	})
 }
 `)
@@ -531,6 +582,70 @@ func main() {
 	)
 	if len(diagnostics) != 1 {
 		t.Fatalf("expected one diagnostic for callback that is invoked, got %d", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedInvokeMethodSafeReturnDoesNotUseArgumentAsReceiver(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+type formatter interface {
+	Format(string) string
+}
+
+type impl struct{}
+
+func (impl) Format(s string) string { return "safe" }
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	var f formatter = impl{}
+	db.Query(f.Format(source()))
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected safe invoke return to stay clean, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedInvokeMethodPassThroughReturnReports(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+type formatter interface {
+	Format(string) string
+}
+
+type impl struct{}
+
+func (impl) Format(s string) string { return s }
+
+func source() string { return "user" }
+
+func main() {
+	db := &sql.DB{}
+	var f formatter = impl{}
+	db.Query(f.Format(source()))
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected pass-through invoke return to report once, got %d diagnostics", len(diagnostics))
 	}
 }
 
@@ -1692,6 +1807,60 @@ func main() {
 	}
 }
 
+func TestCheckDetailedBoundHTTPClientPostMethodValueReportsTaintedURL(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"net/http"
+	"strings"
+)
+
+func source() string { return "https://attacker.example" }
+
+func main() {
+	client := &http.Client{}
+	post := client.Post
+	post(source(), "text/plain", strings.NewReader("body"))
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*net/http.Client).Post"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected bound client.Post tainted URL to report once, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedBoundHTTPClientPostMethodValueIgnoresTaintedBodyAndContentType(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import (
+	"net/http"
+	"strings"
+)
+
+func source() string { return "user" }
+
+func main() {
+	client := &http.Client{}
+	post := client.Post
+	post("https://example.com", source(), strings.NewReader(source()))
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*net/http.Client).Post"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected bound client.Post body/content-type taint to stay clean, got %d diagnostics", len(diagnostics))
+	}
+}
+
 func TestCheckDetailedPropagatesThroughBufferWriteByte(t *testing.T) {
 	cg, pkgPath := detailedGraphForSource(t, `package main
 
@@ -2521,6 +2690,11 @@ func assertEvidenceRule(t *testing.T, evidence []Evidence, kind EvidenceKind, ru
 
 func detailedGraphForSource(t *testing.T, src string) (*callgraph.Graph, string) {
 	t.Helper()
+	return detailedGraphForSourceRoot(t, src, "main")
+}
+
+func detailedGraphForSourceRoot(t *testing.T, src, rootName string) (*callgraph.Graph, string) {
+	t.Helper()
 
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/detailed\n\ngo 1.24.4\n"), 0o644); err != nil {
@@ -2560,9 +2734,9 @@ func detailedGraphForSource(t *testing.T, src string) (*callgraph.Graph, string)
 	if len(mainPkgs) != 1 {
 		t.Fatalf("expected one main package, got %d", len(mainPkgs))
 	}
-	mainFn := mainPkgs[0].Func("main")
-	if mainFn == nil {
-		t.Fatal("main function not found")
+	rootFn := mainPkgs[0].Func(rootName)
+	if rootFn == nil {
+		t.Fatalf("%s function not found", rootName)
 	}
 
 	var srcFns []*ssa.Function
@@ -2583,9 +2757,53 @@ func detailedGraphForSource(t *testing.T, src string) (*callgraph.Graph, string)
 		}
 	}
 
-	cg, err := callgraphutil.NewGraph(mainFn, srcFns...)
+	cg, err := callgraphutil.NewGraph(rootFn, srcFns...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return cg, mainFn.Pkg.Pkg.Path()
+	return cg, rootFn.Pkg.Pkg.Path()
+}
+
+// Regression test: an invoke whose receiver is loaded from a struct field of
+// interface type used to feed a pointer-to-interface candidate into
+// Prog.LookupMethod, which panics when the candidate's method set lacks the
+// method. staticCalleeForCall must probe the method set instead of panicking.
+func TestCheckDetailedInvokeReceiverFromStructField(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+type doer interface {
+	Do(string) string
+}
+
+type holder struct {
+	d doer
+}
+
+func source() string { return "user" }
+
+func run(db *sql.DB, h *holder) {
+	db.Query(h.d.Do(source()))
+}
+
+func main() {
+	db := &sql.DB{}
+	run(db, &holder{})
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	// The interface has no concrete implementation in this program, so the
+	// callee body is unanalyzable and the engine conservatively reports
+	// nothing: taint entering through the invoke's argument is a known
+	// false negative until unknown callees get default summaries. The
+	// regression this test pins is the panic, not the verdict.
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected no diagnostics, got %d", len(diagnostics))
+	}
 }

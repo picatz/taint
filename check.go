@@ -194,9 +194,6 @@ func CheckDetailed(cg *callgraph.Graph, sources Sources, sinks Sinks, opts ...Op
 		sinkPaths := findAllSinkCallSitePaths(cg, sink)
 
 		for _, sinkPath := range sinkPaths {
-			// Ensure the path isn't empty (which can happen?!).
-			//
-			//       are never empty. That's just silly.
 			if sinkPath.Empty() {
 				continue
 			}
@@ -212,7 +209,7 @@ func CheckDetailed(cg *callgraph.Graph, sources Sources, sinks Sinks, opts ...Op
 				if lastEdge == nil || lastEdge.Site == nil || lastEdge.Callee == nil {
 					continue
 				}
-				sinkPos := lastEdge.Site.Pos()
+				sinkPos := sinkPathPos(sinkPath)
 				key := fmt.Sprintf("%d|%s", sinkPos, src)
 				result := Result{
 					Path:        clonePath(sinkPath),
@@ -269,10 +266,26 @@ func sortedDiagnosticKeys(m map[string]Diagnostic) []string {
 // sinkValuePos returns the source position of a Result's sink call. A nil
 // SinkValue collapses to token.NoPos so the comparator stays total.
 func sinkValuePos(r Result) token.Pos {
+	if pos := sinkPathPos(r.Path); pos.IsValid() {
+		return pos
+	}
 	if r.SinkValue == nil {
 		return token.NoPos
 	}
 	return r.SinkValue.Pos()
+}
+
+func sinkPathPos(path callgraphutil.Path) token.Pos {
+	for i := len(path) - 1; i >= 0; i-- {
+		edge := path[i]
+		if edge == nil || edge.Site == nil {
+			continue
+		}
+		if pos := edge.Site.Pos(); pos.IsValid() {
+			return pos
+		}
+	}
+	return token.NoPos
 }
 
 // checkPath implements taint analysis that can be used to identify if the given
@@ -602,17 +615,12 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 	// because we need to step backwards through the callgraph path
 	// (just one step?) to identify what actual value the caller used.
 	case *ssa.Parameter:
-		// Check if the parameter's type is a source.
-		paramType := value.Type()
-		if src, ok := ctx.matchSourceType(paramType); ok {
-			return true, src, value
-		}
-
 		// Do not walk the parameter's referrers here. Referrers are forward
 		// uses of the parameter, so following them can attribute unrelated
 		// later expressions back to an earlier sink argument. Parameter taint
 		// should flow from the concrete caller argument on the active path.
-		for _, edge := range path {
+		for i := len(path) - 1; i >= 0; i-- {
+			edge := path[i]
 			if edge == nil || edge.Callee == nil || edge.Callee.Func == nil || edge.Site == nil {
 				continue
 			}
@@ -627,15 +635,20 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 			if common == nil {
 				continue
 			}
-			if arg := callArgForParameter(edge, value); arg != nil {
+			if arg, ok := callArgForParameter(edge, value); ok {
 				ta, src, tv := checkSSAValueWithContext(path, ctx, arg, visited)
 				if ta {
 					return true, src, tv
 				}
-				if src, base := isExpressionDerivedFromSourceWithContext(arg, ctx); src != "" {
-					return true, src, base
-				}
+				return false, "", nil
 			}
+		}
+		// If the active path has no concrete runtime argument for this
+		// parameter, fall back to source-type matching. This keeps external
+		// entrypoints and framework-dispatched handler parameters useful as
+		// source roots without over-tainting ordinary helper parameters.
+		if src, ok := ctx.matchSourceType(value.Type()); ok {
+			return true, src, value
 		}
 		// Function calls can be a little tricky. We need to check a few things.
 		// 1. See if the call itself was a source.
@@ -662,7 +675,7 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 		// resolvable concrete, foreign code, etc. — we fall back to the
 		// conservative rule that a method called on a tainted receiver
 		// returns tainted data.
-		callee := staticCallee(&value.Call)
+		callee := staticCalleeForCall(value)
 		bodyAnalyzable := callee != nil && len(callee.Blocks) > 0
 
 		if bodyAnalyzable {
@@ -674,7 +687,7 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 			// receiver propagation, which is exactly the over-tainting we are
 			// trying to avoid (e.g. errors returned by methods on
 			// *http.Request).
-		} else if value.Call.Signature() != nil && value.Call.Signature().Recv() != nil && len(value.Call.Args) > 0 && !returnsOnlyError(value.Call.Signature()) {
+		} else if value.Call.Signature() != nil && value.Call.Signature().Recv() != nil && !returnsOnlyError(value.Call.Signature()) {
 			// Body not analyzable. Fall back to the conservative rule that a
 			// method called on a source-derived receiver returns tainted
 			// data — but skip when the only return value is an error.
@@ -684,18 +697,20 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 			// When the method also returns other values the propagation
 			// still fires (e.g. a foreign reader returning ([]byte, error)
 			// where the bytes legitimately carry receiver data).
-			recv := value.Call.Args[0]
-			if src, ok := ctx.matchSourceType(recv.Type()); ok {
-				return true, src, recv
-			}
-			if tainted, src, tv := checkSSAValueWithContext(path, ctx, recv, visited); tainted {
-				return true, src, tv
-			}
-			if src, base := derivedFromSourceWithContext(recv, ctx); src != "" {
-				return true, src, base
-			}
-			if src, base := isExpressionDerivedFromSourceWithContext(recv, ctx); src != "" {
-				return true, src, base
+			recv := callReceiver(&value.Call)
+			if recv != nil {
+				if src, ok := ctx.matchSourceType(recv.Type()); ok {
+					return true, src, recv
+				}
+				if tainted, src, tv := checkSSAValueWithContext(path, ctx, recv, visited); tainted {
+					return true, src, tv
+				}
+				if src, base := derivedFromSourceWithContext(recv, ctx); src != "" {
+					return true, src, base
+				}
+				if src, base := isExpressionDerivedFromSourceWithContext(recv, ctx); src != "" {
+					return true, src, base
+				}
 			}
 		}
 
@@ -1135,19 +1150,27 @@ func parameterCallArgIndex(fn *ssa.Function, param *ssa.Parameter) int {
 	return -1
 }
 
-func callArgForParameter(edge *callgraph.Edge, param *ssa.Parameter) ssa.Value {
+func callArgForParameter(edge *callgraph.Edge, param *ssa.Parameter) (ssa.Value, bool) {
 	if edge == nil || edge.Site == nil || edge.Callee == nil || edge.Callee.Func == nil || param == nil {
-		return nil
+		return nil, false
 	}
 	parent := param.Parent()
 	if parent == nil || edge.Callee.Func != parent {
-		return nil
+		return nil, false
+	}
+	common := edge.Site.Common()
+	if callbackRegistrationEdge(edge, common) {
+		return nil, false
 	}
 	idx := parameterCallArgIndex(parent, param)
 	if idx < 0 {
-		return nil
+		return nil, false
 	}
-	return callArgForParamIndex(edge.Site.Common(), parent, idx)
+	arg := callArgForParamIndex(common, parent, idx)
+	if arg == nil {
+		return nil, false
+	}
+	return arg, true
 }
 
 func callArgForParamIndex(common *ssa.CallCommon, callee *ssa.Function, paramIndex int) ssa.Value {
@@ -1164,6 +1187,54 @@ func callArgForParamIndex(common *ssa.CallCommon, callee *ssa.Function, paramInd
 		return nil
 	}
 	return common.Args[paramIndex]
+}
+
+func callReceiver(common *ssa.CallCommon) ssa.Value {
+	if common == nil {
+		return nil
+	}
+	if common.IsInvoke() {
+		return common.Value
+	}
+	if len(common.Args) == 0 {
+		return nil
+	}
+	return common.Args[0]
+}
+
+func callbackRegistrationEdge(edge *callgraph.Edge, common *ssa.CallCommon) bool {
+	if edge == nil || edge.Callee == nil || edge.Callee.Func == nil || common == nil {
+		return false
+	}
+	for _, arg := range common.Args {
+		if valueDenotesFunction(arg, edge.Callee.Func) {
+			return true
+		}
+	}
+	return false
+}
+
+func valueDenotesFunction(v ssa.Value, fn *ssa.Function) bool {
+	if v == nil || fn == nil {
+		return false
+	}
+	switch value := v.(type) {
+	case *ssa.Function:
+		return value == fn
+	case *ssa.MakeClosure:
+		if closureFn, ok := value.Fn.(*ssa.Function); ok {
+			return closureFn == fn
+		}
+	case *ssa.MakeInterface:
+		return valueDenotesFunction(value.X, fn)
+	case *ssa.ChangeInterface:
+		return valueDenotesFunction(value.X, fn)
+	case *ssa.ChangeType:
+		return valueDenotesFunction(value.X, fn)
+	case *ssa.Convert:
+		return valueDenotesFunction(value.X, fn)
+	}
+	return false
 }
 
 func callString(cc *ssa.CallCommon) string {
@@ -1226,11 +1297,121 @@ func staticCallee(cc *ssa.CallCommon) *ssa.Function {
 	return nil
 }
 
+func staticCalleeForCall(call *ssa.Call) *ssa.Function {
+	if call == nil {
+		return nil
+	}
+	if fn := staticCallee(&call.Call); fn != nil {
+		return fn
+	}
+	if !call.Call.IsInvoke() || call.Call.Method == nil || call.Parent() == nil || call.Parent().Prog == nil {
+		return nil
+	}
+	prog := call.Parent().Prog
+	for _, recvType := range concreteReceiverTypesForInvoke(call.Call.Value) {
+		for _, candidate := range receiverTypeCandidatesForTaint(recvType) {
+			// Prog.LookupMethod panics when the candidate's method set lacks
+			// the method (e.g. a pointer-to-interface recovered from a struct
+			// field), so probe the method set before resolving.
+			sel := prog.MethodSets.MethodSet(candidate).Lookup(call.Call.Method.Pkg(), call.Call.Method.Name())
+			if sel == nil {
+				continue
+			}
+			if fn := prog.MethodValue(sel); fn != nil {
+				return fn
+			}
+		}
+	}
+	return nil
+}
+
+func concreteReceiverTypesForInvoke(v ssa.Value) []types.Type {
+	seenValues := map[ssa.Value]struct{}{}
+	var out []types.Type
+	var visit func(ssa.Value)
+	visit = func(cur ssa.Value) {
+		if cur == nil {
+			return
+		}
+		if _, ok := seenValues[cur]; ok {
+			return
+		}
+		seenValues[cur] = struct{}{}
+
+		switch value := cur.(type) {
+		case *ssa.MakeInterface:
+			if value.X != nil {
+				out = appendUniqueType(out, value.X.Type())
+			}
+		case *ssa.ChangeInterface:
+			visit(value.X)
+		case *ssa.ChangeType:
+			visit(value.X)
+		case *ssa.Convert:
+			visit(value.X)
+		case *ssa.TypeAssert:
+			visit(value.X)
+		case *ssa.Phi:
+			for _, edge := range value.Edges {
+				visit(edge)
+			}
+		case *ssa.UnOp:
+			visit(value.X)
+			if value.Op == token.MUL {
+				for _, stored := range storedValuesForAddress(value.X) {
+					visit(stored)
+				}
+			}
+		case *ssa.Alloc:
+			for _, stored := range storedValuesForAddress(value) {
+				visit(stored)
+			}
+		default:
+			if t := cur.Type(); t != nil {
+				if _, ok := t.Underlying().(*types.Interface); !ok {
+					out = appendUniqueType(out, t)
+				}
+			}
+		}
+	}
+	visit(v)
+	return out
+}
+
+func storedValuesForAddress(addr ssa.Value) []ssa.Value {
+	if addr == nil {
+		return nil
+	}
+	var out []ssa.Value
+	if refs := addr.Referrers(); refs != nil {
+		for _, ref := range *refs {
+			store, ok := ref.(*ssa.Store)
+			if !ok || store.Addr != addr || store.Val == nil {
+				continue
+			}
+			out = append(out, store.Val)
+		}
+	}
+	return out
+}
+
+func appendUniqueType(typesIn []types.Type, t types.Type) []types.Type {
+	if t == nil {
+		return typesIn
+	}
+	for _, existing := range typesIn {
+		if types.Identical(existing, t) {
+			return typesIn
+		}
+	}
+	return append(typesIn, t)
+}
+
 func checkCallReturnValues(path callgraphutil.Path, ctx taintContext, call *ssa.Call, resultIndex int, visited valueSet) (bool, string, ssa.Value) {
 	if call == nil {
 		return false, "", nil
 	}
-	callee := staticCallee(&call.Call)
+	callee := staticCalleeForCall(call)
 	if callee == nil || len(callee.Blocks) == 0 {
 		return false, "", nil
 	}

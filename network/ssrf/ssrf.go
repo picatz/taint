@@ -140,9 +140,13 @@ func run(pass *analysis.Pass) (any, error) {
 }
 
 func resultPosition(result taint.Result) token.Pos {
-	if len(result.Path) > 0 {
-		if last := result.Path.Last(); last != nil && last.Site != nil {
-			return last.Site.Pos()
+	for i := len(result.Path) - 1; i >= 0; i-- {
+		edge := result.Path[i]
+		if edge == nil || edge.Site == nil {
+			continue
+		}
+		if pos := edge.Site.Pos(); pos.IsValid() {
+			return pos
 		}
 	}
 	if result.SinkValue != nil {

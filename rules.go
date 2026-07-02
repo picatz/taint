@@ -199,9 +199,10 @@ func exactSinkRule(id string) sinkRule {
 	case "net/http.NewRequestWithContext":
 		selectArgs = sinkArgAt(2)
 	case "(*net/http.Client).Post", "(*net/http.Client).PostForm":
-		// Method args (after the SSA-included receiver): [url, ...]. Only the
-		// URL is the SSRF channel; tainted body or form data is not.
-		selectArgs = sinkArgAt(1)
+		// Only the URL is the SSRF channel; tainted body, form data, or
+		// content type is not. Ordinary method calls include the receiver
+		// in Args, while bound method values do not.
+		selectArgs = httpClientPostURLArgument
 	case "net.Dial", "net.DialTimeout":
 		selectArgs = sinkArgAt(1)
 	}
@@ -232,6 +233,41 @@ func sinkArgAt(index int) func(*callgraph.Edge) []ssa.Value {
 		}
 		return []ssa.Value{args[index]}
 	}
+}
+
+func httpClientPostURLArgument(edge *callgraph.Edge) []ssa.Value {
+	if edge == nil || edge.Site == nil {
+		return nil
+	}
+	common := edge.Site.Common()
+	if common == nil {
+		return nil
+	}
+	args := common.Args
+	urlIndex := 0
+	if callHasExplicitReceiverArg(common) {
+		urlIndex = 1
+	}
+	if urlIndex >= len(args) {
+		return nil
+	}
+	return []ssa.Value{args[urlIndex]}
+}
+
+func callHasExplicitReceiverArg(common *ssa.CallCommon) bool {
+	if common == nil || common.IsInvoke() {
+		return false
+	}
+	sig := common.Signature()
+	if sig == nil || sig.Recv() == nil {
+		return false
+	}
+	params := sig.Params()
+	paramCount := 0
+	if params != nil {
+		paramCount = params.Len()
+	}
+	return len(common.Args) == paramCount+1
 }
 
 func exactSanitizerRule(id string) sanitizerRule {
