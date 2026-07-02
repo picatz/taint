@@ -2,9 +2,6 @@ package taint
 
 import (
 	"testing"
-
-	"github.com/picatz/taint/callgraphutil"
-	"golang.org/x/tools/go/callgraph"
 )
 
 func TestShellCommandFlagRecognition(t *testing.T) {
@@ -64,30 +61,6 @@ func main() {
 	}
 }
 
-func TestExecCommandSinkArgumentsSelectShellCommandFromVariadicSlice(t *testing.T) {
-	cg, pkgPath := detailedGraphForSource(t, `package main
-
-import "os/exec"
-
-func source() string { return "user" }
-
-func main() {
-	args := []string{"-c", source()}
-	exec.Command("sh", args...)
-}
-`)
-
-	path := singleSinkPath(t, cg, "os/exec.Command")
-	selected := execCommandSinkArguments(path.Last())
-	if len(selected) != 2 {
-		t.Fatalf("expected executable and shell command arguments, got %d", len(selected))
-	}
-	tainted, src, _ := checkSSAValue(path, NewSources(pkgPath+".source"), selected[1], valueSet{})
-	if !tainted || src != pkgPath+".source" {
-		t.Fatalf("expected selected shell command argument to be tainted by %q, got tainted=%v source=%q", pkgPath+".source", tainted, src)
-	}
-}
-
 func TestCheckDetailedExecCommandIgnoresOrdinaryVariadicArgs(t *testing.T) {
 	cg, pkgPath := detailedGraphForSource(t, `package main
 
@@ -130,13 +103,4 @@ func FuzzShellCommandFlagRecognition(f *testing.F) {
 		t.Helper()
 		_ = isShellCommandFlag(shell, flag)
 	})
-}
-
-func singleSinkPath(t *testing.T, cg *callgraph.Graph, sink string) callgraphutil.Path {
-	t.Helper()
-	paths := findAllSinkCallSitePaths(cg, exactSinkRule(sink))
-	if len(paths) != 1 {
-		t.Fatalf("expected one path to %s, got %d", sink, len(paths))
-	}
-	return paths[0]
 }

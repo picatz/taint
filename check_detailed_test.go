@@ -2,8 +2,6 @@ package taint
 
 import (
 	"context"
-	"go/token"
-	"go/types"
 	"os"
 	"path/filepath"
 	"slices"
@@ -431,16 +429,6 @@ func main() {
 	)
 	if len(diagnostics) == 0 {
 		t.Fatal("expected a diagnostic — error value embeds receiver data — got none")
-	}
-}
-
-func TestSourceRegistryMatchesTypes(t *testing.T) {
-	pkg := types.NewPackage("net/http", "http")
-	obj := types.NewTypeName(token.NoPos, pkg, "Request", nil)
-	request := types.NewNamed(obj, types.NewStruct(nil, nil), nil)
-
-	if src, ok := matchSourceType(NewSources("*net/http.Request"), types.NewPointer(request)); !ok || src != "*net/http.Request" {
-		t.Fatalf("expected *net/http.Request source match, got %q matched=%v", src, ok)
 	}
 }
 

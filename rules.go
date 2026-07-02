@@ -381,83 +381,10 @@ func defaultPropagatorRules() []propagatorRule {
 
 var defaultPropagators = defaultPropagatorRules()
 
-func defaultPropagatorForCall(call *ssa.CallCommon) (propagatorRule, []ssa.Value, bool) {
-	for _, rule := range defaultPropagators {
-		if rule.matchCall != nil && rule.matchCall(call) {
-			args := call.Args
-			if rule.selectArgs != nil {
-				args = rule.selectArgs(call)
-			}
-			return rule, args, true
-		}
-	}
-	return propagatorRule{}, nil, false
-}
-
 func exactCallMatcher(id string) func(*ssa.CallCommon) bool {
 	return func(call *ssa.CallCommon) bool {
 		return callString(call) == id
 	}
-}
-
-func (r *ruleRegistry) matchSourceType(t types.Type) (string, bool) {
-	for _, rule := range r.sourceRules {
-		if rule.matchType != nil && rule.matchType(t) {
-			return rule.id, true
-		}
-	}
-	return "", false
-}
-
-func (r *ruleRegistry) matchSourceCall(call *ssa.CallCommon) (string, bool) {
-	for _, rule := range r.sourceRules {
-		if rule.matchCall != nil && rule.matchCall(call) {
-			return rule.id, true
-		}
-	}
-	return "", false
-}
-
-func (r *ruleRegistry) matchSourceValue(v ssa.Value) (string, bool) {
-	if v == nil || v.Type() == nil {
-		return "", false
-	}
-	if src, ok := r.matchSourceType(v.Type()); ok {
-		return src, true
-	}
-	for _, rule := range r.sourceRules {
-		if rule.matchValue != nil && rule.matchValue(v) {
-			return rule.id, true
-		}
-	}
-	return "", false
-}
-
-func matchSourceType(sources Sources, t types.Type) (string, bool) {
-	for _, source := range sortedKeys(sources) {
-		rule := exactSourceRule(source)
-		if rule.matchType != nil && rule.matchType(t) {
-			return source, true
-		}
-	}
-	return "", false
-}
-
-func matchSourceCall(sources Sources, call *ssa.CallCommon) (string, bool) {
-	for _, source := range sortedKeys(sources) {
-		rule := exactSourceRule(source)
-		if rule.matchCall != nil && rule.matchCall(call) {
-			return source, true
-		}
-	}
-	return "", false
-}
-
-func matchSourceValue(sources Sources, v ssa.Value) (string, bool) {
-	if v == nil {
-		return "", false
-	}
-	return matchSourceType(sources, v.Type())
 }
 
 type sanitizerBindings map[*ssa.Parameter]ssa.Value
@@ -802,19 +729,6 @@ func (r *ruleRegistry) sanitizerForCall(call *ssa.CallCommon) (sanitizerRule, bo
 		}
 	}
 	return sanitizerRule{}, false
-}
-
-func (r *ruleRegistry) propagatorForCall(call *ssa.CallCommon) (propagatorRule, []ssa.Value, bool) {
-	for _, rule := range r.propagators {
-		if rule.matchCall != nil && rule.matchCall(call) {
-			args := call.Args
-			if rule.selectArgs != nil {
-				args = rule.selectArgs(call)
-			}
-			return rule, args, true
-		}
-	}
-	return propagatorRule{}, nil, false
 }
 
 func defaultSinkArguments(edge *callgraph.Edge) []ssa.Value {
