@@ -1,0 +1,32 @@
+{
+  "target": "sqreen-go-dvwa",
+  "kind": "git",
+  "source": "https://github.com/sqreen/go-dvwa.git",
+  "commit": "822f4bf8d04972fc7af221e713726174a4ef10f4",
+  "analyzers": {
+    "cmdi": {
+      "count": 0,
+      "findings": []
+    },
+    "logi": {
+      "count": 0,
+      "findings": []
+    },
+    "ptrv": {
+      "count": 0,
+      "findings": []
+    },
+    "sqli": {
+      "count": 0,
+      "findings": []
+    },
+    "ssrf": {
+      "count": 0,
+      "findings": []
+    },
+    "xss": {
+      "count": 0,
+      "findings": []
+    }
+  }
+}

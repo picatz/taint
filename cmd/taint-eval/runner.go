@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 )
 
 // analyzerCommand resolves an analyzer name to a built binary path.
@@ -41,30 +42,63 @@ func runAnalyzer(ctx context.Context, bin, dir string, pkgs []string, env []stri
 			return nil, stderr.Bytes(), fmt.Errorf("%s: %w (stderr: %s)", filepath.Base(bin), err, stderr.String())
 		}
 	}
-	doc, parseErr := parseAnalyzerJSON(stdout.Bytes())
+	doc, warnings, parseErr := parseAnalyzerJSON(stdout.Bytes())
 	if parseErr != nil {
 		return nil, stderr.Bytes(), fmt.Errorf("%s: parse json: %w (stderr: %s)", filepath.Base(bin), parseErr, stderr.String())
+	}
+	for _, w := range warnings {
+		fmt.Fprintf(&stderr, "%s: warning: %s\n", filepath.Base(bin), w)
 	}
 	return doc, stderr.Bytes(), nil
 }
 
 // parseAnalyzerJSON tolerates the small amount of plain-text warning output
-// that singlechecker writes before its JSON document.
-func parseAnalyzerJSON(out []byte) (AnalyzerJSON, error) {
+// that singlechecker writes before its JSON document, as well as per-package
+// error entries inside it.
+//
+// The document is singlechecker's JSONTree: package ID → analyzer name →
+// either a diagnostic array or an {"error": "..."} object for packages that
+// failed to load. Test-augmented variants of real-world pinned targets
+// sometimes fail to typecheck even though the plain package is fine (e.g. a
+// stale _test.go in a vulnerable release); the plain package's diagnostics
+// are what the harness cares about, so error entries are returned as
+// warnings instead of failing the run.
+func parseAnalyzerJSON(out []byte) (AnalyzerJSON, []string, error) {
 	// singlechecker writes a single JSON object. Trim any leading whitespace
 	// or text that precedes the first '{' (some analyzers print harmless
 	// flag-conflict warnings before the JSON body).
 	idx := bytes.IndexByte(out, '{')
 	if idx < 0 {
-		return AnalyzerJSON{}, nil
+		return AnalyzerJSON{}, nil, nil
 	}
 	dec := json.NewDecoder(bytes.NewReader(out[idx:]))
-	dec.DisallowUnknownFields()
-	var doc AnalyzerJSON
-	if err := dec.Decode(&doc); err != nil && err != io.EOF {
-		return nil, err
+	var raw map[string]map[string]json.RawMessage
+	if err := dec.Decode(&raw); err != nil && err != io.EOF {
+		return nil, nil, err
 	}
-	return doc, nil
+	doc := AnalyzerJSON{}
+	var warnings []string
+	for pkg, byAnalyzer := range raw {
+		for name, msg := range byAnalyzer {
+			var diags []AnalyzerDiagnosticJSON
+			if err := json.Unmarshal(msg, &diags); err == nil {
+				if doc[pkg] == nil {
+					doc[pkg] = map[string][]AnalyzerDiagnosticJSON{}
+				}
+				doc[pkg][name] = diags
+				continue
+			}
+			var e struct {
+				Err string `json:"error"`
+			}
+			if err := json.Unmarshal(msg, &e); err != nil || e.Err == "" {
+				return nil, nil, fmt.Errorf("package %s analyzer %s: unrecognized entry %s", pkg, name, msg)
+			}
+			warnings = append(warnings, fmt.Sprintf("package %s (%s): %s", pkg, name, e.Err))
+		}
+	}
+	sort.Strings(warnings)
+	return doc, warnings, nil
 }
 
 // RunTarget invokes every analyzer configured on a target and returns a

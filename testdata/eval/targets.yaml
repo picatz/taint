@@ -95,6 +95,96 @@ targets:
         line: 10
         note: fixture true positive
 
+  # --- Known-vulnerable targets. `expect` entries are ground truth from
+  # --- published CVEs/advisories (or, for go-dvwa, the app's own docs).
+  # --- Misses here are real recall data, not harness bugs.
+
+  - name: sqreen-go-dvwa
+    kind: git
+    repo: https://github.com/sqreen/go-dvwa.git
+    # master (archived repo; no releases)
+    commit: 822f4bf8d04972fc7af221e713726174a4ef10f4
+    packages: ["./..."]
+    analyzers: [sqli, logi, cmdi, xss, ptrv, ssrf]
+    expect:
+      - analyzer: sqli
+        file: vulnerable/sql.go
+        line: 69
+        note: go-dvwa demo SQLi; category from r.FormValue concatenated into db.QueryContext
+      - analyzer: cmdi
+        file: vulnerable/system.go
+        line: 9
+        note: go-dvwa demo command injection; extra from r.FormValue reaches exec.CommandContext sh -c
+
+  - name: gogs-cve-2024-39930
+    kind: git
+    repo: https://github.com/gogs/gogs.git
+    # v0.13.0 (vulnerable; fixed in v0.13.1)
+    commit: 8c21874c00b6100d46b662f65baeb40647442f42
+    # Scoped to the package containing the vulnerable flow: loading all of
+    # gogs is slow and the CVE lives entirely inside internal/ssh.
+    packages: ["./internal/ssh"]
+    analyzers: [cmdi]
+    expect:
+      - analyzer: cmdi
+        file: internal/ssh/ssh.go
+        line: 73
+        note: CVE-2024-39930 argument injection; SSH env request name/value reach com.ExecCmd("env", ...)
+
+  - name: casdoor-cve-2022-24124
+    kind: git
+    repo: https://github.com/casdoor/casdoor.git
+    # v1.13.0 (vulnerable; fixed by commit 5ec0c7a)
+    commit: 051752340d21470db4020b9cf1b46fa50ae908a9
+    # Scoped to the packages containing the vulnerable flow (beego
+    # controller -> object query builder); loading all of casdoor is slow.
+    packages: ["./controllers", "./object"]
+    analyzers: [sqli]
+    expect:
+      - analyzer: sqli
+        file: object/adapter.go
+        line: 198
+        note: CVE-2022-24124 SQLi; field query param from /api/get-organizations reaches xorm Session.And via fmt.Sprintf in GetSession
+      - analyzer: sqli
+        file: object/organization.go
+        line: 44
+        note: CVE-2022-24124 SQLi; same field filter pattern in GetOrganizationCount
+
+  - name: prest-ghsa-p46v-f2x8-qp98
+    kind: git
+    repo: https://github.com/prest/prest.git
+    # v2.0.0-rc2 (version reviewed in the advisory; SQLi is systemic and
+    # unpatched as of the review)
+    commit: 03937fb164390e66ce86e378abee11ee9b23c484
+    # Scoped to the vulnerable flow: REST controllers -> postgres adapter.
+    packages: ["./controllers/...", "./adapters/..."]
+    analyzers: [sqli]
+    expect:
+      - analyzer: sqli
+        file: adapters/postgres/postgres.go
+        # line 0: the advisory lists many injection points in this file;
+        # the canonical one is SelectSQL's fmt.Sprintf concat at line 1601
+        # (db/schema/table path params concatenated into the query).
+        note: GHSA-p46v-f2x8-qp98 systemic SQLi; request db/schema/table concatenated in SelectSQL and friends
+
+  - name: ekuiper-ghsa-r5ph-4jxm-6j9p
+    kind: git
+    repo: https://github.com/lf-edge/ekuiper.git
+    # v1.14.0 (vulnerable; fixed in v1.14.2)
+    commit: ef938601ad2dd467816f0f849022cc41a0525a03
+    # Scoped to the store subtree containing the vulnerable sink. The
+    # user-input source (rule id from the REST API) lives in
+    # internal/server, which drags in the whole application; the engine
+    # analyzes per package and cannot follow that cross-package flow
+    # anyway, so the sink package is the honest unit to measure.
+    packages: ["./internal/pkg/store/..."]
+    analyzers: [sqli]
+    expect:
+      - analyzer: sqli
+        file: internal/pkg/store/sql/sqlKv.go
+        line: 93
+        note: GHSA-r5ph-4jxm-6j9p SQLi; rule id reaches db.QueryRow via fmt.Sprintf in sqlKvStore.Get
+
   - name: gorilla-mux
     kind: git
     repo: https://github.com/gorilla/mux.git

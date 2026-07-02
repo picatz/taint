@@ -1,0 +1,12 @@
+{
+  "target": "prest-ghsa-p46v-f2x8-qp98",
+  "kind": "git",
+  "source": "https://github.com/prest/prest.git",
+  "commit": "03937fb164390e66ce86e378abee11ee9b23c484",
+  "analyzers": {
+    "sqli": {
+      "count": 0,
+      "findings": []
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "target": "ekuiper-ghsa-r5ph-4jxm-6j9p",
+  "kind": "git",
+  "source": "https://github.com/lf-edge/ekuiper.git",
+  "commit": "ef938601ad2dd467816f0f849022cc41a0525a03",
+  "analyzers": {
+    "sqli": {
+      "count": 0,
+      "findings": []
+    }
+  }
+}

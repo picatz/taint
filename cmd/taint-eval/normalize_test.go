@@ -3,6 +3,7 @@ package main
 import (
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -65,19 +66,60 @@ func TestMergeAnalyzerJSON(t *testing.T) {
 
 func TestParseAnalyzerJSON_LeadingNoise(t *testing.T) {
 	raw := []byte("logi: logi flag -debug would conflict with driver; skipping\n{\"pkg\":{\"logi\":[{\"posn\":\"a.go:1:1\",\"message\":\"m\"}]}}")
-	doc, err := parseAnalyzerJSON(raw)
+	doc, warnings, err := parseAnalyzerJSON(raw)
 	if err != nil {
 		t.Fatalf("parseAnalyzerJSON: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
 	}
 	if got := len(doc["pkg"]["logi"]); got != 1 {
 		t.Fatalf("expected 1 finding, got %d", got)
 	}
 }
 
-func TestParseAnalyzerJSON_Empty(t *testing.T) {
-	doc, err := parseAnalyzerJSON(nil)
+func TestParseAnalyzerJSON_PackageErrorEntries(t *testing.T) {
+	raw := []byte(`{
+		"pkg": {"sqli": [{"posn": "a.go:1:1", "message": "m"}]},
+		"pkg [pkg.test]": {
+			"buildssa": {"error": "analysis skipped due to errors in package"},
+			"sqli": {"error": "failed prerequisites: buildssa@pkg [pkg.test]"}
+		}
+	}`)
+	doc, warnings, err := parseAnalyzerJSON(raw)
 	if err != nil {
 		t.Fatalf("parseAnalyzerJSON: %v", err)
+	}
+	if got := len(doc["pkg"]["sqli"]); got != 1 {
+		t.Fatalf("expected 1 finding from the healthy package, got %d", got)
+	}
+	if _, ok := doc["pkg [pkg.test]"]; ok {
+		t.Fatal("failed package variant should not contribute diagnostics")
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("expected 2 warnings, got %v", warnings)
+	}
+	for _, w := range warnings {
+		if !strings.Contains(w, "pkg [pkg.test]") {
+			t.Fatalf("warning missing package id: %q", w)
+		}
+	}
+}
+
+func TestParseAnalyzerJSON_RejectsUnrecognizedEntry(t *testing.T) {
+	raw := []byte(`{"pkg": {"sqli": {"bogus": true}}}`)
+	if _, _, err := parseAnalyzerJSON(raw); err == nil {
+		t.Fatal("expected error for unrecognized entry shape")
+	}
+}
+
+func TestParseAnalyzerJSON_Empty(t *testing.T) {
+	doc, warnings, err := parseAnalyzerJSON(nil)
+	if err != nil {
+		t.Fatalf("parseAnalyzerJSON: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
 	}
 	if len(doc) != 0 {
 		t.Fatalf("expected empty doc, got %+v", doc)
