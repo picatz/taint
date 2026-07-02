@@ -550,10 +550,6 @@ func storedLocalValuesForLoad(load *ssa.UnOp) ([]ssa.Value, bool) {
 	return out, true
 }
 
-func reachingMemoryDefsForLoad(load *ssa.UnOp, includeSynthetic bool) ([]memoryDef, bool) {
-	return reachingMemoryDefsForLoadWithLimit(load, includeSynthetic, defaultMaxSummaryDepth)
-}
-
 func reachingMemoryDefsForLoadWithLimit(load *ssa.UnOp, includeSynthetic bool, maxDepth int) ([]memoryDef, bool) {
 	if load == nil || load.Op != token.MUL || load.X == nil {
 		return nil, false
@@ -563,10 +559,6 @@ func reachingMemoryDefsForLoadWithLimit(load *ssa.UnOp, includeSynthetic bool, m
 		return nil, false
 	}
 	return reachingMemoryDefs(defs, load), true
-}
-
-func memoryDefsForLoad(load *ssa.UnOp, includeSynthetic bool) []memoryDef {
-	return memoryDefsForLoadWithLimit(load, includeSynthetic, defaultMaxSummaryDepth)
 }
 
 func memoryDefsForLoadWithLimit(load *ssa.UnOp, includeSynthetic bool, maxDepth int) []memoryDef {
@@ -737,15 +729,6 @@ func storesForAddress(addr ssa.Value) []*ssa.Store {
 		}
 	}
 	return out
-}
-
-// directCalleeStores summarizes a helper call as a (possibly empty) set of
-// stores that may reach loadAddr in the caller. Field/index precision is
-// applied when storeMatchesLoadPath can prove the helper writes a different
-// slot than the load reads; otherwise the result falls back to coarse base-
-// level aliasing to stay sound.
-func directCalleeStores(call *ssa.Call, loadAddr ssa.Value) []sideEffectValue {
-	return directCalleeStoresWithLimit(call, loadAddr, defaultMaxSummaryDepth)
 }
 
 func directCalleeStoresWithLimit(call *ssa.Call, loadAddr ssa.Value, maxDepth int) []sideEffectValue {
@@ -975,12 +958,6 @@ func receiverArg(call *ssa.CallCommon) ssa.Value {
 	return nil
 }
 
-// priorBufferedWriteEffects gathers the writes that survive any intervening
-// Reset/Truncate(0) along all paths from `read` back to function entry.
-func priorBufferedWriteEffects(recv ssa.Value, read ssa.Instruction) []sideEffectValue {
-	return priorBufferedWriteEffectsWithLimit(recv, read, defaultMaxSummaryDepth)
-}
-
 func priorBufferedWriteEffectsWithLimit(recv ssa.Value, read ssa.Instruction, maxDepth int) []sideEffectValue {
 	base := memoryBase(recv)
 	if base == nil || read == nil || read.Parent() == nil || read.Block() == nil {
@@ -996,10 +973,6 @@ func priorBufferedWriteEffectsWithLimit(recv ssa.Value, read ssa.Instruction, ma
 		out = append(out, state.writes...)
 	}
 	return dedupeSideEffectValues(out)
-}
-
-func bufferEventsForBase(base ssa.Value, fn *ssa.Function) []bufferEvent {
-	return bufferEventsForBaseWithLimit(base, fn, defaultMaxSummaryDepth)
 }
 
 func bufferEventsForBaseWithLimit(base ssa.Value, fn *ssa.Function, maxDepth int) []bufferEvent {
@@ -1097,14 +1070,6 @@ func bufferEventsAt(events []bufferEvent, instr ssa.Instruction) []bufferEvent {
 		}
 	}
 	return out
-}
-
-// directCalleeBufferedEvents summarizes a helper call as up to one write event
-// (union of all writes the helper can perform) and up to one clear event
-// (only when EVERY return path ends with a clear). This is the buffer-shaped
-// analog of directCalleeStores / directCalleeMapEvents.
-func directCalleeBufferedEvents(call *ssa.Call, targetBase ssa.Value) []bufferEvent {
-	return directCalleeBufferedEventsWithLimit(call, targetBase, defaultMaxSummaryDepth)
 }
 
 func directCalleeBufferedEventsWithLimit(call *ssa.Call, targetBase ssa.Value, maxDepth int) []bufferEvent {
@@ -1260,10 +1225,6 @@ type mapPathState struct {
 	killed bool
 }
 
-func reachingMapLookupValues(lookup *ssa.Lookup) []sideEffectValue {
-	return reachingMapLookupValuesWithLimit(lookup, defaultMaxSummaryDepth)
-}
-
 func reachingMapLookupValuesWithLimit(lookup *ssa.Lookup, maxDepth int) []sideEffectValue {
 	if lookup == nil || lookup.X == nil || lookup.Parent() == nil || lookup.Block() == nil {
 		return nil
@@ -1317,10 +1278,6 @@ func reachingMapLookupValuesWithLimit(lookup *ssa.Lookup, maxDepth int) []sideEf
 	}
 	visit(lookup.Block(), lookup)
 	return dedupeSideEffectValues(out)
-}
-
-func mapEventsForLookup(lookup *ssa.Lookup) []mapEvent {
-	return mapEventsForLookupWithLimit(lookup, defaultMaxSummaryDepth)
 }
 
 func mapEventsForLookupWithLimit(lookup *ssa.Lookup, maxDepth int) []mapEvent {
@@ -1413,14 +1370,6 @@ func mapKeysMayMatch(a, b ssa.Value) (bool, bool) {
 		return eq, eq
 	}
 	return true, false
-}
-
-// directCalleeMapEvents derives a per-call summary of map writes/kills that a
-// helper performs on map parameters aliasing the lookup's map. It returns at
-// most one write event (with the union of possibly-written values) and one
-// kill event (only when all return paths end with a definite kill).
-func directCalleeMapEvents(call *ssa.Call, lookup *ssa.Lookup) []mapEvent {
-	return directCalleeMapEventsWithLimit(call, lookup, defaultMaxSummaryDepth)
 }
 
 func directCalleeMapEventsWithLimit(call *ssa.Call, lookup *ssa.Lookup, maxDepth int) []mapEvent {
