@@ -16,10 +16,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
     - name: Setup Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
       with:
         go-version-file: go.mod
 
@@ -28,3 +28,113 @@ jobs:
 
     - name: Test
       run: go test -v ./...
+
+  vet:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+    - name: Setup Go
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      with:
+        go-version-file: go.mod
+
+    - name: go vet
+      run: go vet ./...
+
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+    - name: Setup Go
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      with:
+        go-version-file: go.mod
+
+    # A handful of files carry pre-existing formatting debt from before this
+    # check existed, in packages outside this CI-hardening workstream's scope
+    # (cmd/taint, callgraphutil, cmd/taint-eval, and ssrf testdata fixtures).
+    # They're excluded here so the check can start enforcing formatting on
+    # everything else; drop entries from $exclude as each file is reformatted
+    # by its owning workstream, and drop the variable entirely once the list
+    # is empty.
+    - name: gofmt
+      run: |
+        exclude='^(callgraphutil/matcher\.go|cmd/taint/main\.go|cmd/taint-eval/snapshot\.go|network/ssrf/testdata/src/dial/main\.go|network/ssrf/testdata/src/newrequest/main\.go)$'
+        unformatted="$(gofmt -l . | grep -Ev "$exclude" || true)"
+        if [ -n "$unformatted" ]; then
+          echo "::error::gofmt found unformatted files:"
+          echo "$unformatted"
+          exit 1
+        fi
+
+  # Race detector coverage is scoped to the root package and callgraphutil,
+  # rather than the full ./... suite. Locally, `go test -race ./...` takes
+  # ~5.5 minutes wall-clock with high parallelism (many cores); GitHub's
+  # standard runners have far fewer, slower cores, and the root package alone
+  # accounts for the bulk of that time (~5 minutes under race). Running the
+  # full suite under race on a standard runner risks pushing well past a
+  # reasonable CI budget (our informal ceiling is ~20 minutes), so this job
+  # covers the two packages most central to the taint engine's concurrency
+  # surface (callgraph construction and traversal) instead of every package.
+  race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+    - name: Setup Go
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      with:
+        go-version-file: go.mod
+
+    - name: Test with race detector (root + callgraphutil)
+      run: go test -race -v . ./callgraphutil/...
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+    - name: Setup Go
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      with:
+        go-version-file: go.mod
+
+    # NOTE: as of adding this job, govulncheck reports real, currently
+    # reachable vulnerabilities: several golang.org/x/crypto/ssh and
+    # golang.org/x/net advisories, one github.com/go-git/go-git/v5 advisory
+    # (all fixed by bumping those modules), plus stdlib advisories fixed in
+    # newer Go point releases. Fixing those is a dependency/toolchain bump
+    # outside this CI-hardening workstream's scope (go.mod isn't owned
+    # here), so this job is intentionally left failing until that follow-up
+    # lands rather than suppressed — unlike the gofmt/staticcheck exclusions
+    # above, these are real vulnerabilities, not pre-existing style debt.
+    - name: govulncheck
+      run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  staticcheck:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+    - name: Setup Go
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      with:
+        go-version-file: go.mod
+
+    # U1000 (unused code) is excluded because a parallel workstream is
+    # actively removing the repo's known dead code; those findings are
+    # expected and tracked there, not here. Drop the "-U1000" exclusion once
+    # that dead-code removal lands so U1000 is enforced like every other
+    # check.
+    #
+    # S1011, S1016, S1017, and SA4006 are also excluded: running staticcheck
+    # against the current tree (outside this CI-hardening workstream) turned
+    # up a handful of pre-existing findings in check.go, memory.go, and
+    # cmd/taint/main.go, none of which this workstream owns or touches. Drop
+    # each exclusion as its findings are addressed by whichever workstream
+    # owns those files.
+    - name: staticcheck
+      run: go run honnef.co/go/tools/cmd/staticcheck@latest -checks 'inherit,-U1000,-S1011,-S1016,-S1017,-SA4006' ./...
