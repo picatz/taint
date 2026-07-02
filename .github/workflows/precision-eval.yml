@@ -49,3 +49,22 @@ jobs:
           else
             go run ./cmd/taint-eval check
           fi
+
+      # Ground-truth scoreboard (precision/recall vs the manifest's expect
+      # entries). Informational: `report` never fails on the numbers, only
+      # on infrastructure errors, so this step does not gate the workflow
+      # beyond surfacing load failures. Runs even if `check` drifted.
+      - name: Precision/recall report
+        if: ${{ always() }}
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          if [ -n "$TARGET" ]; then
+            if ! printf '%s' "$TARGET" | grep -Eq '^[A-Za-z0-9._/-]+$'; then
+              echo "::error::target must match ^[A-Za-z0-9._/-]+$" >&2
+              exit 1
+            fi
+            go run ./cmd/taint-eval report -target "$TARGET"
+          else
+            go run ./cmd/taint-eval report
+          fi
