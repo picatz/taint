@@ -1,10 +1,12 @@
 package taint
 
 import (
+	"cmp"
 	"fmt"
 	"go/token"
 	"go/types"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/callgraph"
@@ -12,13 +14,6 @@ import (
 
 	"github.com/picatz/taint/callgraphutil"
 )
-
-// findAllCallSitePaths finds all paths that end with a call to the specified sink function.
-// Unlike PathsSearchCallTo which finds paths to the function node, this finds paths to
-// individual call sites (edges) that call the function.
-func findAllCallSitePaths(cg *callgraph.Graph, sinkFunc string) callgraphutil.Paths {
-	return findAllSinkCallSitePaths(cg, exactSinkRule(sinkFunc))
-}
 
 func findAllSinkCallSitePaths(cg *callgraph.Graph, sink sinkRule) callgraphutil.Paths {
 	if cg == nil || cg.Root == nil {
@@ -106,7 +101,7 @@ func functionMatchesSink(fn *ssa.Function, sinkFunc string) bool {
 }
 
 func methodSignatureMatchesSink(recv types.Type, methodName, sinkFunc string) bool {
-	recvStr := types.TypeString(recv, nil)
+	recvStr := types.TypeString(unaliasDeep(recv), nil)
 	methodSig := fmt.Sprintf("(%s).%s", recvStr, methodName)
 	if methodSig == sinkFunc {
 		return true
@@ -240,27 +235,21 @@ func CheckDetailed(cg *callgraph.Graph, sources Sources, sinks Sinks, opts ...Op
 	for _, key := range sortedDiagnosticKeys(bestByKey) {
 		out = append(out, bestByKey[key])
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		left, right := out[i].Result, out[j].Result
-		lp, rp := sinkValuePos(left), sinkValuePos(right)
-		if lp != rp {
-			return lp < rp
+	slices.SortStableFunc(out, func(a, b Diagnostic) int {
+		left, right := a.Result, b.Result
+		if c := cmp.Compare(sinkValuePos(left), sinkValuePos(right)); c != 0 {
+			return c
 		}
-		if left.SourceType != right.SourceType {
-			return left.SourceType < right.SourceType
+		if c := cmp.Compare(left.SourceType, right.SourceType); c != 0 {
+			return c
 		}
-		return left.SinkType < right.SinkType
+		return cmp.Compare(left.SinkType, right.SinkType)
 	})
 	return out
 }
 
 func sortedDiagnosticKeys(m map[string]Diagnostic) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }
 
 // sinkValuePos returns the source position of a Result's sink call. A nil
@@ -276,8 +265,7 @@ func sinkValuePos(r Result) token.Pos {
 }
 
 func sinkPathPos(path callgraphutil.Path) token.Pos {
-	for i := len(path) - 1; i >= 0; i-- {
-		edge := path[i]
+	for _, edge := range slices.Backward(path) {
 		if edge == nil || edge.Site == nil {
 			continue
 		}
@@ -286,13 +274,6 @@ func sinkPathPos(path callgraphutil.Path) token.Pos {
 		}
 	}
 	return token.NoPos
-}
-
-// checkPath implements taint analysis that can be used to identify if the given
-// callgraph path contains information from taintable sources (typically user input).
-func checkPath(path callgraphutil.Path, sources Sources) (bool, string, ssa.Value) {
-	rules := newRuleRegistry(sources, nil, defaultCheckConfig())
-	return checkPathDetailed(path, rules, sinkRule{selectArgs: defaultSinkArguments}, nil)
 }
 
 func checkPathDetailed(path callgraphutil.Path, rules *ruleRegistry, sink sinkRule, trace *traceRecorder) (bool, string, ssa.Value) {
@@ -452,7 +433,7 @@ func parameterMappings(edge *callgraph.Edge, common *ssa.CallCommon) []Evidence 
 	}
 	limit := len(params)
 	out := make([]Evidence, 0, limit)
-	for i := 0; i < limit; i++ {
+	for i := range limit {
 		if params[i] == nil {
 			continue
 		}
@@ -563,10 +544,6 @@ func (ctx taintContext) propagatorForCall(call *ssa.CallCommon) (propagatorRule,
 		}
 	}
 	return propagatorRule{}, nil, false
-}
-
-func checkSSAValue(path callgraphutil.Path, sources Sources, v ssa.Value, visited valueSet) (bool, string, ssa.Value) {
-	return checkSSAValueWithContext(path, newTaintContext(sources, defaultMaxSummaryDepth), v, visited)
 }
 
 // checkSSAValueWithContext implements the core taint analysis algorithm. It identifies
@@ -1065,12 +1042,6 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 	return false, "", nil
 }
 
-// checkSSAInstruction is used internally by checkSSAValue when it needs to traverse
-// SSA instructions, like the contents of a calling function.
-func checkSSAInstruction(path callgraphutil.Path, sources Sources, i ssa.Instruction, visited valueSet) (bool, string, ssa.Value) {
-	return checkSSAInstructionWithContext(path, newTaintContext(sources, defaultMaxSummaryDepth), i, visited)
-}
-
 func checkSSAInstructionWithContext(path callgraphutil.Path, ctx taintContext, i ssa.Instruction, visited valueSet) (bool, string, ssa.Value) {
 	// fmt.Printf("! check SSA instr %s: %[1]T\n", i)
 
@@ -1271,7 +1242,7 @@ func returnsOnlyError(sig *types.Signature) bool {
 	if t == nil {
 		return false
 	}
-	if named, ok := t.(*types.Named); ok {
+	if named, ok := types.Unalias(t).(*types.Named); ok {
 		if obj := named.Obj(); obj != nil && obj.Pkg() == nil && obj.Name() == "error" {
 			return true
 		}
@@ -1479,8 +1450,7 @@ func remainingSummaryDepth(path callgraphutil.Path, ctx taintContext) int {
 func hasProtoMessageMethod(t types.Type) bool {
 	for _, candidate := range receiverTypeCandidatesForTaint(t) {
 		methodSet := types.NewMethodSet(candidate)
-		for i := 0; i < methodSet.Len(); i++ {
-			sel := methodSet.At(i)
+		for sel := range methodSet.Methods() {
 			if sel == nil {
 				continue
 			}
@@ -1533,13 +1503,9 @@ func receiverTypeCandidatesForTaint(t types.Type) []types.Type {
 	return out
 }
 
-// derivedFromSource attempts to walk backwards from v following common address/field/index chains
-// to find a base value whose static type matches a declared source. Returns the source string and
-// the base value if found.
-func derivedFromSource(v ssa.Value, sources Sources) (string, ssa.Value) {
-	return derivedFromSourceWithContext(v, newTaintContext(sources, defaultMaxSummaryDepth))
-}
-
+// derivedFromSourceWithContext attempts to walk backwards from v following common
+// address/field/index chains to find a base value whose static type matches a declared
+// source. Returns the source string and the base value if found.
 func derivedFromSourceWithContext(v ssa.Value, ctx taintContext) (string, ssa.Value) {
 	seen := map[ssa.Value]struct{}{}
 	var work []ssa.Value
@@ -1586,14 +1552,10 @@ func derivedFromSourceWithContext(v ssa.Value, ctx taintContext) (string, ssa.Va
 	return "", nil
 }
 
-// isExpressionDerivedFromSource performs a comprehensive traversal of the operand graph
-// starting from the given SSA value to determine if any sub-expression ultimately derives
-// from a source type. Unlike derivedFromSource which follows referrer chains outward,
-// this function follows operand chains inward.
-func isExpressionDerivedFromSource(v ssa.Value, sources Sources) (string, ssa.Value) {
-	return isExpressionDerivedFromSourceWithContext(v, newTaintContext(sources, defaultMaxSummaryDepth))
-}
-
+// isExpressionDerivedFromSourceWithContext performs a comprehensive traversal of the
+// operand graph starting from the given SSA value to determine if any sub-expression
+// ultimately derives from a source type. Unlike derivedFromSourceWithContext which
+// follows referrer chains outward, this function follows operand chains inward.
 func isExpressionDerivedFromSourceWithContext(v ssa.Value, ctx taintContext) (string, ssa.Value) {
 	seen := map[ssa.Value]struct{}{}
 	var work []ssa.Value

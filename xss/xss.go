@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -59,7 +60,7 @@ func init() {
 	}
 }
 
-func dbg(format string, args ...interface{}) {
+func dbg(format string, args ...any) {
 	if debugXSS {
 		fmt.Fprintf(os.Stderr, "[xss-debug] "+format+"\n", args...)
 	}
@@ -227,8 +228,7 @@ func userCallsiteOnPath(path callgraphutil.Path, pkgPath string, sinkEdge *callg
 }
 
 func findResponseWriterSinkEdge(path callgraphutil.Path) *callgraph.Edge {
-	for i := len(path) - 1; i >= 0; i-- {
-		e := path[i]
+	for _, e := range slices.Backward(path) {
 		if e == nil || e.Site == nil {
 			continue
 		}
@@ -247,17 +247,6 @@ func findResponseWriterSinkEdge(path callgraphutil.Path) *callgraph.Edge {
 		return nil
 	}
 	return path[len(path)-1]
-}
-
-func sinkArgumentEscaped(edge *callgraph.Edge) bool {
-	if edge == nil || edge.Site == nil {
-		return false
-	}
-	args := edge.Site.Common().Args
-	if sig := edge.Site.Common().Signature(); sig != nil && sig.Recv() != nil && len(args) > 0 {
-		args = args[1:]
-	}
-	return len(args) > 0 && hasHtmlEscape(args[0])
 }
 
 // userCallsiteForContainer finds the in-package call edge that invokes the
@@ -320,191 +309,6 @@ func edgeCalleeKey(e *callgraph.Edge) string {
 		return ""
 	}
 	return e.Callee.Func.String()
-}
-
-// funcHasHtmlEscape returns true if any instruction in the function calls html.EscapeString.
-func funcHasHtmlEscape(f *ssa.Function) bool {
-	if f == nil {
-		return false
-	}
-	for _, block := range f.Blocks {
-		for _, instr := range block.Instrs {
-			if call, ok := instr.(*ssa.Call); ok {
-				if isHtmlEscapeCall(call) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-// hasHtmlEscape returns true if the value's expression tree contains a call to html.EscapeString.
-func hasHtmlEscape(v ssa.Value) bool {
-	seen := map[ssa.Value]struct{}{}
-	work := []ssa.Value{v}
-	for len(work) > 0 {
-		cur := work[len(work)-1]
-		work = work[:len(work)-1]
-		if cur == nil {
-			continue
-		}
-		if _, ok := seen[cur]; ok {
-			continue
-		}
-		seen[cur] = struct{}{}
-
-		if call, ok := cur.(*ssa.Call); ok {
-			if isHtmlEscapeCall(call) {
-				return true
-			}
-			// explore call operands
-			for _, a := range call.Call.Args {
-				if a != nil {
-					work = append(work, a)
-				}
-			}
-		}
-
-		if instr, ok := cur.(ssa.Instruction); ok {
-			ops := instr.Operands(nil)
-			for _, p := range ops {
-				if p != nil && *p != nil {
-					work = append(work, *p)
-				}
-			}
-		}
-		// Follow common single-operand wrappers explicitly (helps when not Instruction)
-		switch x := cur.(type) {
-		case *ssa.MakeInterface:
-			work = append(work, x.X)
-		case *ssa.Convert:
-			work = append(work, x.X)
-		case *ssa.ChangeType:
-			work = append(work, x.X)
-		case *ssa.UnOp:
-			work = append(work, x.X)
-			if x.Op == token.MUL {
-				work = append(work, storedValues(x.X)...)
-			}
-		case *ssa.Alloc:
-			work = append(work, storedValues(x)...)
-		case *ssa.Extract:
-			work = append(work, x.Tuple)
-		case *ssa.Slice:
-			work = append(work, x.X)
-		case *ssa.IndexAddr:
-			work = append(work, x.X)
-		case *ssa.FieldAddr:
-			work = append(work, x.X)
-		}
-	}
-	return false
-}
-
-func storedValues(addr ssa.Value) []ssa.Value {
-	if addr == nil {
-		return nil
-	}
-	var out []ssa.Value
-	if refs := addr.Referrers(); refs != nil {
-		for _, ref := range *refs {
-			store, ok := ref.(*ssa.Store)
-			if !ok || store.Addr != addr || store.Val == nil {
-				continue
-			}
-			out = append(out, store.Val)
-		}
-	}
-	return out
-}
-
-// isHtmlEscapeCall determines if a call is to html.EscapeString using package/type info, not strings.
-func isHtmlEscapeCall(call *ssa.Call) bool {
-	if call == nil || call.Call.Value == nil {
-		return false
-	}
-	if fn, ok := call.Call.Value.(*ssa.Function); ok {
-		// Ensure it’s the standard library html package
-		if fn.Pkg != nil && fn.Pkg.Pkg != nil && fn.Pkg.Pkg.Path() == "html" && fn.Name() == "EscapeString" {
-			return true
-		}
-	}
-	return false
-}
-
-// argIsUserControlled returns true if the SSA value depends on *net/http.Request inputs.
-func argIsUserControlled(v ssa.Value) bool {
-	seen := map[ssa.Value]struct{}{}
-	work := []ssa.Value{v}
-	for len(work) > 0 {
-		cur := work[len(work)-1]
-		work = work[:len(work)-1]
-		if cur == nil {
-			continue
-		}
-		if _, ok := seen[cur]; ok {
-			continue
-		}
-		seen[cur] = struct{}{}
-
-		// Direct type check
-		if isHTTPRequestType(cur.Type()) {
-			return true
-		}
-
-		// If this is a field address, check the base expression type (e.g., r.URL, r.Body)
-		if fa, ok := cur.(*ssa.FieldAddr); ok {
-			if isHTTPRequestType(fa.X.Type()) {
-				return true
-			}
-		}
-
-		// Explore operands for instructions
-		if instr, ok := cur.(ssa.Instruction); ok {
-			ops := instr.Operands(nil)
-			for _, p := range ops {
-				if p != nil && *p != nil {
-					work = append(work, *p)
-				}
-			}
-		}
-		// Explore common single-operand wrappers
-		switch x := cur.(type) {
-		case *ssa.MakeInterface:
-			work = append(work, x.X)
-		case *ssa.Convert:
-			work = append(work, x.X)
-		case *ssa.ChangeType:
-			work = append(work, x.X)
-		case *ssa.UnOp:
-			work = append(work, x.X)
-		case *ssa.Extract:
-			work = append(work, x.Tuple)
-		case *ssa.Slice:
-			work = append(work, x.X)
-		case *ssa.IndexAddr:
-			work = append(work, x.X)
-		case *ssa.FieldAddr:
-			work = append(work, x.X)
-		case *ssa.Call:
-			// Explore call arguments
-			for _, a := range x.Call.Args {
-				if a != nil {
-					work = append(work, a)
-				}
-			}
-		}
-	}
-	return false
-}
-
-func isHTTPRequestType(t types.Type) bool {
-	if t == nil {
-		return false
-	}
-	// Accept exact string match for robustness across testdata GOPATH/module modes
-	return t.String() == "*net/http.Request"
 }
 
 // destProv is the tristate verdict from destinationProvenance.

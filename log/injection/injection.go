@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/picatz/taint"
@@ -174,7 +175,7 @@ func init() {
 	}
 }
 
-func dbg(format string, args ...interface{}) {
+func dbg(format string, args ...any) {
 	if debugLogI {
 		fmt.Fprintf(os.Stderr, "[logi-debug] "+format+"\n", args...)
 	}
@@ -194,12 +195,7 @@ func imports(pass *analysis.Pass, pkgs ...string) bool {
 				return true
 			}
 		}
-		for _, imp := range p.Imports() {
-			if walk(imp) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(p.Imports(), walk)
 	}
 	return walk(pass.Pkg)
 }

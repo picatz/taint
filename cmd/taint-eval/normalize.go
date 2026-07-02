@@ -11,8 +11,12 @@ import (
 type AnalyzerJSON map[string]map[string][]AnalyzerDiagnosticJSON
 
 // AnalyzerDiagnosticJSON is one element of the singlechecker -json output.
+// End (emitted by newer x/tools) is accepted but unused: findings are keyed
+// by start position only so snapshots stay stable across x/tools versions
+// that differ in end-position reporting.
 type AnalyzerDiagnosticJSON struct {
 	Posn    string `json:"posn"`
+	End     string `json:"end"`
 	Message string `json:"message"`
 }
 

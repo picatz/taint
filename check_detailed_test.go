@@ -2,8 +2,6 @@ package taint
 
 import (
 	"context"
-	"go/token"
-	"go/types"
 	"os"
 	"path/filepath"
 	"slices"
@@ -485,16 +483,6 @@ func main() {
 	}
 }
 
-func TestSourceRegistryMatchesTypes(t *testing.T) {
-	pkg := types.NewPackage("net/http", "http")
-	obj := types.NewTypeName(token.NoPos, pkg, "Request", nil)
-	request := types.NewNamed(obj, types.NewStruct(nil, nil), nil)
-
-	if src, ok := matchSourceType(NewSources("*net/http.Request"), types.NewPointer(request)); !ok || src != "*net/http.Request" {
-		t.Fatalf("expected *net/http.Request source match, got %q matched=%v", src, ok)
-	}
-}
-
 func TestCheckDetailedOverlappingSourceRulesAreDeterministic(t *testing.T) {
 	cg, pkgPath := detailedGraphForSourceRoot(t, `package main
 
@@ -646,6 +634,39 @@ func main() {
 	)
 	if len(diagnostics) != 1 {
 		t.Fatalf("expected pass-through invoke return to report once, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedMatchesAliasedSourceType(t *testing.T) {
+	// `type Req = http.Request` produces alias-typed SSA values under
+	// gotypesalias=1 (the go/types default since Go 1.23, and materialized
+	// through SSA by newer x/tools). A handler parameter typed *Req must
+	// still match a source declared as "*net/http.Request".
+	cg, _ := detailedGraphForSource(t, `package main
+
+import (
+	"log"
+	"net/http"
+)
+
+type Req = http.Request
+
+func handle(r *Req) {
+	log.Print(r.URL.Query().Get("q"))
+}
+
+func main() {
+	handle(nil)
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources("*net/http.Request"),
+		NewSinks("log.Print"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected one diagnostic through aliased source type, got %d", len(diagnostics))
 	}
 }
 

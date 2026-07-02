@@ -2,11 +2,12 @@ package callgraphutil
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"go/token"
 	"go/types"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 
@@ -137,67 +138,9 @@ func NewGraphWithContext(ctx context.Context, root *ssa.Function, srcFns ...*ssa
 
 	// We'll create the progress tracker after determining functionsToProcess
 
-	// Performance optimization: For very large codebases, use lazy evaluation
-	// instead of processing all functions upfront. This aligns with Go's lazy evaluation principles.
-	// Note: With our optimizations, we should process functions on-demand as they're discovered
-	// in the call graph traversal, rather than pre-processing everything.
-	const maxFunctionsToWalk = 0 // 0 means no limit - use lazy evaluation instead
-	const maxRecursionDepth = 6  // limit recursion for performance, enough for common paths
+	const maxRecursionDepth = 6 // limit recursion for performance, enough for common paths
 
-	// Instead of limiting functions, we'll use a smarter traversal approach
-	// that processes functions lazily as they're discovered in the call graph
 	functionsToProcess := srcFns
-	if maxFunctionsToWalk > 0 && len(srcFns) > maxFunctionsToWalk {
-		logger.Debug("Large codebase detected (%d functions), limiting processing to %d most relevant functions", len(srcFns), maxFunctionsToWalk)
-
-		// Sort functions by relevance for taint analysis
-		// Prioritize: exported functions, functions with parameters, functions in main packages
-		type functionWeight struct {
-			fn     *ssa.Function
-			weight int
-		}
-
-		var weightedFns []functionWeight
-		for _, fn := range srcFns {
-			weight := 0
-
-			// Exported functions are more likely to be entry points
-			if fn.Object() != nil && fn.Object().Exported() {
-				weight += 10
-			}
-
-			// Functions with parameters are more likely to handle external data
-			if fn.Signature.Params() != nil && fn.Signature.Params().Len() > 0 {
-				weight += 5
-			}
-
-			// Functions with more instructions are more likely to be complex/interesting
-			totalInstrs := 0
-			for _, block := range fn.Blocks {
-				totalInstrs += len(block.Instrs)
-			}
-			weight += min(totalInstrs/10, 5) // Cap at 5 points for instruction count
-
-			weightedFns = append(weightedFns, functionWeight{fn, weight})
-		}
-
-		// Sort by weight (descending)
-		for i := 0; i < len(weightedFns); i++ {
-			for j := i + 1; j < len(weightedFns); j++ {
-				if weightedFns[j].weight > weightedFns[i].weight {
-					weightedFns[i], weightedFns[j] = weightedFns[j], weightedFns[i]
-				}
-			}
-		}
-
-		// Take top functions
-		functionsToProcess = make([]*ssa.Function, 0, maxFunctionsToWalk)
-		for i := 0; i < min(maxFunctionsToWalk, len(weightedFns)); i++ {
-			functionsToProcess = append(functionsToProcess, weightedFns[i].fn)
-		}
-
-		logger.Debug("Selected %d highest-priority functions for processing", len(functionsToProcess))
-	}
 
 	// Baseline pass: scan all SSA functions to add direct call edges
 	// Using allFns ensures we include methods and any function not listed in srcFns
@@ -399,16 +342,12 @@ func SortedNodes(g *callgraph.Graph) []*callgraph.Node {
 			out = append(out, n)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		return nodeLess(out[i], out[j])
-	})
+	slices.SortStableFunc(out, nodeCompare)
 	return out
 }
 
 func sortEdges(edges []*callgraph.Edge) {
-	sort.SliceStable(edges, func(i, j int) bool {
-		return edgeLess(edges[i], edges[j])
-	})
+	slices.SortStableFunc(edges, edgeCompare)
 }
 
 func sortedOutgoingEdges(n *callgraph.Node) []*callgraph.Edge {
@@ -420,16 +359,14 @@ func sortedOutgoingEdges(n *callgraph.Node) []*callgraph.Edge {
 	return edges
 }
 
-func edgeLess(a, b *callgraph.Edge) bool {
-	ap, bp := edgePos(a), edgePos(b)
-	if ap != bp {
-		return ap < bp
+func edgeCompare(a, b *callgraph.Edge) int {
+	if c := cmp.Compare(edgePos(a), edgePos(b)); c != 0 {
+		return c
 	}
-	ak, bk := calleeKey(a), calleeKey(b)
-	if ak != bk {
-		return ak < bk
+	if c := cmp.Compare(calleeKey(a), calleeKey(b)); c != 0 {
+		return c
 	}
-	return calleePos(a) < calleePos(b)
+	return cmp.Compare(calleePos(a), calleePos(b))
 }
 
 func edgePos(e *callgraph.Edge) token.Pos {
@@ -453,12 +390,11 @@ func calleePos(e *callgraph.Edge) token.Pos {
 	return e.Callee.Func.Pos()
 }
 
-func nodeLess(a, b *callgraph.Node) bool {
-	ak, bk := nodeKey(a), nodeKey(b)
-	if ak != bk {
-		return ak < bk
+func nodeCompare(a, b *callgraph.Node) int {
+	if c := cmp.Compare(nodeKey(a), nodeKey(b)); c != 0 {
+		return c
 	}
-	return nodePos(a) < nodePos(b)
+	return cmp.Compare(nodePos(a), nodePos(b))
 }
 
 func nodeKey(n *callgraph.Node) string {
@@ -602,74 +538,6 @@ func checkBlockInstructionOptimized(root *ssa.Function, allFns map[*ssa.Function
 
 		if len(cc.Args) > 0 {
 			if err := processFunctionArgumentsOptimized(g, callSite, instrCall); err != nil {
-				return err
-			}
-		}
-
-		if err := walkFn(instrCall); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// checkBlockInstruction checks a single SSA instruction within a basic block to determine
-// if it represents a function call that should be added to the call graph. It includes
-// several optimizations to minimize processing overhead.
-//
-// This function processes SSA instructions to build call graph edges. Key optimizations:
-// 1. Early exit for non-call instructions (eliminates ~90% of processing)
-// 2. Optimized ChangeInterface argument detection
-// 3. Efficient argument processing with length checks
-// 4. Streamlined method call handling
-func checkBlockInstruction(root *ssa.Function, allFns map[*ssa.Function]bool, g *callgraph.Graph, fn *ssa.Function, instr ssa.Instruction, walkFn func(*ssa.Function) error) error {
-	// Early exit for non-call instructions - includes go/defer
-	callSite, ok := instr.(ssa.CallInstruction)
-	if !ok {
-		return nil
-	}
-
-	cc := callSite.Common()
-	instrCalls := resolveCallTargets(root.Prog, allFns, cc)
-
-	if len(instrCalls) == 0 {
-		switch callt := cc.Value.(type) {
-		case *ssa.Function:
-			instrCalls = append(instrCalls, callt)
-
-		case *ssa.MakeClosure:
-			if calltFn, ok := callt.Fn.(*ssa.Function); ok {
-				instrCalls = append(instrCalls, calltFn)
-			}
-
-		case *ssa.UnOp:
-			if callt.Op == token.MUL {
-				switch fa := callt.X.(type) {
-				case *ssa.FieldAddr:
-					instrCalls = append(instrCalls, findFunctionsInField(fa, allFns)...)
-				case *ssa.Field:
-					instrCalls = append(instrCalls, findFunctionsInFieldValue(fa, allFns)...)
-				}
-			}
-		}
-	}
-
-	// Early exit if no function was determined
-	if len(instrCalls) == 0 {
-		return nil
-	}
-
-	for _, instrCall := range dedupeFunctions(instrCalls) {
-		if instrCall == nil {
-			continue
-		}
-
-		// Add edge to call graph
-		callgraph.AddEdge(g.CreateNode(fn), callSite, g.CreateNode(instrCall))
-
-		if len(cc.Args) > 0 {
-			if err := processFunctionArguments(g, callSite, instrCall); err != nil {
 				return err
 			}
 		}
@@ -860,88 +728,6 @@ func dedupeFunctions(fns []*ssa.Function) []*ssa.Function {
 	return out
 }
 
-// processChangeInterfaceArgsOptimized handles ChangeInterface arguments with enhanced performance.
-//
-// This optimized version includes:
-// 1. Ultra-fast scanning to detect ChangeInterface before expensive processing
-// 2. Early exits for common negative cases
-// 3. Optimized type checking and method resolution
-// 4. Reduced allocations in interface processing loops
-func processChangeInterfaceArgsOptimized(root *ssa.Function, g *callgraph.Graph, site ssa.CallInstruction, instrCall *ssa.Function) error {
-	cc := site.Common()
-	// Lightning-fast scan for ChangeInterface arguments before expensive processing
-	// This avoids allocating iterators and type checking when not needed
-	hasChangeInterface := false
-	for _, arg := range cc.Args {
-		if _, ok := arg.(*ssa.ChangeInterface); ok {
-			hasChangeInterface = true
-			break
-		}
-	}
-
-	if !hasChangeInterface {
-		return nil
-	}
-
-	// Process ChangeInterface arguments with optimized loops
-	for _, instrtCallArg := range cc.Args {
-		instrtCallArgt, ok := instrtCallArg.(*ssa.ChangeInterface)
-		if !ok {
-			continue
-		}
-
-		argtt, ok := instrtCallArgt.Type().Underlying().(*types.Interface)
-		if !ok {
-			continue
-		}
-
-		numMethods := argtt.NumMethods()
-		for i := 0; i < numMethods; i++ {
-			method := argtt.Method(i)
-			methodPkg := method.Pkg()
-			if methodPkg == nil {
-				continue // Universe scope method - skip early
-			}
-
-			pkg := root.Prog.ImportedPackage(methodPkg.Path())
-			if pkg == nil {
-				continue // Package not imported - skip early
-			}
-
-			fn := pkg.Func(method.Name())
-			if fn == nil {
-				fn = pkg.Prog.NewFunction(method.Name(), method.Type().(*types.Signature), "callgraph")
-			}
-
-			callgraph.AddEdge(g.CreateNode(instrCall), site, g.CreateNode(fn))
-
-			// Handle named types efficiently with early exit optimization
-			if xType, ok := instrtCallArgt.X.Type().(*types.Named); ok {
-				pkg2 := root.Prog.ImportedPackage(xType.Obj().Pkg().Path())
-				if pkg2 == nil {
-					continue
-				}
-
-				methodSet := pkg2.Prog.MethodSets.MethodSet(xType)
-				methodSel := methodSet.Lookup(pkg2.Pkg, method.Name())
-				if methodSel == nil {
-					continue
-				}
-
-				methodType := methodSel.Type().(*types.Signature)
-
-				fn2 := pkg2.Func(method.Name())
-				if fn2 == nil {
-					fn2 = pkg2.Prog.NewFunction(method.Name(), methodType, "callgraph")
-				}
-
-				callgraph.AddEdge(g.CreateNode(fn), site, g.CreateNode(fn2))
-			}
-		}
-	}
-	return nil
-}
-
 // processFunctionArgumentsOptimized efficiently handles function arguments that are functions.
 //
 // This optimized version includes:
@@ -981,93 +767,6 @@ func processFunctionArgumentsByUse(g *callgraph.Graph, site ssa.CallInstruction,
 		}
 	}
 	return nil
-}
-
-// processChangeInterfaceArgs handles ChangeInterface arguments with early exits.
-//
-// This function efficiently processes ChangeInterface type casts that are common
-// in Go programs when converting between concrete types and interfaces.
-// It uses early scanning to avoid expensive processing when not needed.
-func processChangeInterfaceArgs(root *ssa.Function, g *callgraph.Graph, site ssa.CallInstruction, instrCall *ssa.Function) error {
-	cc := site.Common()
-	// Quick scan for ChangeInterface arguments before expensive processing
-	hasChangeInterface := false
-	for _, arg := range cc.Args {
-		if _, ok := arg.(*ssa.ChangeInterface); ok {
-			hasChangeInterface = true
-			break
-		}
-	}
-
-	if !hasChangeInterface {
-		return nil
-	}
-
-	// Process ChangeInterface arguments
-	for _, instrtCallArg := range cc.Args {
-		instrtCallArgt, ok := instrtCallArg.(*ssa.ChangeInterface)
-		if !ok {
-			continue
-		}
-
-		argtt, ok := instrtCallArgt.Type().Underlying().(*types.Interface)
-		if !ok {
-			continue
-		}
-
-		numMethods := argtt.NumMethods()
-		for i := 0; i < numMethods; i++ {
-			method := argtt.Method(i)
-			methodPkg := method.Pkg()
-			if methodPkg == nil {
-				continue // Universe scope method
-			}
-
-			pkg := root.Prog.ImportedPackage(methodPkg.Path())
-			if pkg == nil {
-				continue // Package not imported
-			}
-
-			fn := pkg.Func(method.Name())
-			if fn == nil {
-				fn = pkg.Prog.NewFunction(method.Name(), method.Type().(*types.Signature), "callgraph")
-			}
-
-			callgraph.AddEdge(g.CreateNode(instrCall), site, g.CreateNode(fn))
-
-			// Handle named types efficiently with early exit
-			if xType, ok := instrtCallArgt.X.Type().(*types.Named); ok {
-				pkg2 := root.Prog.ImportedPackage(xType.Obj().Pkg().Path())
-				if pkg2 == nil {
-					continue
-				}
-
-				methodSet := pkg2.Prog.MethodSets.MethodSet(xType)
-				methodSel := methodSet.Lookup(pkg2.Pkg, method.Name())
-				if methodSel == nil {
-					continue
-				}
-
-				methodType := methodSel.Type().(*types.Signature)
-
-				fn2 := pkg2.Func(method.Name())
-				if fn2 == nil {
-					fn2 = pkg2.Prog.NewFunction(method.Name(), methodType, "callgraph")
-				}
-
-				callgraph.AddEdge(g.CreateNode(fn), site, g.CreateNode(fn2))
-			}
-		}
-	}
-	return nil
-}
-
-// processFunctionArguments efficiently handles function arguments that are functions.
-//
-// This handles cases where functions are passed as arguments to other functions,
-// which is common in callback patterns and higher-order functions.
-func processFunctionArguments(g *callgraph.Graph, site ssa.CallInstruction, instrCall *ssa.Function) error {
-	return processFunctionArgumentsByUse(g, site, instrCall)
 }
 
 // AddFunction analyzes the given target SSA function, adding information to the call graph.
@@ -1771,27 +1470,21 @@ func valueDerivedFromParameter(v ssa.Value, param *ssa.Parameter) bool {
 		case *ssa.TypeAssert:
 			return visit(value.X)
 		case *ssa.Phi:
-			for _, edge := range value.Edges {
-				if visit(edge) {
-					return true
-				}
+			if slices.ContainsFunc(value.Edges, visit) {
+				return true
 			}
 		case *ssa.UnOp:
 			if visit(value.X) {
 				return true
 			}
 			if value.Op == token.MUL {
-				for _, stored := range storedValuesForAddress(value.X) {
-					if visit(stored) {
-						return true
-					}
+				if slices.ContainsFunc(storedValuesForAddress(value.X), visit) {
+					return true
 				}
 			}
 		case *ssa.Alloc:
-			for _, stored := range storedValuesForAddress(value) {
-				if visit(stored) {
-					return true
-				}
+			if slices.ContainsFunc(storedValuesForAddress(value), visit) {
+				return true
 			}
 		case ssa.Instruction:
 			for _, operand := range value.Operands(nil) {
@@ -1890,7 +1583,55 @@ func callCommonString(common *ssa.CallCommon) string {
 }
 
 func sameFieldBase(a, b ssa.Value) bool {
-	return fieldBase(a) != nil && fieldBase(a) == fieldBase(b)
+	ba := structCopyOrigin(fieldBase(a))
+	return ba != nil && ba == structCopyOrigin(fieldBase(b))
+}
+
+// structCopyOrigin follows whole-struct value copies of the form
+//
+//	t = *src        // UnOp MUL loading a struct value
+//	*dst = t        // Store the loaded value into another allocation
+//
+// returning the allocation that actually initialized the struct. Newer
+// go/ssa lowers a composite literal bound to a variable through this
+// indirection (the literal lands in a temporary alloc that is loaded and
+// copied into the variable's alloc), which otherwise hides the connection
+// between a field read on the variable and the field store on the literal.
+func structCopyOrigin(v ssa.Value) ssa.Value {
+	seen := map[ssa.Value]struct{}{}
+	for {
+		alloc, ok := v.(*ssa.Alloc)
+		if !ok {
+			return v
+		}
+		if _, dup := seen[alloc]; dup {
+			return v
+		}
+		seen[alloc] = struct{}{}
+
+		refs := alloc.Referrers()
+		if refs == nil {
+			return v
+		}
+		var src ssa.Value
+		wholeStores := 0
+		for _, r := range *refs {
+			store, ok := r.(*ssa.Store)
+			if !ok || store.Addr != alloc {
+				continue
+			}
+			wholeStores++
+			if un, ok := store.Val.(*ssa.UnOp); ok && un.Op == token.MUL {
+				src = un.X
+			}
+		}
+		// Only follow an unambiguous single copy from another value; more
+		// than one whole-struct store means we cannot pick a precise origin.
+		if wholeStores != 1 || src == nil {
+			return v
+		}
+		v = src
+	}
 }
 
 func fieldBase(v ssa.Value) ssa.Value {

@@ -35,3 +35,6 @@ dist/
 
 # Composite action SARIF output (see action.yml).
 results/
+
+# Agent worktrees (transient)
+.claude/worktrees/

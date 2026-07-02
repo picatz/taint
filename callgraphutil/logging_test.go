@@ -44,7 +44,7 @@ func TestProgressTracker(t *testing.T) {
 
 	tracker := NewProgressTracker(ctx, "Test operation", 5)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		tracker.Update(fmt.Sprintf("Item %d", i+1))
 		time.Sleep(10 * time.Millisecond) // Small delay to see timing
 	}

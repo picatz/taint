@@ -23,6 +23,7 @@ package taint
 
 import (
 	"go/token"
+	"slices"
 
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/ssa"
@@ -252,10 +253,8 @@ func valueMayAliasBase(v, base ssa.Value) bool {
 		case *ssa.TypeAssert:
 			return visit(value.X)
 		case *ssa.Phi:
-			for _, edge := range value.Edges {
-				if visit(edge) {
-					return true
-				}
+			if slices.ContainsFunc(value.Edges, visit) {
+				return true
 			}
 		case *ssa.UnOp:
 			if value.Op != token.MUL {
@@ -265,10 +264,8 @@ func valueMayAliasBase(v, base ssa.Value) bool {
 			if !ok {
 				return false
 			}
-			for _, storedValue := range stored {
-				if visit(storedValue) {
-					return true
-				}
+			if slices.ContainsFunc(stored, visit) {
+				return true
 			}
 		}
 		return false

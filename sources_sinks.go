@@ -42,15 +42,6 @@ func (v valueSet) clone() valueSet {
 // tracked.
 type stringSet map[string]struct{}
 
-// includes returns true if the string is in the set.
-func (t stringSet) includes(str string) (string, bool) {
-	if t == nil {
-		return "", false
-	}
-	_, ok := t[str]
-	return str, ok
-}
-
 // Sources are the types that are considered "sources" of
 // tainted data in the program.
 type Sources = stringSet

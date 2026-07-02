@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"slices"
 	"strings"
 
 	"github.com/picatz/taint"
@@ -232,12 +233,7 @@ func imports(pass *analysis.Pass, pkgs ...string) bool {
 				return true
 			}
 		}
-		for _, imp := range p.Imports() {
-			if walk(imp) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(p.Imports(), walk)
 	}
 	return walk(pass.Pkg)
 }
