@@ -1,0 +1,18 @@
+{
+  "target": "local-ptrv-positive",
+  "kind": "local",
+  "source": "fixtures/local-ptrv-positive",
+  "analyzers": {
+    "ptrv": {
+      "count": 1,
+      "findings": [
+        {
+          "file": "main.go",
+          "line": 10,
+          "column": 26,
+          "message": "potential path traversal"
+        }
+      ]
+    }
+  }
+}

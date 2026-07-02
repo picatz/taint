@@ -14,6 +14,11 @@ func TestLoadManifest_ValidatesAndSorts(t *testing.T) {
     kind: local
     path: ./a
     analyzers: [xss, sqli]
+    expect:
+      - analyzer: sqli
+        file: db.go
+        line: 7
+        note: known sink
   - name: b
     kind: git
     repo: https://example.com/o/r.git
@@ -29,6 +34,9 @@ func TestLoadManifest_ValidatesAndSorts(t *testing.T) {
 	}
 	if got := m.Targets[0].Analyzers; got[0] != "sqli" || got[1] != "xss" {
 		t.Fatalf("expected analyzers sorted alphabetically, got %v", got)
+	}
+	if got := m.Targets[0].Expect; len(got) != 1 || got[0] != (ExpectedFinding{Analyzer: "sqli", File: "db.go", Line: 7, Note: "known sink"}) {
+		t.Fatalf("expected ground-truth entry parsed, got %+v", got)
 	}
 	if got := m.Targets[0].Packages; len(got) != 1 || got[0] != "./..." {
 		t.Fatalf("expected default packages [\"./...\"], got %v", got)
@@ -80,6 +88,42 @@ func TestLoadManifest_RejectsInvalid(t *testing.T) {
     kind: local
     path: ./a
     analyzers: []
+`,
+		"expect without analyzer": `targets:
+  - name: a
+    kind: local
+    path: ./a
+    analyzers: [sqli]
+    expect:
+      - file: main.go
+`,
+		"expect analyzer not configured": `targets:
+  - name: a
+    kind: local
+    path: ./a
+    analyzers: [sqli]
+    expect:
+      - analyzer: cmdi
+        file: main.go
+`,
+		"expect without file": `targets:
+  - name: a
+    kind: local
+    path: ./a
+    analyzers: [sqli]
+    expect:
+      - analyzer: sqli
+        line: 3
+`,
+		"expect negative line": `targets:
+  - name: a
+    kind: local
+    path: ./a
+    analyzers: [sqli]
+    expect:
+      - analyzer: sqli
+        file: main.go
+        line: -1
 `,
 	}
 	for label, body := range cases {

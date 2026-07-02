@@ -12,13 +12,28 @@
       "count": 0,
       "findings": []
     },
+    "ptrv": {
+      "count": 0,
+      "findings": []
+    },
     "sqli": {
       "count": 0,
       "findings": []
     },
-    "xss": {
+    "ssrf": {
       "count": 0,
       "findings": []
+    },
+    "xss": {
+      "count": 1,
+      "findings": [
+        {
+          "file": "mux.go",
+          "line": 506,
+          "column": 5,
+          "message": "potential XSS"
+        }
+      ]
     }
   }
 }

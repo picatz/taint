@@ -1,13 +1,18 @@
 // Command taint-eval is the precision-evaluation harness for the existing
-// sqli, logi, cmdi, and xss analyzers. It runs each analyzer against pinned local
-// fixtures and remote repositories listed in testdata/eval/targets.yaml and
-// compares their output against committed JSON snapshots so regressions and
-// false-positive drift surface as a diff.
+// sqli, logi, cmdi, xss, ptrv, and ssrf analyzers. It runs each analyzer
+// against pinned local fixtures and remote repositories listed in
+// testdata/eval/targets.yaml and compares their output against committed
+// JSON snapshots so regressions and false-positive drift surface as a diff,
+// and scores runs against ground-truth expectations so precision and recall
+// are measurable.
 //
 // Subcommands:
 //
 //	list            print configured targets and expected finding counts
 //	check           run analyzers and fail on snapshot drift
+//	report          score runs against ground-truth expectations and print a
+//	                per-analyzer precision/recall table (never fails on the
+//	                numbers, only on infrastructure errors)
 //	update          rewrite snapshots from a fresh run (review the diff)
 //
 // Flags shared across subcommands:
@@ -97,6 +102,8 @@ func run(parent context.Context, args []string, stdout, stderr io.Writer) error 
 		return runList(stdout, snapshotsAbs, targets)
 	case "check":
 		return runCheck(ctx, stdout, stderr, *repoRoot, *cacheOverride, manifestDir, snapshotsAbs, *sarifDir, targets, *jobs)
+	case "report":
+		return runReport(ctx, stdout, stderr, *repoRoot, *cacheOverride, manifestDir, snapshotsAbs, *sarifDir, targets, *jobs)
 	case "update":
 		return runUpdate(ctx, stdout, stderr, *repoRoot, *cacheOverride, manifestDir, snapshotsAbs, *sarifDir, targets, *jobs)
 	case "help", "-h", "--help":
@@ -113,6 +120,7 @@ func printUsage(w io.Writer) {
 subcommands:
   list      show configured targets and expected counts from snapshots
   check     run analyzers and fail on snapshot drift
+  report    score runs against ground-truth expectations (precision/recall)
   update    rewrite snapshots from a fresh run (review diffs first)
 
 flags:
