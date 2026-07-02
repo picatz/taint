@@ -54,6 +54,40 @@ func TestEndToEnd_LocalCheck(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_ReportLocal exercises the report subcommand against the
+// local fixtures. Every local positive fixture has an expect entry, so a
+// correct run scores 6/6 recall with no false positives.
+func TestEndToEnd_ReportLocal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("end-to-end requires building analyzer binaries")
+	}
+	repoRoot := findRepoRoot(t)
+
+	var stdout, stderr bytes.Buffer
+	args := []string{
+		"report",
+		"-manifest", filepath.Join(repoRoot, "testdata", "eval", "targets.yaml"),
+		"-snapshots", filepath.Join(repoRoot, "testdata", "eval", "snapshots"),
+		"-cache", t.TempDir(),
+		"-repo", repoRoot,
+		"-target", "local",
+	}
+	if err := run(context.Background(), args, &stdout, &stderr); err != nil {
+		t.Fatalf("report failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"local-ptrv-positive: OK (1/1 expected findings)",
+		"local-ssrf-positive: OK (1/1 expected findings)",
+		"ANALYZER",
+		"TOTAL",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("report output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 // TestEndToEnd_List verifies the list subcommand renders expected counts
 // pulled from the committed snapshots.
 func TestEndToEnd_List(t *testing.T) {

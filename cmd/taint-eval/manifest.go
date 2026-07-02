@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 
 	"gopkg.in/yaml.v3"
@@ -25,13 +26,45 @@ const (
 
 // Target describes a single repository or fixture to evaluate.
 type Target struct {
-	Name      string     `yaml:"name"`
-	Kind      TargetKind `yaml:"kind"`
-	Path      string     `yaml:"path,omitempty"`
-	Repo      string     `yaml:"repo,omitempty"`
-	Commit    string     `yaml:"commit,omitempty"`
-	Packages  []string   `yaml:"packages,omitempty"`
-	Analyzers []string   `yaml:"analyzers"`
+	Name      string            `yaml:"name"`
+	Kind      TargetKind        `yaml:"kind"`
+	Path      string            `yaml:"path,omitempty"`
+	Repo      string            `yaml:"repo,omitempty"`
+	Commit    string            `yaml:"commit,omitempty"`
+	Packages  []string          `yaml:"packages,omitempty"`
+	Analyzers []string          `yaml:"analyzers"`
+	Expect    []ExpectedFinding `yaml:"expect,omitempty"`
+}
+
+// ExpectedFinding is one ground-truth entry for a target: a known-vulnerable
+// sink the named analyzer should report. Unlike snapshots (which baseline
+// whatever the engine currently emits, including false positives), expect
+// entries record what is actually true about the target, independent of
+// engine behavior. `taint-eval report` scores runs against them.
+type ExpectedFinding struct {
+	// Analyzer is the analyzer expected to report the finding (e.g. "sqli").
+	Analyzer string `yaml:"analyzer"`
+	// File is the path of the vulnerable sink, relative to the target root,
+	// using forward slashes.
+	File string `yaml:"file"`
+	// Line is the 1-based line of the sink. Zero matches any line in File,
+	// which is useful when the precise reporting position is unstable but
+	// the vulnerable file is known.
+	Line int `yaml:"line,omitempty"`
+	// Note is a free-form reference: CVE id, advisory, or short rationale.
+	Note string `yaml:"note,omitempty"`
+}
+
+// Matches reports whether an actual finding from the named analyzer
+// satisfies this expectation.
+func (e ExpectedFinding) Matches(analyzer string, f Finding) bool {
+	if analyzer != e.Analyzer {
+		return false
+	}
+	if f.File != e.File {
+		return false
+	}
+	return e.Line == 0 || e.Line == f.Line
 }
 
 // LoadManifest reads a YAML manifest from path and validates it.
@@ -85,6 +118,20 @@ func (m *Manifest) validate() error {
 			t.Packages = []string{"./..."}
 		}
 		sort.Strings(t.Analyzers)
+		for j, e := range t.Expect {
+			if e.Analyzer == "" {
+				return fmt.Errorf("target %q: expect[%d]: missing analyzer", t.Name, j)
+			}
+			if !slices.Contains(t.Analyzers, e.Analyzer) {
+				return fmt.Errorf("target %q: expect[%d]: analyzer %q not configured on target", t.Name, j, e.Analyzer)
+			}
+			if e.File == "" {
+				return fmt.Errorf("target %q: expect[%d]: missing file", t.Name, j)
+			}
+			if e.Line < 0 {
+				return fmt.Errorf("target %q: expect[%d]: negative line", t.Name, j)
+			}
+		}
 	}
 	return nil
 }

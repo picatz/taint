@@ -108,9 +108,9 @@ func (s *Snapshot) normalize() {
 
 // Diff describes the drift between an expected snapshot and an actual run.
 type Diff struct {
-	Target    string
-	Analyzer  string
-	Missing   []Finding // expected but absent
+	Target     string
+	Analyzer   string
+	Missing    []Finding // expected but absent
 	Unexpected []Finding // present but not expected
 }
 

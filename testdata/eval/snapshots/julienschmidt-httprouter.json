@@ -12,7 +12,15 @@
       "count": 0,
       "findings": []
     },
+    "ptrv": {
+      "count": 0,
+      "findings": []
+    },
     "sqli": {
+      "count": 0,
+      "findings": []
+    },
+    "ssrf": {
       "count": 0,
       "findings": []
     },

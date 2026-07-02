@@ -1,0 +1,18 @@
+{
+  "target": "local-ssrf-positive",
+  "kind": "local",
+  "source": "fixtures/local-ssrf-positive",
+  "analyzers": {
+    "ssrf": {
+      "count": 1,
+      "findings": [
+        {
+          "file": "main.go",
+          "line": 10,
+          "column": 23,
+          "message": "potential server-side request forgery"
+        }
+      ]
+    }
+  }
+}

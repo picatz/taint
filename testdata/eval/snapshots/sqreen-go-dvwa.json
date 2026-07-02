@@ -1,7 +1,8 @@
 {
-  "target": "local-clean",
-  "kind": "local",
-  "source": "fixtures/local-clean",
+  "target": "sqreen-go-dvwa",
+  "kind": "git",
+  "source": "https://github.com/sqreen/go-dvwa.git",
+  "commit": "822f4bf8d04972fc7af221e713726174a4ef10f4",
   "analyzers": {
     "cmdi": {
       "count": 0,
