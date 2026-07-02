@@ -101,7 +101,7 @@ func functionMatchesSink(fn *ssa.Function, sinkFunc string) bool {
 }
 
 func methodSignatureMatchesSink(recv types.Type, methodName, sinkFunc string) bool {
-	recvStr := types.TypeString(recv, nil)
+	recvStr := types.TypeString(unaliasDeep(recv), nil)
 	methodSig := fmt.Sprintf("(%s).%s", recvStr, methodName)
 	if methodSig == sinkFunc {
 		return true

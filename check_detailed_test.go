@@ -522,6 +522,39 @@ func main() {
 	}
 }
 
+func TestCheckDetailedMatchesAliasedSourceType(t *testing.T) {
+	// `type Req = http.Request` produces alias-typed SSA values under
+	// gotypesalias=1 (the go/types default since Go 1.23, and materialized
+	// through SSA by newer x/tools). A handler parameter typed *Req must
+	// still match a source declared as "*net/http.Request".
+	cg, _ := detailedGraphForSource(t, `package main
+
+import (
+	"log"
+	"net/http"
+)
+
+type Req = http.Request
+
+func handle(r *Req) {
+	log.Print(r.URL.Query().Get("q"))
+}
+
+func main() {
+	handle(nil)
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources("*net/http.Request"),
+		NewSinks("log.Print"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected one diagnostic through aliased source type, got %d", len(diagnostics))
+	}
+}
+
 func TestCheckDetailedPropagatesThroughStringTransforms(t *testing.T) {
 	cg, pkgPath := detailedGraphForSource(t, `package main
 

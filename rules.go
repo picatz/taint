@@ -145,6 +145,38 @@ func cloneStringSet(in stringSet) stringSet {
 	return out
 }
 
+// typeStringMatches reports whether t's printed form matches the rule id.
+// Alias types (`type Alias = http.Request`) print under the alias name, so
+// the comparison is repeated against the alias-free form of the type; this
+// keeps rules like "*net/http.Request" matching values typed via an alias.
+func typeStringMatches(t types.Type, id string) bool {
+	if t == nil {
+		return false
+	}
+	if t.String() == id || types.TypeString(t, nil) == id {
+		return true
+	}
+	if u := unaliasDeep(t); u != t {
+		return u.String() == id || types.TypeString(u, nil) == id
+	}
+	return false
+}
+
+// unaliasDeep removes alias sugar from t, including the common pointer-to-alias
+// shape (`*Alias`), which types.Unalias alone does not unwrap.
+func unaliasDeep(t types.Type) types.Type {
+	switch u := types.Unalias(t).(type) {
+	case *types.Pointer:
+		elem := unaliasDeep(u.Elem())
+		if elem != u.Elem() {
+			return types.NewPointer(elem)
+		}
+		return u
+	default:
+		return u
+	}
+}
+
 func exactSourceRule(id string) sourceRule {
 	return sourceRule{
 		id: id,
@@ -152,7 +184,7 @@ func exactSourceRule(id string) sourceRule {
 			if t == nil {
 				return false
 			}
-			if t.String() == id || types.TypeString(t, nil) == id {
+			if typeStringMatches(t, id) {
 				return true
 			}
 			switch id {
@@ -169,8 +201,7 @@ func exactSourceRule(id string) sourceRule {
 			if v == nil {
 				return false
 			}
-			t := v.Type()
-			return t != nil && (t.String() == id || types.TypeString(t, nil) == id)
+			return typeStringMatches(v.Type(), id)
 		},
 	}
 }
