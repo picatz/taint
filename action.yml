@@ -1,0 +1,144 @@
+name: "Taint Analyzers"
+description: >-
+  Runs picatz/taint's SARIF-capable analyzer CLIs (sqli, cmdi, ptrv, ssrf,
+  xss, logi) against a Go target and, optionally, uploads the results to
+  GitHub code scanning.
+author: "picatz"
+
+inputs:
+  detectors:
+    description: >-
+      Comma-separated list of detector CLIs to run. Supported values: sqli,
+      cmdi, ptrv, ssrf, xss, logi.
+    required: false
+    default: "sqli,cmdi,ptrv,ssrf,xss,logi"
+  target:
+    description: "Go package pattern to analyze (passed to each detector CLI)."
+    required: false
+    default: "./..."
+  upload:
+    description: "Upload SARIF results to GitHub code scanning via github/codeql-action/upload-sarif."
+    required: false
+    default: "true"
+
+outputs:
+  results-dir:
+    description: "Directory containing the SARIF file written by each requested detector."
+    value: ${{ steps.run-detectors.outputs.results-dir }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Go
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      with:
+        go-version: "stable"
+
+    # Composite actions can't loop `uses:` steps over a runtime-determined
+    # list, so this action supports a fixed, known set of six detectors.
+    # This step turns the comma-separated `detectors` input into one
+    # true/false output per detector, which every later step (including the
+    # per-detector upload-sarif steps below) uses as its `if:` condition.
+    - name: Parse requested detectors
+      id: parse
+      shell: bash
+      run: |
+        set -euo pipefail
+        for d in sqli cmdi ptrv ssrf xss logi; do
+          echo "${d}=false" >> "$GITHUB_OUTPUT"
+        done
+        IFS=',' read -ra requested <<< "${{ inputs.detectors }}"
+        for raw in "${requested[@]}"; do
+          d="$(echo "$raw" | xargs)"
+          case "$d" in
+            sqli|cmdi|ptrv|ssrf|xss|logi)
+              echo "${d}=true" >> "$GITHUB_OUTPUT"
+              ;;
+            "")
+              ;;
+            *)
+              echo "::error::unsupported detector: ${d} (supported: sqli, cmdi, ptrv, ssrf, xss, logi)"
+              exit 1
+              ;;
+          esac
+        done
+
+    # Installs each requested detector CLI at the ref this action itself was
+    # invoked at (so a workflow pinned to a tag/SHA of picatz/taint gets that
+    # exact analyzer version), then runs it with `-sarif-output` against the
+    # requested target. Detector CLIs exit non-zero when they report
+    # findings (the same convention as `go vet`), so the run is tolerant of
+    # that; a real compile/install failure still fails the step because
+    # `go install` itself is not tolerated.
+    - name: Install and run detectors
+      id: run-detectors
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p results
+        ref="${{ github.action_ref }}"
+        if [ -z "$ref" ]; then
+          ref="main"
+        fi
+
+        run_detector() {
+          name="$1"
+          echo "::group::${name}"
+          go install "github.com/picatz/taint/cmd/${name}@${ref}"
+          "$(go env GOPATH)/bin/${name}" -sarif-output "results/${name}.sarif" "${{ inputs.target }}" || true
+          echo "::endgroup::"
+        }
+
+        [ "${{ steps.parse.outputs.sqli }}" = "true" ] && run_detector sqli
+        [ "${{ steps.parse.outputs.cmdi }}" = "true" ] && run_detector cmdi
+        [ "${{ steps.parse.outputs.ptrv }}" = "true" ] && run_detector ptrv
+        [ "${{ steps.parse.outputs.ssrf }}" = "true" ] && run_detector ssrf
+        [ "${{ steps.parse.outputs.xss }}" = "true" ] && run_detector xss
+        [ "${{ steps.parse.outputs.logi }}" = "true" ] && run_detector logi
+
+        echo "results-dir=results" >> "$GITHUB_OUTPUT"
+
+    # One upload-sarif call per detector, each with its own `category` so
+    # that uploading multiple analyses in the same workflow run doesn't
+    # overwrite one another in GitHub code scanning.
+    - name: Upload sqli SARIF
+      if: inputs.upload == 'true' && steps.parse.outputs.sqli == 'true'
+      uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+      with:
+        sarif_file: results/sqli.sarif
+        category: taint-sqli
+
+    - name: Upload cmdi SARIF
+      if: inputs.upload == 'true' && steps.parse.outputs.cmdi == 'true'
+      uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+      with:
+        sarif_file: results/cmdi.sarif
+        category: taint-cmdi
+
+    - name: Upload ptrv SARIF
+      if: inputs.upload == 'true' && steps.parse.outputs.ptrv == 'true'
+      uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+      with:
+        sarif_file: results/ptrv.sarif
+        category: taint-ptrv
+
+    - name: Upload ssrf SARIF
+      if: inputs.upload == 'true' && steps.parse.outputs.ssrf == 'true'
+      uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+      with:
+        sarif_file: results/ssrf.sarif
+        category: taint-ssrf
+
+    - name: Upload xss SARIF
+      if: inputs.upload == 'true' && steps.parse.outputs.xss == 'true'
+      uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+      with:
+        sarif_file: results/xss.sarif
+        category: taint-xss
+
+    - name: Upload logi SARIF
+      if: inputs.upload == 'true' && steps.parse.outputs.logi == 'true'
+      uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+      with:
+        sarif_file: results/logi.sarif
+        category: taint-logi
