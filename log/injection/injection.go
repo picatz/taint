@@ -91,6 +91,42 @@ var injectableLogFunctions = taint.NewSinks(
 	"github.com/golang/glog.Fatalf",
 	"github.com/golang/glog.Fatalln",
 	"github.com/golang/glog.Fatal",
+	// glog Depth variants (caller-depth-adjusted logging).
+	"github.com/golang/glog.InfoDepth",
+	"github.com/golang/glog.InfoDepthf",
+	"github.com/golang/glog.WarningDepth",
+	"github.com/golang/glog.WarningDepthf",
+	"github.com/golang/glog.ErrorDepth",
+	"github.com/golang/glog.ErrorDepthf",
+	"github.com/golang/glog.FatalDepth",
+	"github.com/golang/glog.FatalDepthf",
+	// glog Context variants (context-aware logging).
+	"github.com/golang/glog.InfoContext",
+	"github.com/golang/glog.InfoContextf",
+	"github.com/golang/glog.InfoContextDepth",
+	"github.com/golang/glog.InfoContextDepthf",
+	"github.com/golang/glog.WarningContext",
+	"github.com/golang/glog.WarningContextf",
+	"github.com/golang/glog.WarningContextDepth",
+	"github.com/golang/glog.WarningContextDepthf",
+	"github.com/golang/glog.ErrorContext",
+	"github.com/golang/glog.ErrorContextf",
+	"github.com/golang/glog.ErrorContextDepth",
+	"github.com/golang/glog.ErrorContextDepthf",
+	"github.com/golang/glog.FatalContext",
+	"github.com/golang/glog.FatalContextf",
+	"github.com/golang/glog.FatalContextDepth",
+	"github.com/golang/glog.FatalContextDepthf",
+	// glog Exit family (logs args, then exits).
+	"github.com/golang/glog.Exit",
+	"github.com/golang/glog.Exitf",
+	"github.com/golang/glog.Exitln",
+	"github.com/golang/glog.ExitDepth",
+	"github.com/golang/glog.ExitDepthf",
+	"github.com/golang/glog.ExitContext",
+	"github.com/golang/glog.ExitContextf",
+	"github.com/golang/glog.ExitContextDepth",
+	"github.com/golang/glog.ExitContextDepthf",
 
 	// github.com/golang/glog.Verbose methods for V-style logging
 	"(github.com/golang/glog.Verbose).Info",
@@ -141,6 +177,32 @@ var injectableLogFunctions = taint.NewSinks(
 	"(*go.uber.org/zap.SugaredLogger).Panic",
 	"(*go.uber.org/zap.SugaredLogger).Fatal",
 
+	// github.com/rs/zerolog: the terminal Msg/Msgf on an *Event carry the
+	// log message, which is the injection channel.
+	"(*github.com/rs/zerolog.Event).Msg",
+	"(*github.com/rs/zerolog.Event).Msgf",
+
+	// github.com/go-logr/logr: Logger is a value type, so its methods have
+	// value receivers (no pointer in the qualified name).
+	"(github.com/go-logr/logr.Logger).Info",
+	"(github.com/go-logr/logr.Logger).Error",
+
+	// k8s.io/klog/v2: package-level logging functions.
+	"k8s.io/klog/v2.Info",
+	"k8s.io/klog/v2.Infof",
+	"k8s.io/klog/v2.Infoln",
+	"k8s.io/klog/v2.InfoS",
+	"k8s.io/klog/v2.Warning",
+	"k8s.io/klog/v2.Warningf",
+	"k8s.io/klog/v2.Warningln",
+	"k8s.io/klog/v2.Error",
+	"k8s.io/klog/v2.Errorf",
+	"k8s.io/klog/v2.Errorln",
+	"k8s.io/klog/v2.ErrorS",
+	"k8s.io/klog/v2.Fatal",
+	"k8s.io/klog/v2.Fatalf",
+	"k8s.io/klog/v2.Fatalln",
+
 // TODO: support configuring additional logging packages here as needed.
 )
 
@@ -151,6 +213,9 @@ var supportedLogPackages = []string{
 	"github.com/hashicorp/go-hclog",
 	"github.com/sirupsen/logrus",
 	"go.uber.org/zap",
+	"github.com/rs/zerolog",
+	"github.com/go-logr/logr",
+	"k8s.io/klog/v2",
 }
 
 // Analyzer finds potential log injection issues to demonstrate

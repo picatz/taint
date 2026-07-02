@@ -133,3 +133,15 @@ func TestGRPC(t *testing.T) {
 func TestGRPCModern(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "grpcmodern")
 }
+
+func TestPgxConn(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "pgxconn")
+}
+
+func TestPgxPool(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "pgxpoolusage")
+}
+
+func TestPgxTx(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "pgxtx")
+}

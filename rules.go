@@ -230,6 +230,23 @@ func exactSinkRule(id string) sinkRule {
 		selectArgs = httpClientPostURLArgument
 	case "net.Dial", "net.DialTimeout":
 		selectArgs = sinkArgAt(1)
+	case "(*github.com/jackc/pgx/v5.Conn).Query",
+		"(*github.com/jackc/pgx/v5.Conn).QueryRow",
+		"(*github.com/jackc/pgx/v5.Conn).Exec",
+		"(github.com/jackc/pgx/v5.Tx).Query",
+		"(github.com/jackc/pgx/v5.Tx).QueryRow",
+		"(github.com/jackc/pgx/v5.Tx).Exec",
+		"(*github.com/jackc/pgx/v5/pgxpool.Pool).Query",
+		"(*github.com/jackc/pgx/v5/pgxpool.Pool).QueryRow",
+		"(*github.com/jackc/pgx/v5/pgxpool.Pool).Exec":
+		// pgx methods are (ctx, sql, args...): only the SQL text is the
+		// injection channel. Bound parameters after it are safe, so select
+		// just the argument following the context.
+		selectArgs = sqlContextQueryArgument(0)
+	case "(*github.com/jackc/pgx/v5.Conn).Prepare",
+		"(github.com/jackc/pgx/v5.Tx).Prepare":
+		// Prepare is (ctx, name, sql): the SQL text follows the name.
+		selectArgs = sqlContextQueryArgument(1)
 	}
 	return sinkRule{
 		id: id,
@@ -258,6 +275,47 @@ func sinkArgAt(index int) func(*callgraph.Edge) []ssa.Value {
 		}
 		return []ssa.Value{args[index]}
 	}
+}
+
+// sqlContextQueryArgument selects the SQL-text argument of a driver method
+// whose signature is (ctx, sql, ...) — the argument immediately after the
+// context. extra shifts the selection for methods like Prepare(ctx, name, sql)
+// where the SQL text follows an intermediate argument. Bound parameters
+// passed after the SQL text are deliberately excluded: they are query
+// parameters, not part of the injectable query string.
+func sqlContextQueryArgument(extra int) func(*callgraph.Edge) []ssa.Value {
+	return func(edge *callgraph.Edge) []ssa.Value {
+		if edge == nil || edge.Site == nil || edge.Site.Common() == nil {
+			return nil
+		}
+		args := edge.Site.Common().Args
+		ctxIdx := -1
+		for i, a := range args {
+			if a != nil && isContextType(a.Type()) {
+				ctxIdx = i
+				break
+			}
+		}
+		if ctxIdx < 0 {
+			return nil
+		}
+		target := ctxIdx + 1 + extra
+		if target < 0 || target >= len(args) {
+			return nil
+		}
+		return []ssa.Value{args[target]}
+	}
+}
+
+// isContextType reports whether t is context.Context.
+func isContextType(t types.Type) bool {
+	named, ok := unaliasDeep(t).(*types.Named)
+	if !ok {
+		return false
+	}
+	obj := named.Obj()
+	return obj != nil && obj.Pkg() != nil &&
+		obj.Pkg().Path() == "context" && obj.Name() == "Context"
 }
 
 func httpClientPostURLArgument(edge *callgraph.Edge) []ssa.Value {

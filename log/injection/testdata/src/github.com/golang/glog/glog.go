@@ -1,5 +1,7 @@
 package glog
 
+import "context"
+
 func Info(args ...interface{})                    {}
 func Infoln(args ...interface{})                  {}
 func Infof(format string, args ...interface{})    {}
@@ -12,6 +14,45 @@ func Errorf(format string, args ...interface{})   {}
 func Fatal(args ...interface{})                   {}
 func Fatalln(args ...interface{})                 {}
 func Fatalf(format string, args ...interface{})   {}
+
+// Depth variants.
+func InfoDepth(depth int, args ...interface{})                    {}
+func InfoDepthf(depth int, format string, args ...interface{})    {}
+func WarningDepth(depth int, args ...interface{})                 {}
+func WarningDepthf(depth int, format string, args ...interface{}) {}
+func ErrorDepth(depth int, args ...interface{})                   {}
+func ErrorDepthf(depth int, format string, args ...interface{})   {}
+func FatalDepth(depth int, args ...interface{})                   {}
+func FatalDepthf(depth int, format string, args ...interface{})   {}
+
+// Context variants.
+func InfoContext(ctx context.Context, args ...interface{})                                    {}
+func InfoContextf(ctx context.Context, format string, args ...interface{})                    {}
+func InfoContextDepth(ctx context.Context, depth int, args ...interface{})                    {}
+func InfoContextDepthf(ctx context.Context, depth int, format string, args ...interface{})    {}
+func WarningContext(ctx context.Context, args ...interface{})                                 {}
+func WarningContextf(ctx context.Context, format string, args ...interface{})                 {}
+func WarningContextDepth(ctx context.Context, depth int, args ...interface{})                 {}
+func WarningContextDepthf(ctx context.Context, depth int, format string, args ...interface{}) {}
+func ErrorContext(ctx context.Context, args ...interface{})                                   {}
+func ErrorContextf(ctx context.Context, format string, args ...interface{})                   {}
+func ErrorContextDepth(ctx context.Context, depth int, args ...interface{})                   {}
+func ErrorContextDepthf(ctx context.Context, depth int, format string, args ...interface{})   {}
+func FatalContext(ctx context.Context, args ...interface{})                                   {}
+func FatalContextf(ctx context.Context, format string, args ...interface{})                   {}
+func FatalContextDepth(ctx context.Context, depth int, args ...interface{})                   {}
+func FatalContextDepthf(ctx context.Context, depth int, format string, args ...interface{})   {}
+
+// Exit family (logs args, then exits).
+func Exit(args ...interface{})                                                             {}
+func Exitf(format string, args ...interface{})                                             {}
+func Exitln(args ...interface{})                                                           {}
+func ExitDepth(depth int, args ...interface{})                                             {}
+func ExitDepthf(depth int, format string, args ...interface{})                             {}
+func ExitContext(ctx context.Context, args ...interface{})                                 {}
+func ExitContextf(ctx context.Context, format string, args ...interface{})                 {}
+func ExitContextDepth(ctx context.Context, depth int, args ...interface{})                 {}
+func ExitContextDepthf(ctx context.Context, depth int, format string, args ...interface{}) {}
 
 type Verbose bool
 

@@ -198,6 +198,22 @@ var injectableSQLMethods = taint.NewSinks(
 	"github.com/Masterminds/squirrel.Expr",
 	"gopkg.in/Masterminds/squirrel.v1.Expr",
 	"github.com/lann/squirrel.Expr",
+	// pgx v5 (github.com/jackc/pgx/v5): the modern PostgreSQL driver. The
+	// SQL text is the argument after the context; parameterized values
+	// passed after it are not the injection channel, but are included by
+	// the default whole-argument selection, matching database/sql's
+	// context methods.
+	"(*github.com/jackc/pgx/v5.Conn).Query",
+	"(*github.com/jackc/pgx/v5.Conn).QueryRow",
+	"(*github.com/jackc/pgx/v5.Conn).Exec",
+	"(*github.com/jackc/pgx/v5.Conn).Prepare",
+	"(github.com/jackc/pgx/v5.Tx).Query",
+	"(github.com/jackc/pgx/v5.Tx).QueryRow",
+	"(github.com/jackc/pgx/v5.Tx).Exec",
+	"(github.com/jackc/pgx/v5.Tx).Prepare",
+	"(*github.com/jackc/pgx/v5/pgxpool.Pool).Query",
+	"(*github.com/jackc/pgx/v5/pgxpool.Pool).QueryRow",
+	"(*github.com/jackc/pgx/v5/pgxpool.Pool).Exec",
 	//
 	// TODO: add more, consider (non-)pointer variants?
 )
@@ -253,6 +269,8 @@ var supportedSQLPackages = []string{
 	"github.com/Masterminds/squirrel",
 	"gopkg.in/Masterminds/squirrel.v1",
 	"github.com/lann/squirrel",
+	"github.com/jackc/pgx/v5",
+	"github.com/jackc/pgx/v5/pgxpool",
 }
 
 func run(pass *analysis.Pass) (any, error) {

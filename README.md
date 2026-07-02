@@ -216,6 +216,9 @@ Supported SQL packages include:
 - `github.com/rqlite/gorqlite`
 - `github.com/raindog308/gorqlite`
 - `github.com/Masterminds/squirrel` and variants
+- `github.com/jackc/pgx/v5` and `github.com/jackc/pgx/v5/pgxpool`
+  (`Conn`, `Tx`, and `Pool` query methods; only the SQL-text argument is
+  treated as the injection channel, so bound parameters do not flag)
 - database drivers like `github.com/mattn/go-sqlite3`
 
 ```console
@@ -257,7 +260,7 @@ $ sqli main.go
 
 ### `logi`
 
-The `logi` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer) finds potential log injections. It understands common logging packages, including `log`, `log/slog`, `github.com/golang/glog`, `github.com/hashicorp/go-hclog`, `github.com/sirupsen/logrus`, and `go.uber.org/zap`.
+The `logi` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer) finds potential log injections. It understands common logging packages, including `log`, `log/slog`, `github.com/golang/glog`, `github.com/hashicorp/go-hclog`, `github.com/sirupsen/logrus`, `go.uber.org/zap`, `github.com/rs/zerolog`, `github.com/go-logr/logr`, and `k8s.io/klog/v2`.
 For structured logging, field constructors such as `slog.String`, `slog.Any`,
 `zap.String`, `zap.Any`, `zap.ByteString`, and `zap.Error` preserve taint into
 the logged field.

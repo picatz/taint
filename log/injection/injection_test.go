@@ -88,3 +88,19 @@ func TestQ(t *testing.T) {
 func TestGRPC(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "grpc")
 }
+
+func TestZerolog(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "zerolog")
+}
+
+func TestLogr(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "logr")
+}
+
+func TestKlog(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "klog")
+}
+
+func TestGlogModern(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "glogmodern")
+}
