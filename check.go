@@ -390,9 +390,7 @@ func buildDiagnosticEvidence(path callgraphutil.Path, sink sinkRule, result Resu
 			continue
 		}
 		common := edge.Site.Common()
-		for _, entry := range parameterMappings(edge, common) {
-			evidence = append(evidence, entry)
-		}
+		evidence = append(evidence, parameterMappings(edge, common)...)
 	}
 
 	evidence = append(evidence, sanitizerEvidence...)
@@ -1578,9 +1576,7 @@ func isExpressionDerivedFromSourceWithContext(v ssa.Value, ctx taintContext) (st
 		// Traverse operands based on SSA value type.
 		switch c := cur.(type) {
 		case *ssa.Call:
-			for _, arg := range c.Call.Args {
-				work = append(work, arg)
-			}
+			work = append(work, c.Call.Args...)
 			work = append(work, c.Call.Value)
 		case *ssa.FieldAddr:
 			work = append(work, c.X)

@@ -704,7 +704,7 @@ func dedupeMemoryDefs(defs []memoryDef) []memoryDef {
 	seen := map[defKey]struct{}{}
 	out := make([]memoryDef, 0, len(defs))
 	for _, def := range defs {
-		key := defKey{instr: def.instr, value: def.value, call: def.call, callee: def.callee, definite: def.definite}
+		key := defKey(def)
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -841,7 +841,7 @@ func dedupeSideEffectValues(values []sideEffectValue) []sideEffectValue {
 	seen := map[effectKey]struct{}{}
 	out := make([]sideEffectValue, 0, len(values))
 	for _, value := range values {
-		key := effectKey{value: value.value, call: value.call, callee: value.callee, definite: value.definite}
+		key := effectKey(value)
 		if _, ok := seen[key]; ok {
 			continue
 		}

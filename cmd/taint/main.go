@@ -752,12 +752,6 @@ var builtinCommandLoad = &command{
 				bt.WriteString(styleWarning.Render(fmt.Sprintf("⚠ warning: SSA package %d is nil%s", i, pkgInfo)) + "\n")
 				continue
 			}
-			dirHint := pkgDirForSSAPkg(pkg, pkgs)
-			label := pkg.Pkg.Name()
-			if label == "main" && dirHint != "" && mainCount > 1 {
-				label = label + styleSubtle.Render(" ("+dirHint+")")
-			}
-			// bt.WriteString(styleSubtle.Render("  building SSA package ") + styleNumber.Render(fmt.Sprintf("%d", i)) + styleSubtle.Render(": ") + styleInfo.Render(label) + "\n")
 			pkg.Build()
 		}
 
@@ -1167,9 +1161,7 @@ var builtinCommandsCallpath = &command{
 					// find ")" then a dot for method.
 					if idx := strings.Index(norm, ")"); idx > 1 {
 						recv := norm[1:idx] // inside parens
-						if strings.HasPrefix(recv, "*") {
-							recv = recv[1:]
-						}
+						recv = strings.TrimPrefix(recv, "*")
 						norm = "(" + recv + ")" + norm[idx+1:]
 					}
 				}
@@ -1284,9 +1276,7 @@ var builtinCommandCheck = &command{
 				if strings.HasPrefix(norm, "(") {
 					if rp := strings.Index(norm, ")"); rp > 1 {
 						recv := norm[1:rp]
-						if strings.HasPrefix(recv, "*") {
-							recv = recv[1:]
-						}
+						recv = strings.TrimPrefix(recv, "*")
 						norm = "(" + recv + ")" + norm[rp+1:]
 					}
 				}

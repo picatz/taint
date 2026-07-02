@@ -124,17 +124,5 @@ jobs:
       with:
         go-version-file: go.mod
 
-    # U1000 (unused code) is excluded because a parallel workstream is
-    # actively removing the repo's known dead code; those findings are
-    # expected and tracked there, not here. Drop the "-U1000" exclusion once
-    # that dead-code removal lands so U1000 is enforced like every other
-    # check.
-    #
-    # S1011, S1016, S1017, and SA4006 are also excluded: running staticcheck
-    # against the current tree (outside this CI-hardening workstream) turned
-    # up a handful of pre-existing findings in check.go, memory.go, and
-    # cmd/taint/main.go, none of which this workstream owns or touches. Drop
-    # each exclusion as its findings are addressed by whichever workstream
-    # owns those files.
     - name: staticcheck
-      run: go run honnef.co/go/tools/cmd/staticcheck@latest -checks 'inherit,-U1000,-S1011,-S1016,-S1017,-SA4006' ./...
+      run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
