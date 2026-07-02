@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -59,7 +60,7 @@ func init() {
 	}
 }
 
-func dbg(format string, args ...interface{}) {
+func dbg(format string, args ...any) {
 	if debugXSS {
 		fmt.Fprintf(os.Stderr, "[xss-debug] "+format+"\n", args...)
 	}
@@ -227,8 +228,7 @@ func userCallsiteOnPath(path callgraphutil.Path, pkgPath string, sinkEdge *callg
 }
 
 func findResponseWriterSinkEdge(path callgraphutil.Path) *callgraph.Edge {
-	for i := len(path) - 1; i >= 0; i-- {
-		e := path[i]
+	for _, e := range slices.Backward(path) {
 		if e == nil || e.Site == nil {
 			continue
 		}

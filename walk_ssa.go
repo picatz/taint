@@ -1,12 +1,12 @@
 package taint
 
 import (
-	"fmt"
+	"errors"
 
 	"golang.org/x/tools/go/ssa"
 )
 
-var ErrStopWalk = fmt.Errorf("taint: stop walk")
+var ErrStopWalk = errors.New("taint: stop walk")
 
 // WalkSSA walks the SSA IR recursively with a visitor function that
 // can be used to inspect each node in the graph. The visitor function

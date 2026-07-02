@@ -4,7 +4,8 @@ import (
 	"go/constant"
 	"go/token"
 	"go/types"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/callgraph"
@@ -135,19 +136,12 @@ func newRuleRegistry(sources Sources, sinks Sinks, cfg checkConfig) *ruleRegistr
 }
 
 func sortedKeys(set stringSet) []string {
-	keys := make([]string, 0, len(set))
-	for k := range set {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(set))
 }
 
 func cloneStringSet(in stringSet) stringSet {
-	out := stringSet{}
-	for value := range in {
-		out[value] = struct{}{}
-	}
+	out := make(stringSet, len(in))
+	maps.Copy(out, in)
 	return out
 }
 
@@ -541,9 +535,7 @@ func (r *ruleRegistry) callReturnSanitized(call *ssa.CallCommon, resultIndex, de
 
 func cloneSanitizerBindings(in sanitizerBindings) sanitizerBindings {
 	out := sanitizerBindings{}
-	for param, value := range in {
-		out[param] = value
-	}
+	maps.Copy(out, in)
 	return out
 }
 
@@ -1150,9 +1142,7 @@ func commonStringConstant(values []ssa.Value, seen map[ssa.Value]struct{}) (stri
 
 func cloneSSAValueSeen(seen map[ssa.Value]struct{}) map[ssa.Value]struct{} {
 	out := make(map[ssa.Value]struct{}, len(seen))
-	for value := range seen {
-		out[value] = struct{}{}
-	}
+	maps.Copy(out, seen)
 	return out
 }
 

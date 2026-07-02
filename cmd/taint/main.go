@@ -954,7 +954,7 @@ var builtinCommandCG = &command{
 		lines := make([]nodeLine, 0, len(nodes))
 		for _, an := range nodes {
 			// extract numeric id prefix from display (e.g., n123:...)
-			idStr := strings.SplitN(an.display, ":", 2)[0]
+			idStr, _, _ := strings.Cut(an.display, ":")
 			idNum, _ := strconv.Atoi(strings.TrimPrefix(idStr, "n"))
 			// build outs list
 			var outs [][2]string
@@ -1052,8 +1052,8 @@ var builtinCommandNodes = &command{
 
 		sort.SliceStable(nodesStrs, func(i, j int) bool {
 			// Parse node ID to int.
-			iID := strings.Split(nodesStrs[i], ":")[0]
-			jID := strings.Split(nodesStrs[j], ":")[0]
+			iID, _, _ := strings.Cut(nodesStrs[i], ":")
+			jID, _, _ := strings.Cut(nodesStrs[j], ":")
 
 			// Trim the leading "n" prefix.
 			iID = strings.TrimPrefix(iID, "n")
@@ -1351,9 +1351,9 @@ func startShell(ctx context.Context) error {
 			for _, cmd := range builtinCommands {
 				// If line is using the load command, then autocomplete the
 				// directory name.
-				if strings.HasPrefix(line, "load ") {
+				if after, ok0 := strings.CutPrefix(line, "load "); ok0 {
 					// Get the directory name.
-					dir := strings.TrimPrefix(line, "load ")
+					dir := after
 
 					// Check if the directory exists.
 					_, err := os.Stat(dir)
@@ -1560,8 +1560,8 @@ func getModulePrefix(dir string) string {
 		goModPath := filepath.Join(currentDir, "go.mod")
 		if content, err := os.ReadFile(goModPath); err == nil {
 			// Parse the module line from go.mod
-			lines := strings.Split(string(content), "\n")
-			for _, line := range lines {
+			lines := strings.SplitSeq(string(content), "\n")
+			for line := range lines {
 				line = strings.TrimSpace(line)
 				if strings.HasPrefix(line, "module ") {
 					module := strings.TrimSpace(strings.TrimPrefix(line, "module"))

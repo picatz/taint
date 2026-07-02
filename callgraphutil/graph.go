@@ -2,11 +2,12 @@ package callgraphutil
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"go/token"
 	"go/types"
-	"sort"
+	"slices"
 	"sync"
 
 	"golang.org/x/tools/go/callgraph"
@@ -340,16 +341,12 @@ func SortedNodes(g *callgraph.Graph) []*callgraph.Node {
 			out = append(out, n)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		return nodeLess(out[i], out[j])
-	})
+	slices.SortStableFunc(out, nodeCompare)
 	return out
 }
 
 func sortEdges(edges []*callgraph.Edge) {
-	sort.SliceStable(edges, func(i, j int) bool {
-		return edgeLess(edges[i], edges[j])
-	})
+	slices.SortStableFunc(edges, edgeCompare)
 }
 
 func sortedOutgoingEdges(n *callgraph.Node) []*callgraph.Edge {
@@ -361,16 +358,14 @@ func sortedOutgoingEdges(n *callgraph.Node) []*callgraph.Edge {
 	return edges
 }
 
-func edgeLess(a, b *callgraph.Edge) bool {
-	ap, bp := edgePos(a), edgePos(b)
-	if ap != bp {
-		return ap < bp
+func edgeCompare(a, b *callgraph.Edge) int {
+	if c := cmp.Compare(edgePos(a), edgePos(b)); c != 0 {
+		return c
 	}
-	ak, bk := calleeKey(a), calleeKey(b)
-	if ak != bk {
-		return ak < bk
+	if c := cmp.Compare(calleeKey(a), calleeKey(b)); c != 0 {
+		return c
 	}
-	return calleePos(a) < calleePos(b)
+	return cmp.Compare(calleePos(a), calleePos(b))
 }
 
 func edgePos(e *callgraph.Edge) token.Pos {
@@ -394,12 +389,11 @@ func calleePos(e *callgraph.Edge) token.Pos {
 	return e.Callee.Func.Pos()
 }
 
-func nodeLess(a, b *callgraph.Node) bool {
-	ak, bk := nodeKey(a), nodeKey(b)
-	if ak != bk {
-		return ak < bk
+func nodeCompare(a, b *callgraph.Node) int {
+	if c := cmp.Compare(nodeKey(a), nodeKey(b)); c != 0 {
+		return c
 	}
-	return nodePos(a) < nodePos(b)
+	return cmp.Compare(nodePos(a), nodePos(b))
 }
 
 func nodeKey(n *callgraph.Node) string {
@@ -1190,27 +1184,21 @@ func valueDerivedFromParameter(v ssa.Value, param *ssa.Parameter) bool {
 		case *ssa.TypeAssert:
 			return visit(value.X)
 		case *ssa.Phi:
-			for _, edge := range value.Edges {
-				if visit(edge) {
-					return true
-				}
+			if slices.ContainsFunc(value.Edges, visit) {
+				return true
 			}
 		case *ssa.UnOp:
 			if visit(value.X) {
 				return true
 			}
 			if value.Op == token.MUL {
-				for _, stored := range storedValuesForAddress(value.X) {
-					if visit(stored) {
-						return true
-					}
+				if slices.ContainsFunc(storedValuesForAddress(value.X), visit) {
+					return true
 				}
 			}
 		case *ssa.Alloc:
-			for _, stored := range storedValuesForAddress(value) {
-				if visit(stored) {
-					return true
-				}
+			if slices.ContainsFunc(storedValuesForAddress(value), visit) {
+				return true
 			}
 		case ssa.Instruction:
 			for _, operand := range value.Operands(nil) {

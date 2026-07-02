@@ -76,7 +76,7 @@ func TestM(t *testing.T) {
 // the call-site picker walked the taint path, this case would flap between
 // runs because cg.Nodes map iteration is randomized.
 func TestDeterminism(t *testing.T) {
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		t.Run(fmt.Sprintf("iter-%d", i), func(t *testing.T) {
 			analysistest.Run(t, testdata, Analyzer, "determinism")
 		})

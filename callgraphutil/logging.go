@@ -55,21 +55,21 @@ func (l *Logger) WithPrefix(prefix string) *Logger {
 }
 
 // Info logs informational messages (always visible except silent mode)
-func (l *Logger) Info(format string, args ...interface{}) {
+func (l *Logger) Info(format string, args ...any) {
 	if l.level >= LogLevelInfo {
 		l.log("•", format, args...)
 	}
 }
 
 // Debug logs debug messages (visible in debug and trace modes)
-func (l *Logger) Debug(format string, args ...interface{}) {
+func (l *Logger) Debug(format string, args ...any) {
 	if l.level >= LogLevelDebug {
 		l.log("→", format, args...)
 	}
 }
 
 // Trace logs detailed trace messages (visible only in trace mode)
-func (l *Logger) Trace(format string, args ...interface{}) {
+func (l *Logger) Trace(format string, args ...any) {
 	if l.level >= LogLevelTrace {
 		l.log("·", format, args...)
 	}
@@ -99,21 +99,21 @@ func (l *Logger) Step(step string, details ...string) {
 }
 
 // Warning logs warning messages
-func (l *Logger) Warning(format string, args ...interface{}) {
+func (l *Logger) Warning(format string, args ...any) {
 	if l.level >= LogLevelInfo {
 		l.log("⚠", format, args...)
 	}
 }
 
 // Error logs error messages (always visible except silent mode)
-func (l *Logger) Error(format string, args ...interface{}) {
+func (l *Logger) Error(format string, args ...any) {
 	if l.level >= LogLevelInfo {
 		l.log("✗", format, args...)
 	}
 }
 
 // log is the internal logging function
-func (l *Logger) log(symbol, format string, args ...interface{}) {
+func (l *Logger) log(symbol, format string, args ...any) {
 	message := fmt.Sprintf(format, args...)
 	prefix := ""
 	if l.prefix != "" {

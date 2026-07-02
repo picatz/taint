@@ -230,11 +230,11 @@ func main() {
 	}
 }
 
-// assertEdgesCanonical fails the test if edges is not sorted by edgeLess.
+// assertEdgesCanonical fails the test if edges is not sorted by edgeCompare.
 func assertEdgesCanonical(t *testing.T, label string, edges []*callgraph.Edge) {
 	t.Helper()
 	for i := 1; i < len(edges); i++ {
-		if edgeLess(edges[i], edges[i-1]) {
+		if edgeCompare(edges[i], edges[i-1]) < 0 {
 			t.Fatalf("%s edges out of canonical order at index %d: %s !< %s",
 				label, i, edgeDebug(edges[i-1]), edgeDebug(edges[i]))
 		}

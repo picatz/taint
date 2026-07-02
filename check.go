@@ -1,10 +1,12 @@
 package taint
 
 import (
+	"cmp"
 	"fmt"
 	"go/token"
 	"go/types"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/callgraph"
@@ -236,27 +238,21 @@ func CheckDetailed(cg *callgraph.Graph, sources Sources, sinks Sinks, opts ...Op
 	for _, key := range sortedDiagnosticKeys(bestByKey) {
 		out = append(out, bestByKey[key])
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		left, right := out[i].Result, out[j].Result
-		lp, rp := sinkValuePos(left), sinkValuePos(right)
-		if lp != rp {
-			return lp < rp
+	slices.SortStableFunc(out, func(a, b Diagnostic) int {
+		left, right := a.Result, b.Result
+		if c := cmp.Compare(sinkValuePos(left), sinkValuePos(right)); c != 0 {
+			return c
 		}
-		if left.SourceType != right.SourceType {
-			return left.SourceType < right.SourceType
+		if c := cmp.Compare(left.SourceType, right.SourceType); c != 0 {
+			return c
 		}
-		return left.SinkType < right.SinkType
+		return cmp.Compare(left.SinkType, right.SinkType)
 	})
 	return out
 }
 
 func sortedDiagnosticKeys(m map[string]Diagnostic) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }
 
 // sinkValuePos returns the source position of a Result's sink call. A nil
@@ -425,7 +421,7 @@ func parameterMappings(edge *callgraph.Edge, common *ssa.CallCommon) []Evidence 
 	}
 	limit := len(params)
 	out := make([]Evidence, 0, limit)
-	for i := 0; i < limit; i++ {
+	for i := range limit {
 		if params[i] == nil {
 			continue
 		}
@@ -1154,7 +1150,7 @@ func returnsOnlyError(sig *types.Signature) bool {
 	if t == nil {
 		return false
 	}
-	if named, ok := t.(*types.Named); ok {
+	if named, ok := types.Unalias(t).(*types.Named); ok {
 		if obj := named.Obj(); obj != nil && obj.Pkg() == nil && obj.Name() == "error" {
 			return true
 		}
@@ -1240,8 +1236,7 @@ func summaryDepth(path callgraphutil.Path) int {
 func hasProtoMessageMethod(t types.Type) bool {
 	for _, candidate := range receiverTypeCandidatesForTaint(t) {
 		methodSet := types.NewMethodSet(candidate)
-		for i := 0; i < methodSet.Len(); i++ {
-			sel := methodSet.At(i)
+		for sel := range methodSet.Methods() {
 			if sel == nil {
 				continue
 			}
