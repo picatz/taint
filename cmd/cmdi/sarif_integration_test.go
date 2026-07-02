@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -31,11 +32,28 @@ func TestSARIFOutputEndToEnd(t *testing.T) {
 		Runs    []struct {
 			Tool struct {
 				Driver struct {
-					Name string `json:"name"`
+					Name  string `json:"name"`
+					Rules []struct {
+						ID                   string `json:"id"`
+						HelpURI              string `json:"helpUri"`
+						DefaultConfiguration struct {
+							Level string `json:"level"`
+						} `json:"defaultConfiguration"`
+						Help struct {
+							Text     string `json:"text"`
+							Markdown string `json:"markdown"`
+						} `json:"help"`
+						Properties struct {
+							Tags             []string `json:"tags"`
+							Precision        string   `json:"precision"`
+							SecuritySeverity string   `json:"security-severity"`
+						} `json:"properties"`
+					} `json:"rules"`
 				} `json:"driver"`
 			} `json:"tool"`
 			Results []struct {
 				RuleID string `json:"ruleId"`
+				Level  string `json:"level"`
 			} `json:"results"`
 		} `json:"runs"`
 	}
@@ -53,6 +71,32 @@ func TestSARIFOutputEndToEnd(t *testing.T) {
 	}
 	if got := doc.Runs[0].Results[0].RuleID; got != "cmdi/potential-command-injection" {
 		t.Fatalf("rule = %q", got)
+	}
+
+	if got := len(doc.Runs[0].Tool.Driver.Rules); got != 1 {
+		t.Fatalf("rules = %d, want 1", got)
+	}
+	rule := doc.Runs[0].Tool.Driver.Rules[0]
+	if rule.ID != "cmdi/potential-command-injection" {
+		t.Fatalf("rule ID = %q", rule.ID)
+	}
+	if sev, err := strconv.ParseFloat(rule.Properties.SecuritySeverity, 64); err != nil || sev < 0.1 || sev > 10.0 {
+		t.Fatalf("security-severity = %q (parse err: %v)", rule.Properties.SecuritySeverity, err)
+	}
+	if len(rule.Properties.Tags) < 2 || rule.Properties.Tags[0] != "security" || rule.Properties.Tags[1] != "external/cwe/cwe-78" {
+		t.Fatalf("tags = %#v", rule.Properties.Tags)
+	}
+	if rule.Properties.Precision == "" {
+		t.Fatalf("precision is empty")
+	}
+	if rule.DefaultConfiguration.Level == "" {
+		t.Fatalf("defaultConfiguration.level is empty")
+	}
+	if rule.Help.Markdown == "" {
+		t.Fatalf("help.markdown is empty")
+	}
+	if doc.Runs[0].Results[0].Level == "" {
+		t.Fatalf("result level is empty")
 	}
 }
 
