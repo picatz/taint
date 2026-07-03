@@ -1,6 +1,10 @@
 # Design: models as data (P4)
 
-Status: proposed.
+Status: first phase implemented — user-supplied models augment the built-in
+rules via `taint.WithModels` / `LoadModels` / `ModelsFromPath` and a `-models`
+CLI flag on every detector. See [../models.md](../models.md) for the user
+guide. Remaining: porting the built-in tables to embedded model packs, and
+field-level access paths. The rest of this document is the original design.
 
 ## Problem
 

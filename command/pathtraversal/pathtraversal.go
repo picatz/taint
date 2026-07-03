@@ -15,6 +15,7 @@ import (
 
 	"github.com/picatz/taint"
 	"github.com/picatz/taint/callgraphutil"
+	"github.com/picatz/taint/internal/modelflag"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
@@ -61,10 +62,13 @@ var Analyzer = &analysis.Analyzer{
 var debugPtrv bool
 var callGraphAlgorithm = string(callgraphutil.CallGraphAlgorithmTaint)
 
+var models modelflag.Flag
+
 func init() {
 	fs := flag.NewFlagSet("ptrv", flag.ContinueOnError)
 	fs.BoolVar(&debugPtrv, "debug", false, "enable debug logging for path traversal analyzer")
 	fs.StringVar(&callGraphAlgorithm, "callgraph", callGraphAlgorithm, "callgraph algorithm: taint or vta")
+	models.Register(fs)
 	Analyzer.Flags = *fs
 	if os.Getenv("PTRV_DEBUG") != "" {
 		debugPtrv = true
@@ -96,7 +100,15 @@ func imports(pass *analysis.Pass, pkgs ...string) bool {
 }
 
 func run(pass *analysis.Pass) (any, error) {
-	if !imports(pass, supportedFilePackages...) {
+	loadedModels, err := models.Load()
+	if err != nil {
+		return nil, err
+	}
+	gate := supportedFilePackages
+	if len(loadedModels) > 0 {
+		gate = append(slices.Clone(supportedFilePackages), taint.ModelPackages(loadedModels)...)
+	}
+	if !imports(pass, gate...) {
 		return nil, nil
 	}
 
@@ -114,7 +126,7 @@ func run(pass *analysis.Pass) (any, error) {
 		return nil, fmt.Errorf("failed to create callgraph: %w", err)
 	}
 
-	diagnostics := taint.CheckDetailed(cg, userControlledValues, injectableFileFunctions)
+	diagnostics := taint.CheckDetailed(cg, userControlledValues, injectableFileFunctions, taint.WithModels(loadedModels...))
 	dbg("results=%d", len(diagnostics))
 
 	for _, diagnostic := range diagnostics {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/picatz/taint"
 	"github.com/picatz/taint/callgraphutil"
+	"github.com/picatz/taint/internal/modelflag"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
@@ -42,10 +43,13 @@ var Analyzer = &analysis.Analyzer{
 var debugCmdI bool
 var callGraphAlgorithm = string(callgraphutil.CallGraphAlgorithmTaint)
 
+var models modelflag.Flag
+
 func init() {
 	fs := flag.NewFlagSet("cmdi", flag.ContinueOnError)
 	fs.BoolVar(&debugCmdI, "debug", false, "enable debug logging for command injection analyzer")
 	fs.StringVar(&callGraphAlgorithm, "callgraph", callGraphAlgorithm, "callgraph algorithm: taint or vta")
+	models.Register(fs)
 	Analyzer.Flags = *fs
 	if os.Getenv("CMDI_DEBUG") != "" {
 		debugCmdI = true
@@ -78,7 +82,15 @@ func imports(pass *analysis.Pass, pkgs ...string) bool {
 }
 
 func run(pass *analysis.Pass) (any, error) {
-	if !imports(pass, supportedCommandPackages...) {
+	loadedModels, err := models.Load()
+	if err != nil {
+		return nil, err
+	}
+	gate := supportedCommandPackages
+	if len(loadedModels) > 0 {
+		gate = append(slices.Clone(supportedCommandPackages), taint.ModelPackages(loadedModels)...)
+	}
+	if !imports(pass, gate...) {
 		return nil, nil
 	}
 
@@ -96,7 +108,7 @@ func run(pass *analysis.Pass) (any, error) {
 		return nil, fmt.Errorf("failed to create callgraph: %w", err)
 	}
 
-	diagnostics := taint.CheckDetailed(cg, userControlledValues, injectableCommandFunctions)
+	diagnostics := taint.CheckDetailed(cg, userControlledValues, injectableCommandFunctions, taint.WithModels(loadedModels...))
 	dbg("results=%d", len(diagnostics))
 
 	for _, diagnostic := range diagnostics {

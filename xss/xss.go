@@ -17,6 +17,7 @@ import (
 
 	"github.com/picatz/taint"
 	"github.com/picatz/taint/callgraphutil"
+	"github.com/picatz/taint/internal/modelflag"
 )
 
 var userControlledValues = taint.NewSources(
@@ -48,11 +49,14 @@ var Analyzer = &analysis.Analyzer{
 var debugXSS bool
 var callGraphAlgorithm = string(callgraphutil.CallGraphAlgorithmTaint)
 
+var models modelflag.Flag
+
 func init() {
 	// Add a "-debug" flag to the analyzer.
 	fs := flag.NewFlagSet("xss", flag.ContinueOnError)
 	fs.BoolVar(&debugXSS, "debug", false, "enable debug logging for xss analyzer")
 	fs.StringVar(&callGraphAlgorithm, "callgraph", callGraphAlgorithm, "callgraph algorithm: taint or vta")
+	models.Register(fs)
 	Analyzer.Flags = *fs
 	// Also honor environment variable for convenience.
 	if os.Getenv("XSS_DEBUG") != "" {
@@ -88,7 +92,15 @@ func run(pass *analysis.Pass) (any, error) {
 	// program being analyzed before running the analysis.
 	//
 	// This prevents wasting time analyzing programs that don't log.
-	if !imports(pass, "net/http") {
+	loadedModels, err := models.Load()
+	if err != nil {
+		return nil, err
+	}
+	gate := []string{"net/http"}
+	if len(loadedModels) > 0 {
+		gate = append(gate, taint.ModelPackages(loadedModels)...)
+	}
+	if !imports(pass, gate...) {
 		return nil, nil
 	}
 
@@ -116,7 +128,7 @@ func run(pass *analysis.Pass) (any, error) {
 
 	// Run taint check for user controlled values (sources) ending
 	// up in injectable log functions (sinks).
-	diagnostics := taint.CheckDetailed(cg, userControlledValues, injectableFunctions, taint.WithSanitizers("html.EscapeString"))
+	diagnostics := taint.CheckDetailed(cg, userControlledValues, injectableFunctions, taint.WithSanitizers("html.EscapeString"), taint.WithModels(loadedModels...))
 
 	dbg("results: %d", len(diagnostics))
 

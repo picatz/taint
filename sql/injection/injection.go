@@ -11,6 +11,7 @@ import (
 
 	"github.com/picatz/taint"
 	"github.com/picatz/taint/callgraphutil"
+	"github.com/picatz/taint/internal/modelflag"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
@@ -240,9 +241,12 @@ var Analyzer = &analysis.Analyzer{
 
 var callGraphAlgorithm = string(callgraphutil.CallGraphAlgorithmTaint)
 
+var models modelflag.Flag
+
 func init() {
 	fs := flag.NewFlagSet("sqli", flag.ContinueOnError)
 	fs.StringVar(&callGraphAlgorithm, "callgraph", callGraphAlgorithm, "callgraph algorithm: taint or vta")
+	models.Register(fs)
 	Analyzer.Flags = *fs
 }
 
@@ -290,7 +294,15 @@ func run(pass *analysis.Pass) (any, error) {
 	// Require at least one supported SQL package to be imported before
 	// running the analysis. This avoids wasting time analyzing programs
 	// that do not use SQL.
-	if !imports(pass, supportedSQLPackages...) {
+	loadedModels, err := models.Load()
+	if err != nil {
+		return nil, err
+	}
+	gate := supportedSQLPackages
+	if len(loadedModels) > 0 {
+		gate = append(slices.Clone(supportedSQLPackages), taint.ModelPackages(loadedModels)...)
+	}
+	if !imports(pass, gate...) {
 		return nil, nil
 	}
 
@@ -347,7 +359,7 @@ func run(pass *analysis.Pass) (any, error) {
 
 	// Run taint check for user controlled values (sources) ending
 	// up in injectable SQL methods (sinks).
-	diagnostics := taint.CheckDetailed(cg, userControlledValues, injectableSQLMethods)
+	diagnostics := taint.CheckDetailed(cg, userControlledValues, injectableSQLMethods, taint.WithModels(loadedModels...))
 
 	// fmt.Printf("DEBUG: Found %d taint results\n", len(results))
 	// for i, result := range results {

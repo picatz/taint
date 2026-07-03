@@ -22,6 +22,7 @@ type checkConfig struct {
 	extraSources    []string
 	extraSinks      []string
 	sanitizers      []string
+	models          []Model
 	maxSummaryDepth int
 }
 
@@ -107,6 +108,25 @@ func newRuleRegistry(sources Sources, sinks Sinks, cfg checkConfig) *ruleRegistr
 		mergedSinks[sink] = struct{}{}
 	}
 
+	// Fold data-driven models into the string-keyed sets they share with the
+	// built-in rules. Model sinks and summaries carry positional argument
+	// selection the string sets cannot express, so they are compiled into
+	// rules directly below.
+	sanitizers := slices.Clone(cfg.sanitizers)
+	for _, m := range cfg.models {
+		for _, s := range m.Sources {
+			if s.Type != "" {
+				mergedSources[s.Type] = struct{}{}
+			}
+			if s.Call != "" {
+				mergedSources[s.Call] = struct{}{}
+			}
+		}
+		for _, s := range m.Sanitizers {
+			sanitizers = append(sanitizers, s.Func)
+		}
+	}
+
 	maxSummaryDepth := cfg.maxSummaryDepth
 	if maxSummaryDepth <= 0 {
 		maxSummaryDepth = defaultMaxSummaryDepth
@@ -128,11 +148,78 @@ func newRuleRegistry(sources Sources, sinks Sinks, cfg checkConfig) *ruleRegistr
 	for _, sink := range sortedKeys(mergedSinks) {
 		registry.sinkRules = append(registry.sinkRules, exactSinkRule(sink))
 	}
-	for _, sanitizer := range cfg.sanitizers {
+	for _, sanitizer := range sanitizers {
 		registry.sanitizers = append(registry.sanitizers, exactSanitizerRule(sanitizer))
 	}
+
+	// Model sinks and summaries are appended after the built-in rules so
+	// existing behavior is unchanged when no models are supplied. Cloning
+	// defaultPropagators avoids mutating the shared package-level slice.
 	registry.propagators = defaultPropagators
+	for _, m := range cfg.models {
+		for _, sk := range m.Sinks {
+			registry.sinkRules = append(registry.sinkRules, modelSinkRule(sk))
+		}
+		if len(m.Summaries) > 0 {
+			registry.propagators = slices.Clip(registry.propagators)
+			for _, sm := range m.Summaries {
+				registry.propagators = append(registry.propagators, modelPropagatorRule(sm))
+			}
+		}
+	}
 	return registry
+}
+
+// modelSinkRule compiles a SinkModel into a sinkRule. Args are logical
+// parameter positions (receiver excluded); an empty Args list selects every
+// argument, matching defaultSinkArguments.
+func modelSinkRule(sk SinkModel) sinkRule {
+	id := sk.Method
+	indices := slices.Clone(sk.Args)
+	return sinkRule{
+		id: id,
+		matchEdge: func(edge *callgraph.Edge) bool {
+			return edgeCallsSink(edge, id)
+		},
+		selectArgs: func(edge *callgraph.Edge) []ssa.Value {
+			params := defaultSinkArguments(edge)
+			return selectByIndex(params, indices)
+		},
+	}
+}
+
+// modelPropagatorRule compiles a SummaryModel into a propagatorRule. From lists
+// logical parameter positions (receiver excluded); an empty list selects every
+// argument.
+func modelPropagatorRule(sm SummaryModel) propagatorRule {
+	id := sm.Func
+	indices := slices.Clone(sm.From)
+	return propagatorRule{
+		id:        id,
+		matchCall: exactCallMatcher(id),
+		selectArgs: func(call *ssa.CallCommon) []ssa.Value {
+			params := call.Args
+			if sig := call.Signature(); !call.IsInvoke() && sig != nil && sig.Recv() != nil && len(params) > 0 {
+				params = params[1:]
+			}
+			return selectByIndex(params, indices)
+		},
+	}
+}
+
+// selectByIndex returns the elements of params at the given indices. An empty
+// indices slice returns params unchanged; out-of-range indices are skipped.
+func selectByIndex(params []ssa.Value, indices []int) []ssa.Value {
+	if len(indices) == 0 {
+		return params
+	}
+	out := make([]ssa.Value, 0, len(indices))
+	for _, i := range indices {
+		if i >= 0 && i < len(params) {
+			out = append(out, params[i])
+		}
+	}
+	return out
 }
 
 func sortedKeys(set stringSet) []string {

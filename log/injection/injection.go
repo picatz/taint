@@ -12,6 +12,7 @@ import (
 
 	"github.com/picatz/taint"
 	"github.com/picatz/taint/callgraphutil"
+	"github.com/picatz/taint/internal/modelflag"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
@@ -235,10 +236,13 @@ var Analyzer = &analysis.Analyzer{
 var debugLogI bool
 var callGraphAlgorithm = string(callgraphutil.CallGraphAlgorithmTaint)
 
+var models modelflag.Flag
+
 func init() {
 	fs := flag.NewFlagSet("logi", flag.ContinueOnError)
 	fs.BoolVar(&debugLogI, "debug", false, "enable debug logging for log injection analyzer")
 	fs.StringVar(&callGraphAlgorithm, "callgraph", callGraphAlgorithm, "callgraph algorithm: taint or vta")
+	models.Register(fs)
 	Analyzer.Flags = *fs
 	if os.Getenv("LOGI_DEBUG") != "" {
 		debugLogI = true
@@ -275,7 +279,15 @@ func run(pass *analysis.Pass) (any, error) {
 	// program being analyzed before running the analysis.
 	//
 	// This prevents wasting time analyzing programs that don't log.
-	if !imports(pass, supportedLogPackages...) {
+	loadedModels, err := models.Load()
+	if err != nil {
+		return nil, err
+	}
+	gate := supportedLogPackages
+	if len(loadedModels) > 0 {
+		gate = append(slices.Clone(supportedLogPackages), taint.ModelPackages(loadedModels)...)
+	}
+	if !imports(pass, gate...) {
 		return nil, nil
 	}
 
@@ -301,7 +313,7 @@ func run(pass *analysis.Pass) (any, error) {
 
 	// Run taint check for user controlled values (sources) ending
 	// up in injectable log functions (sinks).
-	diagnostics := taint.CheckDetailed(cg, userControlledValues, injectableLogFunctions)
+	diagnostics := taint.CheckDetailed(cg, userControlledValues, injectableLogFunctions, taint.WithModels(loadedModels...))
 	dbg("results=%d", len(diagnostics))
 
 	// Report each tainted log call discovered at the concrete callsite if available.

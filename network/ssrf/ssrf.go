@@ -16,6 +16,7 @@ import (
 
 	"github.com/picatz/taint"
 	"github.com/picatz/taint/callgraphutil"
+	"github.com/picatz/taint/internal/modelflag"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
@@ -61,10 +62,13 @@ var Analyzer = &analysis.Analyzer{
 var debugSSRF bool
 var callGraphAlgorithm = string(callgraphutil.CallGraphAlgorithmTaint)
 
+var models modelflag.Flag
+
 func init() {
 	fs := flag.NewFlagSet("ssrf", flag.ContinueOnError)
 	fs.BoolVar(&debugSSRF, "debug", false, "enable debug logging for ssrf analyzer")
 	fs.StringVar(&callGraphAlgorithm, "callgraph", callGraphAlgorithm, "callgraph algorithm: taint or vta")
+	models.Register(fs)
 	Analyzer.Flags = *fs
 	if os.Getenv("SSRF_DEBUG") != "" {
 		debugSSRF = true
@@ -96,7 +100,15 @@ func imports(pass *analysis.Pass, pkgs ...string) bool {
 }
 
 func run(pass *analysis.Pass) (any, error) {
-	if !imports(pass, supportedNetworkPackages...) {
+	loadedModels, err := models.Load()
+	if err != nil {
+		return nil, err
+	}
+	gate := supportedNetworkPackages
+	if len(loadedModels) > 0 {
+		gate = append(slices.Clone(supportedNetworkPackages), taint.ModelPackages(loadedModels)...)
+	}
+	if !imports(pass, gate...) {
 		return nil, nil
 	}
 
@@ -114,7 +126,7 @@ func run(pass *analysis.Pass) (any, error) {
 		return nil, fmt.Errorf("failed to create callgraph: %w", err)
 	}
 
-	diagnostics := taint.CheckDetailed(cg, userControlledValues, injectableNetworkFunctions)
+	diagnostics := taint.CheckDetailed(cg, userControlledValues, injectableNetworkFunctions, taint.WithModels(loadedModels...))
 	dbg("results=%d", len(diagnostics))
 
 	for _, diagnostic := range diagnostics {

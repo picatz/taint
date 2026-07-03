@@ -1,0 +1,6 @@
+# A user-supplied model for a package the built-in rules do not cover.
+package: custompkg
+sinks:
+  - method: "(*custompkg.DB).Exec"
+    args: [0]
+    kind: sql-injection

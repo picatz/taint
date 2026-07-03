@@ -199,6 +199,13 @@ $ ptrv -sarif-output ptrv.sarif ./...
 $ ssrf -sarif-output ssrf.sarif ./...
 ```
 
+### Custom models
+
+Beyond the built-in coverage below, you can teach any detector about your own
+frameworks and helpers with **models** — data-driven sources, sinks,
+sanitizers, and flow summaries in YAML. Pass `-models path/` to any CLI, or use
+`taint.WithModels` from the library. See [docs/models.md](docs/models.md).
+
 ### `sqli`
 
 The `sqli` [analyzer](https://pkg.go.dev/golang.org/x/tools/go/analysis#Analyzer) finds potential SQL injections.

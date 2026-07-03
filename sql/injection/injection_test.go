@@ -153,3 +153,14 @@ func TestBeegoORM(t *testing.T) {
 func TestGoFrameGDB(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "gogfgdb")
 }
+
+// TestModelsFlag exercises the -models CLI flag end to end: a user-supplied
+// model marks (*custompkg.DB).Exec as a sink, and the fixture that imports
+// custompkg is flagged even though the built-in rules do not cover it.
+func TestModelsFlag(t *testing.T) {
+	if err := Analyzer.Flags.Set("models", "testdata/models/custom.yaml"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = Analyzer.Flags.Set("models", "") })
+	analysistest.Run(t, testdata, Analyzer, "custommodel")
+}
