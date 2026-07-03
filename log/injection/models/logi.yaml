@@ -1,0 +1,190 @@
+# Built-in log-injection rules for the logi detector, as data.
+# Generated from the detector's sink list; every logging call is a sink
+# with default (all-argument) selection.
+package: github.com/go-kit/log
+sources:
+  - type: "*net/http.Request"
+  - type: "google.golang.org/protobuf/proto.Message"
+sinks:
+  - { method: "(github.com/go-kit/log.Logger).Log", kind: log-injection }
+---
+package: github.com/go-logr/logr
+sinks:
+  - { method: "(github.com/go-logr/logr.Logger).Error", kind: log-injection }
+  - { method: "(github.com/go-logr/logr.Logger).Info", kind: log-injection }
+---
+package: github.com/golang/glog
+sinks:
+  - { method: "(github.com/golang/glog.Verbose).Info", kind: log-injection }
+  - { method: "(github.com/golang/glog.Verbose).InfoContext", kind: log-injection }
+  - { method: "(github.com/golang/glog.Verbose).InfoContextDepth", kind: log-injection }
+  - { method: "(github.com/golang/glog.Verbose).InfoContextDepthf", kind: log-injection }
+  - { method: "(github.com/golang/glog.Verbose).InfoContextf", kind: log-injection }
+  - { method: "(github.com/golang/glog.Verbose).InfoDepth", kind: log-injection }
+  - { method: "(github.com/golang/glog.Verbose).InfoDepthf", kind: log-injection }
+  - { method: "(github.com/golang/glog.Verbose).Infof", kind: log-injection }
+  - { method: "(github.com/golang/glog.Verbose).Infoln", kind: log-injection }
+  - { method: "github.com/golang/glog.Error", kind: log-injection }
+  - { method: "github.com/golang/glog.ErrorContext", kind: log-injection }
+  - { method: "github.com/golang/glog.ErrorContextDepth", kind: log-injection }
+  - { method: "github.com/golang/glog.ErrorContextDepthf", kind: log-injection }
+  - { method: "github.com/golang/glog.ErrorContextf", kind: log-injection }
+  - { method: "github.com/golang/glog.ErrorDepth", kind: log-injection }
+  - { method: "github.com/golang/glog.ErrorDepthf", kind: log-injection }
+  - { method: "github.com/golang/glog.Errorf", kind: log-injection }
+  - { method: "github.com/golang/glog.Errorln", kind: log-injection }
+  - { method: "github.com/golang/glog.Exit", kind: log-injection }
+  - { method: "github.com/golang/glog.ExitContext", kind: log-injection }
+  - { method: "github.com/golang/glog.ExitContextDepth", kind: log-injection }
+  - { method: "github.com/golang/glog.ExitContextDepthf", kind: log-injection }
+  - { method: "github.com/golang/glog.ExitContextf", kind: log-injection }
+  - { method: "github.com/golang/glog.ExitDepth", kind: log-injection }
+  - { method: "github.com/golang/glog.ExitDepthf", kind: log-injection }
+  - { method: "github.com/golang/glog.Exitf", kind: log-injection }
+  - { method: "github.com/golang/glog.Exitln", kind: log-injection }
+  - { method: "github.com/golang/glog.Fatal", kind: log-injection }
+  - { method: "github.com/golang/glog.FatalContext", kind: log-injection }
+  - { method: "github.com/golang/glog.FatalContextDepth", kind: log-injection }
+  - { method: "github.com/golang/glog.FatalContextDepthf", kind: log-injection }
+  - { method: "github.com/golang/glog.FatalContextf", kind: log-injection }
+  - { method: "github.com/golang/glog.FatalDepth", kind: log-injection }
+  - { method: "github.com/golang/glog.FatalDepthf", kind: log-injection }
+  - { method: "github.com/golang/glog.Fatalf", kind: log-injection }
+  - { method: "github.com/golang/glog.Fatalln", kind: log-injection }
+  - { method: "github.com/golang/glog.Info", kind: log-injection }
+  - { method: "github.com/golang/glog.InfoContext", kind: log-injection }
+  - { method: "github.com/golang/glog.InfoContextDepth", kind: log-injection }
+  - { method: "github.com/golang/glog.InfoContextDepthf", kind: log-injection }
+  - { method: "github.com/golang/glog.InfoContextf", kind: log-injection }
+  - { method: "github.com/golang/glog.InfoDepth", kind: log-injection }
+  - { method: "github.com/golang/glog.InfoDepthf", kind: log-injection }
+  - { method: "github.com/golang/glog.Infof", kind: log-injection }
+  - { method: "github.com/golang/glog.Infoln", kind: log-injection }
+  - { method: "github.com/golang/glog.Warning", kind: log-injection }
+  - { method: "github.com/golang/glog.WarningContext", kind: log-injection }
+  - { method: "github.com/golang/glog.WarningContextDepth", kind: log-injection }
+  - { method: "github.com/golang/glog.WarningContextDepthf", kind: log-injection }
+  - { method: "github.com/golang/glog.WarningContextf", kind: log-injection }
+  - { method: "github.com/golang/glog.WarningDepth", kind: log-injection }
+  - { method: "github.com/golang/glog.WarningDepthf", kind: log-injection }
+  - { method: "github.com/golang/glog.Warningf", kind: log-injection }
+  - { method: "github.com/golang/glog.Warningln", kind: log-injection }
+---
+package: github.com/hashicorp/go-hclog
+sinks:
+  - { method: "(*github.com/hashicorp/go-hclog.Logger).Debug", kind: log-injection }
+  - { method: "(*github.com/hashicorp/go-hclog.Logger).Error", kind: log-injection }
+  - { method: "(*github.com/hashicorp/go-hclog.Logger).Info", kind: log-injection }
+  - { method: "(*github.com/hashicorp/go-hclog.Logger).Named", kind: log-injection }
+  - { method: "(*github.com/hashicorp/go-hclog.Logger).Trace", kind: log-injection }
+  - { method: "(*github.com/hashicorp/go-hclog.Logger).Warn", kind: log-injection }
+---
+package: github.com/rs/zerolog
+sinks:
+  - { method: "(*github.com/rs/zerolog.Event).Msg", kind: log-injection }
+  - { method: "(*github.com/rs/zerolog.Event).Msgf", kind: log-injection }
+---
+package: github.com/sirupsen/logrus
+sinks:
+  - { method: "(*github.com/sirupsen/logrus.Logger).Debug", kind: log-injection }
+  - { method: "(*github.com/sirupsen/logrus.Logger).Error", kind: log-injection }
+  - { method: "(*github.com/sirupsen/logrus.Logger).Fatal", kind: log-injection }
+  - { method: "(*github.com/sirupsen/logrus.Logger).Info", kind: log-injection }
+  - { method: "(*github.com/sirupsen/logrus.Logger).Panic", kind: log-injection }
+  - { method: "(*github.com/sirupsen/logrus.Logger).Warn", kind: log-injection }
+  - { method: "github.com/sirupsen/logrus.Debug", kind: log-injection }
+  - { method: "github.com/sirupsen/logrus.Error", kind: log-injection }
+  - { method: "github.com/sirupsen/logrus.Fatal", kind: log-injection }
+  - { method: "github.com/sirupsen/logrus.Info", kind: log-injection }
+  - { method: "github.com/sirupsen/logrus.Panic", kind: log-injection }
+  - { method: "github.com/sirupsen/logrus.Warn", kind: log-injection }
+---
+package: go.uber.org/zap
+sinks:
+  - { method: "(*go.uber.org/zap.Logger).DPanic", kind: log-injection }
+  - { method: "(*go.uber.org/zap.Logger).Debug", kind: log-injection }
+  - { method: "(*go.uber.org/zap.Logger).Error", kind: log-injection }
+  - { method: "(*go.uber.org/zap.Logger).Fatal", kind: log-injection }
+  - { method: "(*go.uber.org/zap.Logger).Info", kind: log-injection }
+  - { method: "(*go.uber.org/zap.Logger).Panic", kind: log-injection }
+  - { method: "(*go.uber.org/zap.Logger).Warn", kind: log-injection }
+  - { method: "(*go.uber.org/zap.SugaredLogger).DPanic", kind: log-injection }
+  - { method: "(*go.uber.org/zap.SugaredLogger).Debug", kind: log-injection }
+  - { method: "(*go.uber.org/zap.SugaredLogger).Error", kind: log-injection }
+  - { method: "(*go.uber.org/zap.SugaredLogger).Fatal", kind: log-injection }
+  - { method: "(*go.uber.org/zap.SugaredLogger).Info", kind: log-injection }
+  - { method: "(*go.uber.org/zap.SugaredLogger).Panic", kind: log-injection }
+  - { method: "(*go.uber.org/zap.SugaredLogger).Warn", kind: log-injection }
+---
+package: k8s.io/klog/v2
+sinks:
+  - { method: "k8s.io/klog/v2.Error", kind: log-injection }
+  - { method: "k8s.io/klog/v2.ErrorS", kind: log-injection }
+  - { method: "k8s.io/klog/v2.Errorf", kind: log-injection }
+  - { method: "k8s.io/klog/v2.Errorln", kind: log-injection }
+  - { method: "k8s.io/klog/v2.Fatal", kind: log-injection }
+  - { method: "k8s.io/klog/v2.Fatalf", kind: log-injection }
+  - { method: "k8s.io/klog/v2.Fatalln", kind: log-injection }
+  - { method: "k8s.io/klog/v2.Info", kind: log-injection }
+  - { method: "k8s.io/klog/v2.InfoS", kind: log-injection }
+  - { method: "k8s.io/klog/v2.Infof", kind: log-injection }
+  - { method: "k8s.io/klog/v2.Infoln", kind: log-injection }
+  - { method: "k8s.io/klog/v2.Warning", kind: log-injection }
+  - { method: "k8s.io/klog/v2.Warningf", kind: log-injection }
+  - { method: "k8s.io/klog/v2.Warningln", kind: log-injection }
+---
+package: log
+sinks:
+  - { method: "(*log.Logger).Fatal", kind: log-injection }
+  - { method: "(*log.Logger).Fatalf", kind: log-injection }
+  - { method: "(*log.Logger).Fatalln", kind: log-injection }
+  - { method: "(*log.Logger).Output", kind: log-injection }
+  - { method: "(*log.Logger).Panic", kind: log-injection }
+  - { method: "(*log.Logger).Panicf", kind: log-injection }
+  - { method: "(*log.Logger).Panicln", kind: log-injection }
+  - { method: "(*log.Logger).Print", kind: log-injection }
+  - { method: "(*log.Logger).Printf", kind: log-injection }
+  - { method: "(*log.Logger).Println", kind: log-injection }
+  - { method: "(*log.Logger).SetOutput", kind: log-injection }
+  - { method: "(*log.Logger).SetPrefix", kind: log-injection }
+  - { method: "(*log.Logger).Writer", kind: log-injection }
+  - { method: "log.Fatal", kind: log-injection }
+  - { method: "log.Fatalf", kind: log-injection }
+  - { method: "log.Fatalln", kind: log-injection }
+  - { method: "log.Output", kind: log-injection }
+  - { method: "log.Panic", kind: log-injection }
+  - { method: "log.Panicf", kind: log-injection }
+  - { method: "log.Panicln", kind: log-injection }
+  - { method: "log.Print", kind: log-injection }
+  - { method: "log.Printf", kind: log-injection }
+  - { method: "log.Println", kind: log-injection }
+  - { method: "log.SetOutput", kind: log-injection }
+  - { method: "log.SetPrefix", kind: log-injection }
+  - { method: "log.Writer", kind: log-injection }
+---
+package: log/slog
+sinks:
+  - { method: "(*log/slog.Logger).Debug", kind: log-injection }
+  - { method: "(*log/slog.Logger).DebugContext", kind: log-injection }
+  - { method: "(*log/slog.Logger).Error", kind: log-injection }
+  - { method: "(*log/slog.Logger).ErrorContext", kind: log-injection }
+  - { method: "(*log/slog.Logger).Info", kind: log-injection }
+  - { method: "(*log/slog.Logger).InfoContext", kind: log-injection }
+  - { method: "(*log/slog.Logger).Log", kind: log-injection }
+  - { method: "(*log/slog.Logger).LogAttrs", kind: log-injection }
+  - { method: "(*log/slog.Logger).Warn", kind: log-injection }
+  - { method: "(*log/slog.Logger).WarnContext", kind: log-injection }
+  - { method: "(*log/slog.Logger).With", kind: log-injection }
+  - { method: "(*log/slog.Record).Add", kind: log-injection }
+  - { method: "(*log/slog.Record).AddAttrs", kind: log-injection }
+  - { method: "log/slog.Debug", kind: log-injection }
+  - { method: "log/slog.DebugContext", kind: log-injection }
+  - { method: "log/slog.Error", kind: log-injection }
+  - { method: "log/slog.ErrorContext", kind: log-injection }
+  - { method: "log/slog.Info", kind: log-injection }
+  - { method: "log/slog.InfoContext", kind: log-injection }
+  - { method: "log/slog.Log", kind: log-injection }
+  - { method: "log/slog.LogAttrs", kind: log-injection }
+  - { method: "log/slog.NewRecord", kind: log-injection }
+  - { method: "log/slog.Warn", kind: log-injection }
+  - { method: "log/slog.WarnContext", kind: log-injection }
