@@ -52,17 +52,9 @@ jobs:
       with:
         go-version-file: go.mod
 
-    # A handful of files carry pre-existing formatting debt from before this
-    # check existed, in packages outside this CI-hardening workstream's scope
-    # (cmd/taint, callgraphutil, cmd/taint-eval, and ssrf testdata fixtures).
-    # They're excluded here so the check can start enforcing formatting on
-    # everything else; drop entries from $exclude as each file is reformatted
-    # by its owning workstream, and drop the variable entirely once the list
-    # is empty.
     - name: gofmt
       run: |
-        exclude='^(callgraphutil/matcher\.go|cmd/taint/main\.go|cmd/taint-eval/snapshot\.go|network/ssrf/testdata/src/dial/main\.go|network/ssrf/testdata/src/newrequest/main\.go)$'
-        unformatted="$(gofmt -l . | grep -Ev "$exclude" || true)"
+        unformatted="$(gofmt -l .)"
         if [ -n "$unformatted" ]; then
           echo "::error::gofmt found unformatted files:"
           echo "$unformatted"

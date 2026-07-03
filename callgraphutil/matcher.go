@@ -208,70 +208,70 @@ func PathsSearchCallToAdvancedAllNodes(graph *callgraph.Graph, pattern string) (
 		return nil, MatchExact, err
 	}
 
-    var allPaths Paths
-    seen := make(map[string]bool) // dedupe paths by caller→callee chains
+	var allPaths Paths
+	seen := make(map[string]bool) // dedupe paths by caller→callee chains
 
-    // Helper to add a path if not seen
-    addPath := func(p Path) {
-        // build a compact key based on node addresses
-        if len(p) == 0 {
-            key := "<standalone>" + pattern
-            if !seen[key] {
-                seen[key] = true
-                allPaths = append(allPaths, p)
-            }
-            return
-        }
-        var b strings.Builder
-        for i, e := range p {
-            if i > 0 {
-                b.WriteByte('|')
-            }
-            // use edge identity to distinguish multiple callsites to same callee
-            fmt.Fprintf(&b, "%p", e)
-        }
-        key := b.String()
-        if !seen[key] {
-            seen[key] = true
-            allPaths = append(allPaths, p)
-        }
-    }
+	// Helper to add a path if not seen
+	addPath := func(p Path) {
+		// build a compact key based on node addresses
+		if len(p) == 0 {
+			key := "<standalone>" + pattern
+			if !seen[key] {
+				seen[key] = true
+				allPaths = append(allPaths, p)
+			}
+			return
+		}
+		var b strings.Builder
+		for i, e := range p {
+			if i > 0 {
+				b.WriteByte('|')
+			}
+			// use edge identity to distinguish multiple callsites to same callee
+			fmt.Fprintf(&b, "%p", e)
+		}
+		key := b.String()
+		if !seen[key] {
+			seen[key] = true
+			allPaths = append(allPaths, p)
+		}
+	}
 
-    // Phase 1: Try the standard search from root
-    if graph.Root != nil {
-        rootPaths := PathsSearchCallToWithMatcher(graph.Root, matcher)
-        for _, p := range rootPaths {
-            addPath(p)
-        }
-    }
+	// Phase 1: Try the standard search from root
+	if graph.Root != nil {
+		rootPaths := PathsSearchCallToWithMatcher(graph.Root, matcher)
+		for _, p := range rootPaths {
+			addPath(p)
+		}
+	}
 
-    // Phase 2: Always include direct callers from disconnected components
-    for _, node := range graph.Nodes {
-        if node == nil || node.Func == nil {
-            continue
-        }
-        if matcher.Match(node.Func.String()) {
-            // Collect all direct callers
-            foundAny := false
-            for _, potentialCaller := range graph.Nodes {
-                if potentialCaller == nil || potentialCaller == node {
-                    continue
-                }
-                for _, edge := range potentialCaller.Out {
-                    if edge.Callee == node {
-                        addPath(Path{edge})
-                        foundAny = true
-                    }
-                }
-            }
-            // If no callers, include standalone match
-            if !foundAny {
-                addPath(Path{})
-            }
-        }
-    }
+	// Phase 2: Always include direct callers from disconnected components
+	for _, node := range graph.Nodes {
+		if node == nil || node.Func == nil {
+			continue
+		}
+		if matcher.Match(node.Func.String()) {
+			// Collect all direct callers
+			foundAny := false
+			for _, potentialCaller := range graph.Nodes {
+				if potentialCaller == nil || potentialCaller == node {
+					continue
+				}
+				for _, edge := range potentialCaller.Out {
+					if edge.Callee == node {
+						addPath(Path{edge})
+						foundAny = true
+					}
+				}
+			}
+			// If no callers, include standalone match
+			if !foundAny {
+				addPath(Path{})
+			}
+		}
+	}
 
-    return []Path(allPaths), matcher.Strategy(), nil
+	return []Path(allPaths), matcher.Strategy(), nil
 }
 
 // PathsSearchCallToAdvancedWithStrategy provides advanced function matching with explicit strategy
