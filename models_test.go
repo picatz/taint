@@ -18,6 +18,61 @@ func mustParseModels(t *testing.T, yaml string) []Model {
 	return models
 }
 
+func TestParseArgSelector(t *testing.T) {
+	valid := []struct {
+		in           string
+		wantReceiver bool
+		wantLo       int
+		wantHi       int
+	}{
+		{"0", false, 0, 0},
+		{"3", false, 3, 3},
+		{"0..2", false, 0, 2},
+		{"1..1", false, 1, 1},
+		{"receiver", true, 0, 0},
+		{"Receiver", true, 0, 0},
+		{"Argument[0]", false, 0, 0},
+		{"Argument[1..3]", false, 1, 3},
+		{"Argument[receiver]", true, 0, 0},
+		// Field/element access is accepted but over-approximated to the argument.
+		{"Argument[0].Field[pkg.T.f]", false, 0, 0},
+		{"Argument[2].ArrayElement", false, 2, 2},
+	}
+	for _, tc := range valid {
+		var a ArgSelector
+		if err := a.parse(tc.in); err != nil {
+			t.Errorf("parse(%q) unexpected error: %v", tc.in, err)
+			continue
+		}
+		if a.receiver != tc.wantReceiver || a.lo != tc.wantLo || a.hi != tc.wantHi {
+			t.Errorf("parse(%q) = {recv:%v lo:%d hi:%d}, want {recv:%v lo:%d hi:%d}",
+				tc.in, a.receiver, a.lo, a.hi, tc.wantReceiver, tc.wantLo, tc.wantHi)
+		}
+	}
+
+	invalid := []string{"", "x", "-1", "2..0", "0..", "..2", "Argument[0", "Argument[]", "arg 0"}
+	for _, in := range invalid {
+		var a ArgSelector
+		if err := a.parse(in); err == nil {
+			t.Errorf("parse(%q) expected error, got none", in)
+		}
+	}
+}
+
+func TestArgSelectorConstructorsAndString(t *testing.T) {
+	cases := map[ArgSelector]string{
+		Arg(0):         "0",
+		Arg(5):         "5",
+		ArgRange(0, 2): "0..2",
+		Receiver():     "receiver",
+	}
+	for sel, want := range cases {
+		if sel.String() != want {
+			t.Errorf("%+v.String() = %q, want %q", sel, sel.String(), want)
+		}
+	}
+}
+
 func TestModelsFromPath(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "one.yaml"), []byte("package: example.com/a\nsinks:\n  - {method: p.A}"), 0o644); err != nil {
@@ -79,7 +134,7 @@ summaries:
 	if models[0].Package != "example.com/a" || len(models[0].Sinks) != 1 {
 		t.Fatalf("unexpected first model: %+v", models[0])
 	}
-	if models[0].Sinks[0].Method != "(*example.com/a.DB).Exec" || len(models[0].Sinks[0].Args) != 1 || models[0].Sinks[0].Args[0] != 0 {
+	if models[0].Sinks[0].Method != "(*example.com/a.DB).Exec" || len(models[0].Sinks[0].Args) != 1 || models[0].Sinks[0].Args[0].String() != "0" {
 		t.Fatalf("unexpected sink: %+v", models[0].Sinks[0])
 	}
 	if len(models[1].Summaries) != 1 || models[1].Summaries[0].To != "return" {
@@ -253,6 +308,125 @@ sanitizers:
 	withoutModel := CheckDetailed(cg, NewSources("*net/http.Request"), NewSinks("(*database/sql.DB).Query"))
 	if len(withoutModel) != 1 {
 		t.Fatalf("expected one diagnostic without the sanitizer model, got %d", len(withoutModel))
+	}
+}
+
+func TestCheckDetailedModelReceiverSink(t *testing.T) {
+	cg, pkg := detailedGraphForSource(t, `package main
+
+type Req struct{}
+
+func userReq() *Req { return &Req{} }
+
+func (r *Req) Exec() {}
+
+func main() {
+	r := userReq()
+	r.Exec()
+}
+`)
+	// userReq's result is the source; the sink fires when Exec is called on
+	// that tainted receiver, selected via "receiver".
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sources:
+  - call: "%[1]s.userReq"
+sinks:
+  - method: "(*%[1]s.Req).Exec"
+    args: [receiver]
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(), NewSinks(), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected one diagnostic from receiver sink, got %d", len(diags))
+	}
+}
+
+func TestCheckDetailedModelReceiverSummary(t *testing.T) {
+	cg, pkg := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+type Req struct{}
+
+func userReq() *Req { return &Req{} }
+
+// Body returns a constant, so the engine does not propagate taint on its own;
+// the model's receiver->result summary is what carries it.
+func (r *Req) Body() string { return "safe" }
+
+func main() {
+	db := &sql.DB{}
+	r := userReq()
+	db.Query(r.Body())
+}
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sources:
+  - call: "%[1]s.userReq"
+summaries:
+  - func: "(*%[1]s.Req).Body"
+    from: [receiver]
+    to: result
+`, pkg))
+	withModel := CheckDetailed(cg, NewSources(), NewSinks("(*database/sql.DB).Query"), WithModels(model...))
+	if len(withModel) != 1 {
+		t.Fatalf("expected receiver->result summary to taint the query, got %d", len(withModel))
+	}
+	sourceOnly := mustParseModels(t, fmt.Sprintf("package: %[1]s\nsources:\n  - call: \"%[1]s.userReq\"", pkg))
+	withoutSummary := CheckDetailed(cg, NewSources(), NewSinks("(*database/sql.DB).Query"), WithModels(sourceOnly...))
+	if len(withoutSummary) != 0 {
+		t.Fatalf("without the summary the constant-returning Body should not taint, got %d", len(withoutSummary))
+	}
+}
+
+func TestCheckDetailedModelArgRange(t *testing.T) {
+	cg, pkg := detailedGraphForSource(t, `package main
+
+import "net/http"
+
+type DB struct{}
+
+func (d *DB) Do(a string, b string, c string) {}
+
+func main() {
+	db := &DB{}
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Tainted value in the modeled range (args 0..1).
+		db.Do("x", r.URL.Query().Get("q"), "y")
+	})
+}
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sinks:
+  - method: "(*%[1]s.DB).Do"
+    args: ["0..1"]
+`, pkg))
+	diags := CheckDetailed(cg, NewSources("*net/http.Request"), NewSinks(), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected one diagnostic from arg range 0..1, got %d", len(diags))
+	}
+
+	// The same tainted value at position 2 is outside the modeled range.
+	cgOut, _ := detailedGraphForSource(t, `package main
+
+import "net/http"
+
+type DB struct{}
+
+func (d *DB) Do(a string, b string, c string) {}
+
+func main() {
+	db := &DB{}
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		db.Do("x", "y", r.URL.Query().Get("q"))
+	})
+}
+`)
+	out := CheckDetailed(cgOut, NewSources("*net/http.Request"), NewSinks(), WithModels(model...))
+	if len(out) != 0 {
+		t.Fatalf("expected no diagnostic when the taint is outside the range, got %d", len(out))
 	}
 }
 

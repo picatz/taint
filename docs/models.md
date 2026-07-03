@@ -29,8 +29,8 @@ sanitizers:
 
 summaries:
   - func: "github.com/acme/util.Concat"          # taint flows from arguments...
-    from: [0, 1]                                  # ...these parameters...
-    to: return                                    # ...to the result (the default)
+    from: [0, 1]                                  # ...these parameters (or "receiver")...
+    to: result                                    # ...to the result (the default)
 ```
 
 Every section is optional. A file may hold many packages:
@@ -56,16 +56,46 @@ sinks:
 You can read these off `ssadump` output or the built-in rule lists in the
 detector packages if you're unsure of the exact spelling.
 
-### Argument positions (`args` and `from`)
+### Argument selectors (`args` and `from`)
 
-`args` (for sinks) and `from` (for summaries) are **logical parameter
-positions as written in the source signature, excluding the receiver**, and
-are zero-based. For `func (c *Conn) Exec(ctx context.Context, sql string)`,
-`ctx` is `0` and `sql` is `1`. Omitting the list means *every* parameter is a
-channel.
+`args` (for sinks) and `from` (for summaries) are lists of **argument
+selectors**. Each selector names one or more parameters — **zero-based, as
+written in the source signature, excluding the receiver**. For
+`func (c *Conn) Exec(ctx context.Context, sql string)`, `ctx` is `0` and `sql`
+is `1`. Omitting the list means *every* parameter is selected.
 
-Selecting only the argument that actually carries the danger keeps bound
-query parameters and other safe arguments from producing false positives.
+Selecting only the argument that actually carries the danger keeps bound query
+parameters and other safe arguments from producing false positives.
+
+A selector is written in any of these forms:
+
+| Selector | Selects |
+| --- | --- |
+| `0` | argument 0 |
+| `0..2` | arguments 0, 1, and 2 (inclusive) |
+| `receiver` | the receiver of a method call |
+| `Argument[1]` | argument 1 (CodeQL-compatible spelling) |
+| `Argument[0..2]` | a CodeQL-compatible range |
+| `Argument[receiver]` | the receiver |
+
+```yaml
+sinks:
+  - method: "(*acme.Cmd).Run"
+    args: [receiver]          # the tainted command is the receiver itself
+  - method: "acme.Printf"
+    args: ["0..3"]            # any of the first four arguments
+
+summaries:
+  - func: "(*acme.Builder).String"
+    from: [receiver]          # taint on the builder flows to its result
+    to: result
+```
+
+For portability with CodeQL models-as-data you may also write a trailing field
+or element access, e.g. `Argument[0].Field[pkg.T.f]` or
+`Argument[0].ArrayElement`. This engine is **not field-sensitive**, so such a
+selector is interpreted loosely: it resolves to the whole argument rather than
+a sub-value.
 
 ## Using models
 
@@ -119,8 +149,10 @@ stays clean.
 
 ## Limitations
 
-- Summaries flow only to the return value (`to: return`); field- and
-  element-level access paths are not modeled yet.
+- Summaries flow only to the result (`to: result`); flowing taint into an
+  output-parameter is not modeled yet.
+- The engine is not field-sensitive, so field- and element-level access paths
+  resolve to the whole argument (see above).
 - Import-aware gating in the CLIs keys on the model's `package`, so it should
   match the imported path.
 

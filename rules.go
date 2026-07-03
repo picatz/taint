@@ -175,7 +175,7 @@ func newRuleRegistry(sources Sources, sinks Sinks, cfg checkConfig) *ruleRegistr
 // argument, matching defaultSinkArguments.
 func modelSinkRule(sk SinkModel) sinkRule {
 	id := sk.Method
-	indices := slices.Clone(sk.Args)
+	selectors := slices.Clone(sk.Args)
 	return sinkRule{
 		id: id,
 		matchEdge: func(edge *callgraph.Edge) bool {
@@ -183,43 +183,54 @@ func modelSinkRule(sk SinkModel) sinkRule {
 		},
 		selectArgs: func(edge *callgraph.Edge) []ssa.Value {
 			params := defaultSinkArguments(edge)
-			return selectByIndex(params, indices)
+			return resolveSelectors(selectors, params, sinkReceiver(edge))
 		},
 	}
 }
 
-// modelPropagatorRule compiles a SummaryModel into a propagatorRule. From lists
-// logical parameter positions (receiver excluded); an empty list selects every
-// argument.
+// modelPropagatorRule compiles a SummaryModel into a propagatorRule. From
+// selects the parameters (or receiver) that carry taint into the result; an
+// empty list selects every argument.
 func modelPropagatorRule(sm SummaryModel) propagatorRule {
 	id := sm.Func
-	indices := slices.Clone(sm.From)
+	selectors := slices.Clone(sm.From)
 	return propagatorRule{
 		id:        id,
 		matchCall: exactCallMatcher(id),
 		selectArgs: func(call *ssa.CallCommon) []ssa.Value {
-			params := call.Args
-			if sig := call.Signature(); !call.IsInvoke() && sig != nil && sig.Recv() != nil && len(params) > 0 {
-				params = params[1:]
-			}
-			return selectByIndex(params, indices)
+			params, receiver := callParams(call)
+			return resolveSelectors(selectors, params, receiver)
 		},
 	}
 }
 
-// selectByIndex returns the elements of params at the given indices. An empty
-// indices slice returns params unchanged; out-of-range indices are skipped.
-func selectByIndex(params []ssa.Value, indices []int) []ssa.Value {
-	if len(indices) == 0 {
-		return params
+// sinkReceiver returns the receiver value of a sink call site, or nil when the
+// call is not a method. For an interface invoke the receiver rides in
+// CallCommon.Value; for an ordinary method call it is the first argument.
+func sinkReceiver(edge *callgraph.Edge) ssa.Value {
+	if edge == nil || edge.Site == nil {
+		return nil
 	}
-	out := make([]ssa.Value, 0, len(indices))
-	for _, i := range indices {
-		if i >= 0 && i < len(params) {
-			out = append(out, params[i])
-		}
+	_, receiver := callParams(edge.Site.Common())
+	return receiver
+}
+
+// callParams splits a call's arguments into its receiver-excluded parameters
+// and its receiver (nil when the call is not a method).
+func callParams(call *ssa.CallCommon) (params []ssa.Value, receiver ssa.Value) {
+	if call == nil {
+		return nil, nil
 	}
-	return out
+	if call.IsInvoke() {
+		// An interface invoke keeps the receiver in Value; Args holds only the
+		// declared parameters.
+		return call.Args, call.Value
+	}
+	params = call.Args
+	if sig := call.Signature(); sig != nil && sig.Recv() != nil && len(params) > 0 {
+		return params[1:], params[0]
+	}
+	return params, nil
 }
 
 func sortedKeys(set stringSet) []string {

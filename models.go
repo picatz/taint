@@ -8,7 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 
+	"golang.org/x/tools/go/ssa"
 	"gopkg.in/yaml.v3"
 )
 
@@ -61,10 +64,11 @@ type SinkModel struct {
 	// Method is the fully-qualified function or method that is the sink,
 	// e.g. "(*database/sql.DB).Query" or "os/exec.Command".
 	Method string `yaml:"method"`
-	// Args lists the zero-based parameter positions — as written in the
-	// source signature, excluding the receiver — that are the injection
-	// channel. An empty list treats every parameter as a channel.
-	Args []int `yaml:"args,omitempty"`
+	// Args selects the parameters that are the injection channel. An empty
+	// list treats every parameter as a channel. Each entry is an
+	// [ArgSelector] — an argument index, a range, or "receiver". See its
+	// documentation for the accepted syntax.
+	Args []ArgSelector `yaml:"args,omitempty"`
 	// Kind is an optional, informational label (e.g. "sql-injection").
 	Kind string `yaml:"kind,omitempty"`
 }
@@ -85,15 +89,166 @@ type SanitizerModel struct {
 type SummaryModel struct {
 	// Func is the fully-qualified function or method, e.g. "strings.Join".
 	Func string `yaml:"func"`
-	// From lists the zero-based parameter positions — excluding the receiver —
-	// that carry taint into the result. An empty list treats every parameter
-	// as carrying taint.
-	From []int `yaml:"from,omitempty"`
-	// To names the destination of the flow. Only "return" is supported, which
-	// is also the default when empty.
+	// From selects the parameters that carry taint into the result. An empty
+	// list treats every parameter as carrying taint. Each entry is an
+	// [ArgSelector].
+	From []ArgSelector `yaml:"from,omitempty"`
+	// To names the destination of the flow. Only the result is supported
+	// ("result", or the CodeQL alias "ReturnValue"); "return" and the empty
+	// string are accepted as synonyms.
 	To string `yaml:"to,omitempty"`
 	// Kind is an optional, informational label.
 	Kind string `yaml:"kind,omitempty"`
+}
+
+// An ArgSelector identifies one or more parameters of a modeled call: a single
+// argument, an inclusive range of arguments, or the receiver. Argument
+// positions are zero-based and written as they appear in the source signature,
+// excluding the receiver.
+//
+// In YAML a selector is a scalar in any of these forms:
+//
+//	0                 # a single argument
+//	0..2              # arguments 0, 1, and 2 (inclusive)
+//	receiver          # the receiver of a method call
+//	Argument[1]       # CodeQL-compatible spelling of "1"
+//	Argument[0..2]    # CodeQL-compatible range
+//	Argument[receiver]
+//
+// For portability with CodeQL models-as-data, a trailing field or element
+// access (e.g. "Argument[0].Field[pkg.T.f]" or "Argument[0].ArrayElement") is
+// accepted but interpreted loosely: this engine is not field-sensitive, so the
+// selector resolves to the whole argument rather than a sub-value.
+type ArgSelector struct {
+	raw      string
+	receiver bool
+	lo, hi   int // inclusive argument range; used when !receiver
+}
+
+// Arg selects the argument at the given zero-based position (receiver excluded).
+func Arg(index int) ArgSelector {
+	return ArgSelector{raw: strconv.Itoa(index), lo: index, hi: index}
+}
+
+// ArgRange selects the inclusive range of arguments [lo, hi].
+func ArgRange(lo, hi int) ArgSelector {
+	return ArgSelector{raw: fmt.Sprintf("%d..%d", lo, hi), lo: lo, hi: hi}
+}
+
+// Receiver selects the receiver of a method call.
+func Receiver() ArgSelector { return ArgSelector{raw: "receiver", receiver: true} }
+
+// String returns the selector's canonical textual form.
+func (a ArgSelector) String() string {
+	switch {
+	case a.receiver:
+		return "receiver"
+	case a.lo == a.hi:
+		return strconv.Itoa(a.lo)
+	default:
+		return fmt.Sprintf("%d..%d", a.lo, a.hi)
+	}
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler, parsing a scalar selector.
+func (a *ArgSelector) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.ScalarNode {
+		return fmt.Errorf("taint: argument selector must be a scalar, got %q", node.Tag)
+	}
+	return a.parse(node.Value)
+}
+
+// MarshalYAML implements yaml.Marshaler, emitting the canonical form.
+func (a ArgSelector) MarshalYAML() (any, error) { return a.String(), nil }
+
+func (a *ArgSelector) parse(s string) error {
+	a.raw = s
+	body := strings.TrimSpace(s)
+
+	// CodeQL "Argument[...]" spelling, with an optional trailing field or
+	// element access after the closing bracket that we accept but ignore.
+	if rest, ok := strings.CutPrefix(body, "Argument["); ok {
+		end := strings.IndexByte(rest, ']')
+		if end < 0 {
+			return fmt.Errorf("taint: invalid argument selector %q: missing ']'", s)
+		}
+		body = strings.TrimSpace(rest[:end])
+	}
+
+	if strings.EqualFold(body, "receiver") {
+		a.receiver, a.lo, a.hi = true, 0, 0
+		return nil
+	}
+
+	lo, hi, err := parseArgRange(body)
+	if err != nil {
+		return fmt.Errorf("taint: invalid argument selector %q: %w", s, err)
+	}
+	a.receiver, a.lo, a.hi = false, lo, hi
+	return nil
+}
+
+func parseArgRange(s string) (lo, hi int, err error) {
+	if before, after, ok := strings.Cut(s, ".."); ok {
+		lo, err = parseIndex(before)
+		if err != nil {
+			return 0, 0, err
+		}
+		hi, err = parseIndex(after)
+		if err != nil {
+			return 0, 0, err
+		}
+		if hi < lo {
+			return 0, 0, fmt.Errorf("range %q is empty", s)
+		}
+		return lo, hi, nil
+	}
+	n, err := parseIndex(s)
+	if err != nil {
+		return 0, 0, err
+	}
+	return n, n, nil
+}
+
+func parseIndex(s string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return 0, fmt.Errorf("%q is not an argument index", strings.TrimSpace(s))
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("argument index %d is negative", n)
+	}
+	return n, nil
+}
+
+// resolve appends the SSA values the selector names to out, given the call's
+// receiver-excluded parameters and its receiver (which may be nil).
+func (a ArgSelector) resolve(params []ssa.Value, receiver ssa.Value, out []ssa.Value) []ssa.Value {
+	if a.receiver {
+		if receiver != nil {
+			out = append(out, receiver)
+		}
+		return out
+	}
+	for i := a.lo; i <= a.hi; i++ {
+		if i >= 0 && i < len(params) {
+			out = append(out, params[i])
+		}
+	}
+	return out
+}
+
+// resolveSelectors resolves a list of selectors to SSA values. An empty list
+// selects every parameter, preserving the "no args means all args" default.
+func resolveSelectors(sels []ArgSelector, params []ssa.Value, receiver ssa.Value) []ssa.Value {
+	if len(sels) == 0 {
+		return params
+	}
+	out := make([]ssa.Value, 0, len(sels))
+	for _, s := range sels {
+		out = s.resolve(params, receiver, out)
+	}
+	return out
 }
 
 // ParseModels decodes zero or more [Model] values from YAML. Each YAML document
@@ -188,9 +343,6 @@ func (m Model) validate() error {
 		if s.Method == "" {
 			return fmt.Errorf("taint: model %q sink #%d is missing 'method'", m.Package, i)
 		}
-		if err := validateArgs(m.Package, "sink "+s.Method, s.Args); err != nil {
-			return err
-		}
 	}
 	for i, s := range m.Sanitizers {
 		if s.Func == "" {
@@ -201,23 +353,23 @@ func (m Model) validate() error {
 		if s.Func == "" {
 			return fmt.Errorf("taint: model %q summary #%d is missing 'func'", m.Package, i)
 		}
-		if s.To != "" && s.To != "return" {
-			return fmt.Errorf("taint: model %q summary %q has unsupported 'to: %s' (only 'return' is supported)", m.Package, s.Func, s.To)
-		}
-		if err := validateArgs(m.Package, "summary "+s.Func, s.From); err != nil {
-			return err
+		if !isResultDestination(s.To) {
+			return fmt.Errorf("taint: model %q summary %q has unsupported 'to: %s' (only 'result' is supported)", m.Package, s.Func, s.To)
 		}
 	}
 	return nil
 }
 
-func validateArgs(pkg, what string, args []int) error {
-	for _, a := range args {
-		if a < 0 {
-			return fmt.Errorf("taint: model %q %s has negative argument index %d", pkg, what, a)
-		}
+// isResultDestination reports whether a summary's To field names the result.
+// Only the result is supported; "return", "result", "ReturnValue", and the
+// empty string are accepted as synonyms.
+func isResultDestination(to string) bool {
+	switch strings.ToLower(strings.TrimSpace(to)) {
+	case "", "return", "result", "returnvalue":
+		return true
+	default:
+		return false
 	}
-	return nil
 }
 
 // ModelsFromPath loads models from a filesystem path that is either a single
