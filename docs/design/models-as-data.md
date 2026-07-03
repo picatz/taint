@@ -8,19 +8,25 @@ Argument selectors support indices, ranges, `receiver`, and the CodeQL
 since the engine is not field-sensitive). Packs can be embedded via
 `//go:embed` + `LoadModels(fs.FS)`. See [../models.md](../models.md).
 
-Built-in-table migration (in progress, incremental): the `ptrv` and `ssrf`
-detectors now load their sources, sinks, and import gate from embedded packs
-(`command/pathtraversal/models`, `network/ssrf/models`) instead of Go tables,
-each proven by its analysistest suite. To avoid duplicating selector logic, a
-model sink with no `args`/`select` inherits the engine's built-in selector for
-its method id (the `exactSinkRule` switch remains the single source of truth
-for standard-library sinks, and still serves direct `NewSinks` callers).
-Custom selectors that positional indices cannot express are exposed as named
-selectors (`select: http-post-url`, etc.), reusable from user models.
+Built-in-table migration (done for detectors): **all six detectors** —
+`sqli`, `logi`, `cmdi`, `xss`, `ptrv`, `ssrf` — now load their sources, sinks,
+and (where it coincides with the sink packages) their import gate from an
+embedded pack next to the detector, instead of Go tables. Each is proven by
+its analysistest suite; the large `sqli`/`logi` packs were generated from the
+existing sink lists so the transcription is exact.
 
-Remaining: migrate the other detectors (`sqli`, `logi`, `cmdi`, `xss`) and,
-optionally, the propagator table; and true field-level flow. The rest of this
-document is the original design.
+To avoid duplicating selector logic, a model sink with no `args`/`select`
+inherits the engine's built-in selector for its method id (the `exactSinkRule`
+switch remains the single source of truth for standard-library sinks, and
+still serves direct `NewSinks` callers). Custom selectors that positional
+indices cannot express are exposed as named selectors (`select: http-post-url`,
+etc.), reusable from user models. Detectors whose import gate is broader than
+their sink packages (`xss` triggers only on `net/http`; `sqli` also triggers
+on the `go-sqlite3` driver) keep an explicit gate; the constant-query
+post-filter in `sqli` stays in Go.
+
+Remaining: optionally migrate the shared propagator table; and true
+field-level flow. The rest of this document is the original design.
 
 ## Problem
 
