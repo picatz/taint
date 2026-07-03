@@ -1,0 +1,15 @@
+# Example model pack. Copy and adapt for your own frameworks; see docs/models.md.
+package: example.com/framework
+sources:
+  - type: "*example.com/framework.Request"
+  - call: "example.com/framework.ReadInput"
+sinks:
+  - method: "(*example.com/framework.DB).Exec"
+    args: [receiver, "1..2"]     # the receiver and the SQL text
+    kind: sql-injection
+sanitizers:
+  - func: "example.com/framework.Escape"
+summaries:
+  - func: "example.com/framework.Concat"
+    from: [0, 1]
+    to: result

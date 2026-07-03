@@ -114,6 +114,20 @@ diags := taint.CheckDetailed(cg, sources, sinks, taint.WithModels(models...))
 `taint.ModelsFromPath(path)` accepts either a file or a directory. Parsing
 validates every model and reports the first problem it finds.
 
+Because `LoadModels` takes an `fs.FS`, you can ship a pack of models embedded
+in your own program and load it with no files on disk:
+
+```go
+//go:embed models
+var modelsFS embed.FS
+
+sub, _ := fs.Sub(modelsFS, "models")
+models, err := taint.LoadModels(sub)
+```
+
+A ready-to-copy example pack that exercises every rule kind and an access-path
+selector lives at [`testdata/models/example.yaml`](../testdata/models/example.yaml).
+
 ### From the CLIs
 
 Every detector CLI (`sqli`, `logi`, `cmdi`, `xss`, `ptrv`, `ssrf`) accepts a

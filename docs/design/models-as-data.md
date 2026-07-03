@@ -1,10 +1,19 @@
 # Design: models as data (P4)
 
-Status: first phase implemented — user-supplied models augment the built-in
-rules via `taint.WithModels` / `LoadModels` / `ModelsFromPath` and a `-models`
-CLI flag on every detector. See [../models.md](../models.md) for the user
-guide. Remaining: porting the built-in tables to embedded model packs, and
-field-level access paths. The rest of this document is the original design.
+Status: implemented for user-supplied models. Models augment the built-in
+rules via `taint.WithModels` / `LoadModels` / `ModelsFromPath`, a `-models`
+CLI flag on every detector, and a `models` command in the interactive tool.
+Argument selectors support indices, ranges, `receiver`, and the CodeQL
+`Argument[...]` spellings (field/element access parses but resolves loosely,
+since the engine is not field-sensitive). Packs can be embedded via
+`//go:embed` + `LoadModels(fs.FS)`. See [../models.md](../models.md).
+
+Remaining: porting the built-in detector tables to embedded packs so the
+engine's own knowledge is data too (a careful, per-pack refactor — the
+propagator `allArgs` selector includes the receiver, whereas model summary
+selectors are receiver-excluded, so each ported pack must be proven against
+the existing analysistest suites); and true field-level flow. The rest of
+this document is the original design.
 
 ## Problem
 

@@ -1,13 +1,51 @@
 package taint
 
 import (
+	"embed"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
 )
+
+// exampleModelsFS demonstrates the idiomatic way to ship model packs with a
+// program: embed a directory of YAML and load it with LoadModels.
+//
+//go:embed testdata/models
+var exampleModelsFS embed.FS
+
+func TestLoadModelsFromEmbedFS(t *testing.T) {
+	sub, err := fs.Sub(exampleModelsFS, "testdata/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := LoadModels(sub)
+	if err != nil {
+		t.Fatalf("LoadModels(embed.FS): %v", err)
+	}
+	if len(models) != 1 || models[0].Package != "example.com/framework" {
+		t.Fatalf("unexpected embedded models: %+v", models)
+	}
+	// The example pack exercises every rule kind and an access-path selector.
+	m := models[0]
+	if len(m.Sources) != 2 || len(m.Sinks) != 1 || len(m.Sanitizers) != 1 || len(m.Summaries) != 1 {
+		t.Fatalf("unexpected embedded model shape: %+v", m)
+	}
+	if got := selectorStrings(m.Sinks[0].Args); got != "receiver,1..2" {
+		t.Fatalf("sink selectors = %q, want %q", got, "receiver,1..2")
+	}
+}
+
+func selectorStrings(sels []ArgSelector) string {
+	parts := make([]string, len(sels))
+	for i, s := range sels {
+		parts[i] = s.String()
+	}
+	return strings.Join(parts, ",")
+}
 
 func mustParseModels(t *testing.T, yaml string) []Model {
 	t.Helper()
