@@ -25,8 +25,16 @@ their sink packages (`xss` triggers only on `net/http`; `sqli` also triggers
 on the `go-sqlite3` driver) keep an explicit gate; the constant-query
 post-filter in `sqli` stays in Go.
 
-Remaining: optionally migrate the shared propagator table; and true
-field-level flow. The rest of this document is the original design.
+The shared propagator table is also embedded now
+(`builtin/propagators.yaml`), generated from the Go table.
+
+Field-level flow (first phase): sources are now field-sensitive — a
+`SourceModel` with a `field` taints only accesses to that struct field, and
+the FieldAddr walk skips sibling-field referrers when a field-source applies
+to the base type, so one field's taint does not leak into another. Remaining
+here: field-sensitive sinks/summaries (argument access paths into fields), and
+tracking field taint through stores in the memory model. The rest of this
+document is the original design.
 
 ## Problem
 

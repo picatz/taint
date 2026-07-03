@@ -68,10 +68,30 @@ func WithMaxSummaryDepth(depth int) Option {
 }
 
 type sourceRule struct {
-	id         string
-	matchType  func(types.Type) bool
-	matchCall  func(*ssa.CallCommon) bool
-	matchValue func(ssa.Value) bool
+	id            string
+	matchType     func(types.Type) bool
+	matchField    func(baseType types.Type, fieldName string) bool
+	matchBaseType func(types.Type) bool
+	matchCall     func(*ssa.CallCommon) bool
+	matchValue    func(ssa.Value) bool
+}
+
+// fieldSourceRule builds a field-sensitive source: only accesses to the named
+// struct field of the given type are tainted. It deliberately leaves matchType
+// and matchValue nil so the whole value, and its other fields, stay clean.
+// matchBaseType lets the walk detect that a base type is field-sensitive and
+// therefore avoid tainting one field through a sibling.
+func fieldSourceRule(typeID, field string) sourceRule {
+	id := typeID + "." + field
+	return sourceRule{
+		id: id,
+		matchField: func(baseType types.Type, fieldName string) bool {
+			return fieldName == field && typeStringMatches(baseType, typeID)
+		},
+		matchBaseType: func(baseType types.Type) bool {
+			return typeStringMatches(baseType, typeID)
+		},
+	}
 }
 
 type sinkRule struct {
@@ -116,12 +136,15 @@ func newRuleRegistry(sources Sources, sinks Sinks, cfg checkConfig) *ruleRegistr
 	// selection the string sets cannot express, so they are compiled into
 	// rules directly below.
 	sanitizers := slices.Clone(cfg.sanitizers)
+	var fieldSources []sourceRule
 	for _, m := range cfg.models {
 		for _, s := range m.Sources {
-			if s.Type != "" {
+			switch {
+			case s.Type != "" && s.Field != "":
+				fieldSources = append(fieldSources, fieldSourceRule(s.Type, s.Field))
+			case s.Type != "":
 				mergedSources[s.Type] = struct{}{}
-			}
-			if s.Call != "" {
+			case s.Call != "":
 				mergedSources[s.Call] = struct{}{}
 			}
 		}
@@ -148,6 +171,7 @@ func newRuleRegistry(sources Sources, sinks Sinks, cfg checkConfig) *ruleRegistr
 	for _, source := range sortedKeys(mergedSources) {
 		registry.sourceRules = append(registry.sourceRules, exactSourceRule(source))
 	}
+	registry.sourceRules = append(registry.sourceRules, fieldSources...)
 	for _, sink := range sortedKeys(mergedSinks) {
 		registry.sinkRules = append(registry.sinkRules, exactSinkRule(sink))
 	}

@@ -503,6 +503,62 @@ func (ctx taintContext) matchSourceType(t types.Type) (string, bool) {
 	return "", false
 }
 
+// accessesOtherField reports whether ref reads or addresses a different field
+// of the same base as cur. Such a referrer belongs to a sibling field and must
+// not carry taint into cur under field-sensitive matching.
+func accessesOtherField(ref ssa.Instruction, cur *ssa.FieldAddr) bool {
+	switch r := ref.(type) {
+	case *ssa.FieldAddr:
+		return r.X == cur.X && r.Field != cur.Field
+	case *ssa.Field:
+		return r.X == cur.X && r.Field != cur.Field
+	default:
+		return false
+	}
+}
+
+// fieldAddrName returns the struct field name a FieldAddr selects, or "" if it
+// cannot be determined.
+func fieldAddrName(fa *ssa.FieldAddr) string {
+	if fa == nil || fa.X == nil {
+		return ""
+	}
+	t := fa.X.Type()
+	if p, ok := types.Unalias(t).Underlying().(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	s, ok := types.Unalias(t).Underlying().(*types.Struct)
+	if !ok || fa.Field < 0 || fa.Field >= s.NumFields() {
+		return ""
+	}
+	return s.Field(fa.Field).Name()
+}
+
+// matchSourceField reports whether accessing fieldName of a value of baseType
+// matches a field-sensitive source.
+func (ctx taintContext) matchSourceField(baseType types.Type, fieldName string) (string, bool) {
+	if fieldName == "" {
+		return "", false
+	}
+	for _, rule := range ctx.sourceRules {
+		if rule.matchField != nil && rule.matchField(baseType, fieldName) {
+			return rule.id, true
+		}
+	}
+	return "", false
+}
+
+// hasFieldSource reports whether any field-sensitive source is declared for
+// baseType. When one is, the walk must not taint one field through a sibling.
+func (ctx taintContext) hasFieldSource(baseType types.Type) bool {
+	for _, rule := range ctx.sourceRules {
+		if rule.matchBaseType != nil && rule.matchBaseType(baseType) {
+			return true
+		}
+	}
+	return false
+}
+
 func (ctx taintContext) matchSourceCall(call *ssa.CallCommon) (string, bool) {
 	for _, rule := range ctx.sourceRules {
 		if rule.matchCall != nil && rule.matchCall(call) {
@@ -808,6 +864,10 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 			value.X.Type().String()
 			=? "*net/http.Request"
 		*/
+		// A field-sensitive source taints only accesses to its named field.
+		if src, ok := ctx.matchSourceField(value.X.Type(), fieldAddrName(value)); ok {
+			return true, src, value
+		}
 		// If the base of the field address is a source (directly or via proto message),
 		// then any field access derived from it is also tainted.
 		if src, ok := ctx.matchSourceType(value.X.Type()); ok {
@@ -841,9 +901,16 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 				}
 			}
 		}
+		// If the base type carries a field-sensitive source, a sibling field's
+		// taint must not leak into this field, so skip referrers that access a
+		// different field of the same base.
+		fieldSensitive := ctx.hasFieldSource(value.X.Type())
 		indexableValueRefs := value.X.Referrers()
 		if indexableValueRefs != nil {
 			for _, ref := range *indexableValueRefs {
+				if fieldSensitive && accessesOtherField(ref, value) {
+					continue
+				}
 				refVal, isVal := ref.(ssa.Value)
 				if isVal {
 					tainted, src, tv := checkSSAValueWithContext(path, ctx, refVal, visited)

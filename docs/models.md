@@ -23,6 +23,8 @@ sinks:
 sources:
   - type: "*github.com/acme/http.Request"        # values of this type are tainted
   - call: "github.com/acme/http.UserInput"       # this call's return value is tainted
+  - type: "*github.com/acme/http.Request"        # field-sensitive: only req.Body
+    field: Body                                  # is tainted, not req.Method
 
 sanitizers:
   - func: "github.com/acme/safe.Escape"          # neutralizes taint
@@ -55,6 +57,21 @@ sinks:
 
 You can read these off `ssadump` output or the built-in rule lists in the
 detector packages if you're unsure of the exact spelling.
+
+### Field-sensitive sources
+
+A source with a `field` taints only accesses to that struct field, not the
+whole value or its siblings:
+
+```yaml
+sources:
+  - type: "*github.com/acme/api.Request"
+    field: Body
+```
+
+With this model, `req.Body` reaching a sink is reported, but `req.Method` — a
+different field of the same request — stays clean, and passing `req` itself to
+a sink does not flag. `field` requires `type`.
 
 ### Argument selectors (`args` and `from`)
 
@@ -204,8 +221,9 @@ stays clean.
 
 - Summaries flow only to the result (`to: result`); flowing taint into an
   output-parameter is not modeled yet.
-- The engine is not field-sensitive, so field- and element-level access paths
-  resolve to the whole argument (see above).
+- Sources are field-sensitive (via `field`), but sink/summary argument access
+  paths are not: a field- or element-level access path in `args`/`from`
+  resolves to the whole argument (see above).
 - Import-aware gating in the CLIs keys on the model's `package`, so it should
   match the imported path.
 

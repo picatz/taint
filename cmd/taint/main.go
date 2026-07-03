@@ -1260,6 +1260,9 @@ func writeModelsSummary(bt *bufio.Writer, models []taint.Model) {
 			if s.Call != "" {
 				what = "call " + s.Call
 			}
+			if s.Field != "" {
+				what += " field " + s.Field
+			}
 			bt.WriteString("  " + styleSubtle.Render("source") + " " + what + "\n")
 		}
 		for _, s := range m.Sinks {

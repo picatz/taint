@@ -52,6 +52,11 @@ type SourceModel struct {
 	// Type is a fully-qualified type whose values are tainted, e.g.
 	// "*net/http.Request".
 	Type string `yaml:"type,omitempty"`
+	// Field, when set alongside Type, restricts the source to a single struct
+	// field: only accesses to that field of the type are tainted, not the
+	// whole value. For example Type "*example.com/x.Request" with Field "Body"
+	// taints req.Body but leaves req.Method clean. Requires Type.
+	Field string `yaml:"field,omitempty"`
 	// Call is a fully-qualified function or method whose return value is
 	// tainted, e.g. "example.com/x.UserInput".
 	Call string `yaml:"call,omitempty"`
@@ -342,6 +347,9 @@ func (m Model) validate() error {
 	for i, s := range m.Sources {
 		if (s.Type == "") == (s.Call == "") {
 			return fmt.Errorf("taint: model %q source #%d must set exactly one of 'type' or 'call'", m.Package, i)
+		}
+		if s.Field != "" && s.Type == "" {
+			return fmt.Errorf("taint: model %q source #%d sets 'field' without 'type'", m.Package, i)
 		}
 	}
 	for i, s := range m.Sinks {

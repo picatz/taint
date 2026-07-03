@@ -546,6 +546,84 @@ func TestSelectorNames(t *testing.T) {
 	}
 }
 
+func TestCheckDetailedFieldSensitiveSource(t *testing.T) {
+	cg, pkg := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+type Req struct {
+	Body     string
+	Internal string
+}
+
+func handle(r *Req) {
+	db := &sql.DB{}
+	db.Query(r.Body)     // tainted: Body is the source field
+	db.Query(r.Internal) // clean: Internal is not a source field
+}
+
+func main() {
+	handle(&Req{})
+}
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sources:
+  - type: "*%[1]s.Req"
+    field: Body
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(), NewSinks("(*database/sql.DB).Query"), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected exactly one diagnostic (Body only, not Internal), got %d", len(diags))
+	}
+	// The finding must be the Body access.
+	if got, want := diags[0].Result.SourceType, "*"+pkg+".Req.Body"; got != want {
+		t.Fatalf("source = %q, want %q", got, want)
+	}
+}
+
+func TestCheckDetailedFieldSensitiveSourceWholeValueStaysClean(t *testing.T) {
+	// Passing the whole struct (not the tainted field) to a sink must stay
+	// clean, since only the field is a source.
+	cg, pkg := detailedGraphForSource(t, `package main
+
+type Req struct{ Body string }
+
+func sink(r *Req) {}
+
+func handle(r *Req) {
+	sink(r)
+}
+
+func main() {
+	handle(&Req{})
+}
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sources:
+  - type: "*%[1]s.Req"
+    field: Body
+sinks:
+  - method: "%[1]s.sink"
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(), NewSinks(), WithModels(model...))
+	if len(diags) != 0 {
+		t.Fatalf("expected no diagnostic for the whole value, got %d", len(diags))
+	}
+}
+
+func TestParseModelsFieldSource(t *testing.T) {
+	ms := mustParseModels(t, "package: p\nsources:\n  - { type: \"*p.T\", field: Body }")
+	if ms[0].Sources[0].Field != "Body" {
+		t.Fatalf("field not parsed: %+v", ms[0].Sources[0])
+	}
+	// Field requires a type.
+	if _, err := ParseModels(strings.NewReader("package: p\nsources:\n  - { call: p.F, field: Body }")); err == nil {
+		t.Fatal("expected error for 'field' without 'type'")
+	}
+}
+
 func TestCheckDetailedModelSummary(t *testing.T) {
 	cg, pkg := detailedGraphForSource(t, `package main
 
