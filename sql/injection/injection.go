@@ -213,6 +213,18 @@ var injectableSQLMethods = taint.NewSinks(
 	"(*github.com/jackc/pgx/v5/pgxpool.Pool).Query",
 	"(*github.com/jackc/pgx/v5/pgxpool.Pool).QueryRow",
 	"(*github.com/jackc/pgx/v5/pgxpool.Pool).Exec",
+	// beego ORM (github.com/beego/beego/v2/client/orm): Raw executes a raw
+	// SQL string. Raw is declared on the DML interface embedded by Ormer.
+	"(github.com/beego/beego/v2/client/orm.DML).Raw",
+	"(github.com/beego/beego/v2/client/orm.DML).RawWithCtx",
+	// GoFrame (github.com/gogf/gf/v2/database/gdb): the DB interface's
+	// raw-SQL methods. Query/Exec/GetAll/GetOne are (ctx, sql, args...);
+	// Raw is (sql, args...).
+	"(github.com/gogf/gf/v2/database/gdb.DB).Query",
+	"(github.com/gogf/gf/v2/database/gdb.DB).Exec",
+	"(github.com/gogf/gf/v2/database/gdb.DB).GetAll",
+	"(github.com/gogf/gf/v2/database/gdb.DB).GetOne",
+	"(github.com/gogf/gf/v2/database/gdb.DB).Raw",
 	//
 	// TODO: add more, consider (non-)pointer variants?
 )
@@ -270,6 +282,8 @@ var supportedSQLPackages = []string{
 	"github.com/lann/squirrel",
 	"github.com/jackc/pgx/v5",
 	"github.com/jackc/pgx/v5/pgxpool",
+	"github.com/beego/beego/v2/client/orm",
+	"github.com/gogf/gf/v2/database/gdb",
 }
 
 func run(pass *analysis.Pass) (any, error) {
@@ -352,10 +366,15 @@ func run(pass *analysis.Pass) (any, error) {
 		// (first argument after context).
 		queryEdge := result.Path[len(result.Path)-1]
 
-		// Get the query arguments. If the sink is a method call, the
-		// first argument is the receiver, which we skip.
-		queryArgs := queryEdge.Site.Common().Args
-		if queryEdge.Site.Common().Signature().Recv() != nil {
+		// Get the query arguments. For an ordinary (non-invoke) method call
+		// the receiver is passed as the first argument and must be skipped;
+		// for an interface invoke the receiver is carried separately (in
+		// CallCommon.Value), so Args already starts at the first real
+		// parameter and must not be trimmed — trimming it there would drop
+		// the query text of a no-context method such as (orm.DML).Raw.
+		common := queryEdge.Site.Common()
+		queryArgs := common.Args
+		if !common.IsInvoke() && common.Signature() != nil && common.Signature().Recv() != nil {
 			if len(queryArgs) < 1 {
 				continue
 			}

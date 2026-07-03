@@ -247,6 +247,18 @@ func exactSinkRule(id string) sinkRule {
 		"(github.com/jackc/pgx/v5.Tx).Prepare":
 		// Prepare is (ctx, name, sql): the SQL text follows the name.
 		selectArgs = sqlContextQueryArgument(1)
+	case "(github.com/gogf/gf/v2/database/gdb.DB).Query",
+		"(github.com/gogf/gf/v2/database/gdb.DB).Exec",
+		"(github.com/gogf/gf/v2/database/gdb.DB).GetAll",
+		"(github.com/gogf/gf/v2/database/gdb.DB).GetOne",
+		"(github.com/beego/beego/v2/client/orm.DML).RawWithCtx":
+		// (ctx, sql, args...): only the SQL text is the injection channel.
+		selectArgs = sqlContextQueryArgument(0)
+	case "(github.com/gogf/gf/v2/database/gdb.DB).Raw",
+		"(github.com/beego/beego/v2/client/orm.DML).Raw":
+		// (sql, args...): the SQL text is the first argument. These are
+		// interface methods (invoke), so Args has no receiver.
+		selectArgs = sinkArgAt(0)
 	}
 	return sinkRule{
 		id: id,

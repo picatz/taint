@@ -203,6 +203,10 @@ var injectableLogFunctions = taint.NewSinks(
 	"k8s.io/klog/v2.Fatalf",
 	"k8s.io/klog/v2.Fatalln",
 
+	// github.com/go-kit/log: structured logging via a single Log method
+	// taking alternating key/value pairs.
+	"(github.com/go-kit/log.Logger).Log",
+
 // TODO: support configuring additional logging packages here as needed.
 )
 
@@ -216,6 +220,7 @@ var supportedLogPackages = []string{
 	"github.com/rs/zerolog",
 	"github.com/go-logr/logr",
 	"k8s.io/klog/v2",
+	"github.com/go-kit/log",
 }
 
 // Analyzer finds potential log injection issues to demonstrate

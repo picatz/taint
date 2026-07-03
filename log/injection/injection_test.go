@@ -104,3 +104,7 @@ func TestKlog(t *testing.T) {
 func TestGlogModern(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "glogmodern")
 }
+
+func TestGoKitLog(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "gokitlog")
+}

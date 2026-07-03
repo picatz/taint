@@ -145,3 +145,11 @@ func TestPgxPool(t *testing.T) {
 func TestPgxTx(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "pgxtx")
 }
+
+func TestBeegoORM(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "beegoorm")
+}
+
+func TestGoFrameGDB(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "gogfgdb")
+}
