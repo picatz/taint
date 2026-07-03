@@ -1,0 +1,11 @@
+# Built-in command-injection (CWE-78) rules for the cmdi detector, as data.
+# The command constructors are sinks; the command-string channel comes from
+# the engine's built-in exec-command selector (which also covers the argument
+# to `sh -c`), so the sinks are listed here without repeating that selector.
+package: os/exec
+sources:
+  - type: "*net/http.Request"
+  - type: "google.golang.org/protobuf/proto.Message"
+sinks:
+  - { method: os/exec.Command, kind: command-injection }
+  - { method: os/exec.CommandContext, kind: command-injection }

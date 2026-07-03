@@ -2,10 +2,12 @@ package injection
 
 import (
 	"context"
+	"embed"
 	"flag"
 	"fmt"
 	"go/token"
 	"go/types"
+	"io/fs"
 	"os"
 	"slices"
 	"strings"
@@ -18,18 +20,24 @@ import (
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 )
 
-var userControlledValues = taint.NewSources(
-	"*net/http.Request",
-	"google.golang.org/protobuf/proto.Message",
-)
+// builtinModelsFS holds the detector's built-in rules as data: the sources,
+// the command-constructor sinks, and the package that gates the analysis.
+//
+//go:embed models
+var builtinModelsFS embed.FS
 
-var injectableCommandFunctions = taint.NewSinks(
-	"os/exec.Command",
-	"os/exec.CommandContext",
-)
+var builtinModels = mustLoadBuiltinModels()
 
-var supportedCommandPackages = []string{
-	"os/exec",
+func mustLoadBuiltinModels() []taint.Model {
+	sub, err := fs.Sub(builtinModelsFS, "models")
+	if err != nil {
+		panic(fmt.Errorf("cmdi: %w", err))
+	}
+	ms, err := taint.LoadModels(sub)
+	if err != nil {
+		panic(fmt.Errorf("cmdi: loading built-in models: %w", err))
+	}
+	return ms
 }
 
 // Analyzer finds potential command injection issues.
@@ -82,15 +90,12 @@ func imports(pass *analysis.Pass, pkgs ...string) bool {
 }
 
 func run(pass *analysis.Pass) (any, error) {
-	loadedModels, err := models.Load()
+	userModels, err := models.Load()
 	if err != nil {
 		return nil, err
 	}
-	gate := supportedCommandPackages
-	if len(loadedModels) > 0 {
-		gate = append(slices.Clone(supportedCommandPackages), taint.ModelPackages(loadedModels)...)
-	}
-	if !imports(pass, gate...) {
+	allModels := append(slices.Clone(builtinModels), userModels...)
+	if !imports(pass, taint.ModelPackages(allModels)...) {
 		return nil, nil
 	}
 
@@ -108,7 +113,7 @@ func run(pass *analysis.Pass) (any, error) {
 		return nil, fmt.Errorf("failed to create callgraph: %w", err)
 	}
 
-	diagnostics := taint.CheckDetailed(cg, userControlledValues, injectableCommandFunctions, taint.WithModels(loadedModels...))
+	diagnostics := taint.CheckDetailed(cg, taint.NewSources(), taint.NewSinks(), taint.WithModels(allModels...))
 	dbg("results=%d", len(diagnostics))
 
 	for _, diagnostic := range diagnostics {

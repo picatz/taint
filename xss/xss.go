@@ -2,10 +2,12 @@ package xss
 
 import (
 	"context"
+	"embed"
 	"flag"
 	"fmt"
 	"go/token"
 	"go/types"
+	"io/fs"
 	"os"
 	"slices"
 	"strings"
@@ -20,22 +22,25 @@ import (
 	"github.com/picatz/taint/internal/modelflag"
 )
 
-var userControlledValues = taint.NewSources(
-	"*net/http.Request",
-)
+// builtinModelsFS holds the detector's built-in rules as data: the source,
+// the response-writer/formatting sinks, and the html.EscapeString sanitizer.
+//
+//go:embed models
+var builtinModelsFS embed.FS
 
-var injectableFunctions = taint.NewSinks(
-	// Note: at this time, they *must* be a function or method.
-	"(net/http.ResponseWriter).Write",
-	"(net/http.ResponseWriter).WriteHeader",
-	"(io.Writer).Write",
-	"fmt.Fprint",
-	"fmt.Fprintf",
-	"fmt.Fprintln",
-	"io.Copy",
-	"io.WriteString",
-	"net/http.Error",
-)
+var builtinModels = mustLoadBuiltinModels()
+
+func mustLoadBuiltinModels() []taint.Model {
+	sub, err := fs.Sub(builtinModelsFS, "models")
+	if err != nil {
+		panic(fmt.Errorf("xss: %w", err))
+	}
+	ms, err := taint.LoadModels(sub)
+	if err != nil {
+		panic(fmt.Errorf("xss: loading built-in models: %w", err))
+	}
+	return ms
+}
 
 // Analyzer finds potential XSS issues.
 var Analyzer = &analysis.Analyzer{
@@ -92,17 +97,18 @@ func run(pass *analysis.Pass) (any, error) {
 	// program being analyzed before running the analysis.
 	//
 	// This prevents wasting time analyzing programs that don't log.
-	loadedModels, err := models.Load()
+	userModels, err := models.Load()
 	if err != nil {
 		return nil, err
 	}
-	gate := []string{"net/http"}
-	if len(loadedModels) > 0 {
-		gate = append(gate, taint.ModelPackages(loadedModels)...)
-	}
+	// The trigger stays net/http (plus any user-model packages): the built-in
+	// sinks also live in fmt and io, but gating on those common packages
+	// would run this analysis on nearly every program.
+	gate := append([]string{"net/http"}, taint.ModelPackages(userModels)...)
 	if !imports(pass, gate...) {
 		return nil, nil
 	}
+	allModels := append(slices.Clone(builtinModels), userModels...)
 
 	// Get the built SSA IR.
 	buildSSA := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
@@ -128,7 +134,7 @@ func run(pass *analysis.Pass) (any, error) {
 
 	// Run taint check for user controlled values (sources) ending
 	// up in injectable log functions (sinks).
-	diagnostics := taint.CheckDetailed(cg, userControlledValues, injectableFunctions, taint.WithSanitizers("html.EscapeString"), taint.WithModels(loadedModels...))
+	diagnostics := taint.CheckDetailed(cg, taint.NewSources(), taint.NewSinks(), taint.WithModels(allModels...))
 
 	dbg("results: %d", len(diagnostics))
 

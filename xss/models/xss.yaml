@@ -1,0 +1,25 @@
+# Built-in cross-site scripting (CWE-79) rules for the xss detector, as data.
+# Response writers and formatting helpers that emit to a writer are sinks;
+# html.EscapeString sanitizes. Selection defaults to every argument (the
+# engine's built-in behavior for these methods).
+package: net/http
+sources:
+  - type: "*net/http.Request"
+sinks:
+  - { method: "(net/http.ResponseWriter).Write", kind: xss }
+  - { method: "(net/http.ResponseWriter).WriteHeader", kind: xss }
+  - { method: net/http.Error, kind: xss }
+sanitizers:
+  - func: html.EscapeString
+---
+package: io
+sinks:
+  - { method: "(io.Writer).Write", kind: xss }
+  - { method: io.Copy, kind: xss }
+  - { method: io.WriteString, kind: xss }
+---
+package: fmt
+sinks:
+  - { method: fmt.Fprint, kind: xss }
+  - { method: fmt.Fprintf, kind: xss }
+  - { method: fmt.Fprintln, kind: xss }
