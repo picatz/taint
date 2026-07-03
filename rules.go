@@ -173,18 +173,60 @@ func newRuleRegistry(sources Sources, sinks Sinks, cfg checkConfig) *ruleRegistr
 // modelSinkRule compiles a SinkModel into a sinkRule. Args are logical
 // parameter positions (receiver excluded); an empty Args list selects every
 // argument, matching defaultSinkArguments.
+// namedSinkSelectors maps a model sink's `select:` value to a built-in
+// argument selector for channels that positional indices cannot express.
+// These are reusable from user models as well as the built-in packs.
+var namedSinkSelectors = map[string]func(*callgraph.Edge) []ssa.Value{
+	// The first argument, or the shell command string of a `sh -c` form.
+	"exec-command": execCommandSinkArguments,
+	// The URL argument of an HTTP client POST, accounting for bound method
+	// values that omit the receiver from the argument list.
+	"http-post-url": httpClientPostURLArgument,
+	// The SQL text of a (ctx, sql, ...) method — the argument after the
+	// context, skipping bound query parameters.
+	"sql-query": sqlContextQueryArgument(0),
+	// The SQL text of a Prepare-style (ctx, name, sql) method.
+	"sql-prepare": sqlContextQueryArgument(1),
+}
+
+// SelectorNames returns the sorted names accepted by a sink model's `select`
+// field.
+func SelectorNames() []string {
+	return slices.Sorted(maps.Keys(namedSinkSelectors))
+}
+
+// isKnownSelector reports whether name is a valid sink `select` value.
+func isKnownSelector(name string) bool {
+	_, ok := namedSinkSelectors[name]
+	return ok
+}
+
 func modelSinkRule(sk SinkModel) sinkRule {
 	id := sk.Method
-	selectors := slices.Clone(sk.Args)
+	var selectArgs func(*callgraph.Edge) []ssa.Value
+	switch {
+	case sk.Select != "":
+		selectArgs = namedSinkSelectors[sk.Select]
+	case len(sk.Args) > 0:
+		selectors := slices.Clone(sk.Args)
+		selectArgs = func(edge *callgraph.Edge) []ssa.Value {
+			params := defaultSinkArguments(edge)
+			return resolveSelectors(selectors, params, sinkReceiver(edge))
+		}
+	default:
+		// No explicit selection: defer to the built-in selector for this
+		// method id, so naming a well-known sink yields its precise channel.
+		// exactSinkRule falls back to every argument for methods the engine
+		// does not specifically model, preserving the "no args means all
+		// args" default for user-defined sinks.
+		selectArgs = exactSinkRule(id).selectArgs
+	}
 	return sinkRule{
 		id: id,
 		matchEdge: func(edge *callgraph.Edge) bool {
 			return edgeCallsSink(edge, id)
 		},
-		selectArgs: func(edge *callgraph.Edge) []ssa.Value {
-			params := defaultSinkArguments(edge)
-			return resolveSelectors(selectors, params, sinkReceiver(edge))
-		},
+		selectArgs: selectArgs,
 	}
 }
 
@@ -309,6 +351,12 @@ func exactSinkRule(id string) sinkRule {
 	switch id {
 	case "os/exec.Command", "os/exec.CommandContext":
 		selectArgs = execCommandSinkArguments
+	case "os.Open", "os.OpenFile", "os.Create", "os.ReadFile", "os.WriteFile",
+		"os.Remove", "os.RemoveAll", "os.Mkdir", "os.MkdirAll",
+		"io/ioutil.ReadFile", "io/ioutil.WriteFile", "io/ioutil.ReadDir":
+		selectArgs = sinkArgAt(0)
+	case "net/http.ServeFile":
+		selectArgs = sinkArgAt(2)
 	case "net/http.Get", "net/http.Post", "net/http.PostForm", "net/http.Head":
 		selectArgs = sinkArgAt(0)
 	case "net/http.NewRequest":

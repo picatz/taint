@@ -8,12 +8,19 @@ Argument selectors support indices, ranges, `receiver`, and the CodeQL
 since the engine is not field-sensitive). Packs can be embedded via
 `//go:embed` + `LoadModels(fs.FS)`. See [../models.md](../models.md).
 
-Remaining: porting the built-in detector tables to embedded packs so the
-engine's own knowledge is data too (a careful, per-pack refactor — the
-propagator `allArgs` selector includes the receiver, whereas model summary
-selectors are receiver-excluded, so each ported pack must be proven against
-the existing analysistest suites); and true field-level flow. The rest of
-this document is the original design.
+Built-in-table migration (in progress, incremental): the `ptrv` and `ssrf`
+detectors now load their sources, sinks, and import gate from embedded packs
+(`command/pathtraversal/models`, `network/ssrf/models`) instead of Go tables,
+each proven by its analysistest suite. To avoid duplicating selector logic, a
+model sink with no `args`/`select` inherits the engine's built-in selector for
+its method id (the `exactSinkRule` switch remains the single source of truth
+for standard-library sinks, and still serves direct `NewSinks` callers).
+Custom selectors that positional indices cannot express are exposed as named
+selectors (`select: http-post-url`, etc.), reusable from user models.
+
+Remaining: migrate the other detectors (`sqli`, `logi`, `cmdi`, `xss`) and,
+optionally, the propagator table; and true field-level flow. The rest of this
+document is the original design.
 
 ## Problem
 

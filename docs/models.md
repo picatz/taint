@@ -97,6 +97,28 @@ or element access, e.g. `Argument[0].Field[pkg.T.f]` or
 selector is interpreted loosely: it resolves to the whole argument rather than
 a sub-value.
 
+When a sink lists no `args` and no `select`, it inherits the engine's built-in
+selector for that method — so naming a well-known standard-library sink yields
+its precise channel — falling back to every argument for methods the engine
+does not specifically model.
+
+### Named selectors (`select`)
+
+Some channels can't be expressed positionally — for example, "only the URL
+argument, accounting for a bound method value." A sink may instead name a
+built-in selector with `select` (mutually exclusive with `args`):
+
+```yaml
+sinks:
+  - method: "(*net/http.Client).Post"
+    select: http-post-url      # only the URL, not the body or content type
+```
+
+The available names are `exec-command` (the command string, including the
+argument to `sh -c`), `http-post-url`, `sql-query` (the SQL text after a
+context argument), and `sql-prepare` (the SQL text of a `Prepare(ctx, name,
+sql)` method).
+
 ## Using models
 
 ### From the library

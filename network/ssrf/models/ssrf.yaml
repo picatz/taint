@@ -1,0 +1,25 @@
+# Built-in server-side request forgery (CWE-918) rules for the ssrf detector,
+# as data. Outbound-request APIs are sinks; their URL/address channel comes
+# from the engine's built-in selector for each method (see the sink-argument
+# rules), so the sinks are listed here without repeating those selectors.
+package: net/http
+sources:
+  - type: "*net/http.Request"
+  - type: "google.golang.org/protobuf/proto.Message"
+sinks:
+  - { method: net/http.Get, kind: ssrf }
+  - { method: net/http.Post, kind: ssrf }
+  - { method: net/http.PostForm, kind: ssrf }
+  - { method: net/http.Head, kind: ssrf }
+  - { method: net/http.NewRequest, kind: ssrf }
+  - { method: net/http.NewRequestWithContext, kind: ssrf }
+  - { method: "(*net/http.Client).Do", kind: ssrf }
+  - { method: "(*net/http.Client).Get", kind: ssrf }
+  - { method: "(*net/http.Client).Head", kind: ssrf }
+  - { method: "(*net/http.Client).Post", kind: ssrf }
+  - { method: "(*net/http.Client).PostForm", kind: ssrf }
+---
+package: net
+sinks:
+  - { method: net.Dial, kind: ssrf }
+  - { method: net.DialTimeout, kind: ssrf }

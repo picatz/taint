@@ -33,6 +33,8 @@ sinks:
   - method: "(*example.com/acme.DB).Exec"
     args: [receiver, "1..2"]
     kind: sql-injection
+  - method: "(*example.com/acme.Client).Fetch"
+    select: http-post-url
 summaries:
   - func: example.com/acme.Concat
     from: [0]
@@ -55,6 +57,7 @@ summaries:
 		"(*example.com/acme.DB).Exec",
 		"args=[receiver,1..2]",
 		"kind=sql-injection",
+		"select=http-post-url",
 		"call example.com/acme.UserInput",
 		"example.com/acme.Concat",
 		"from=[0]",

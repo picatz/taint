@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -465,6 +466,75 @@ func main() {
 	out := CheckDetailed(cgOut, NewSources("*net/http.Request"), NewSinks(), WithModels(model...))
 	if len(out) != 0 {
 		t.Fatalf("expected no diagnostic when the taint is outside the range, got %d", len(out))
+	}
+}
+
+func TestCheckDetailedModelSinkBuiltinSelectorFallback(t *testing.T) {
+	// A model sink that names a well-known stdlib method without an explicit
+	// selection inherits the engine's built-in selector — here os.OpenFile,
+	// whose path is argument 0. A tainted path flags; a tainted mode does not.
+	cg, _ := detailedGraphForSource(t, `package main
+
+import (
+	"net/http"
+	"os"
+)
+
+func main() {
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		os.OpenFile(r.URL.Query().Get("p"), os.O_RDONLY, 0)
+	})
+}
+`)
+	model := mustParseModels(t, `
+package: os
+sinks:
+  - method: os.OpenFile
+`)
+	diags := CheckDetailed(cg, NewSources("*net/http.Request"), NewSinks(), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected built-in selector fallback to flag the tainted path, got %d", len(diags))
+	}
+}
+
+func TestCheckDetailedModelNamedSelector(t *testing.T) {
+	// The http-post-url named selector treats only the URL argument of
+	// (*http.Client).Post as the channel; a tainted body must stay clean.
+	cg, _ := detailedGraphForSource(t, `package main
+
+import (
+	"net/http"
+	"strings"
+)
+
+func main() {
+	c := &http.Client{}
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		c.Post("https://example.com", "text/plain", strings.NewReader(r.URL.Query().Get("b")))
+	})
+}
+`)
+	model := mustParseModels(t, `
+package: net/http
+sinks:
+  - method: "(*net/http.Client).Post"
+    select: http-post-url
+`)
+	diags := CheckDetailed(cg, NewSources("*net/http.Request"), NewSinks(), WithModels(model...))
+	if len(diags) != 0 {
+		t.Fatalf("expected http-post-url selector to ignore the tainted body, got %d", len(diags))
+	}
+}
+
+func TestSelectorNames(t *testing.T) {
+	names := SelectorNames()
+	for _, want := range []string{"exec-command", "http-post-url", "sql-prepare", "sql-query"} {
+		if !slices.Contains(names, want) {
+			t.Errorf("SelectorNames() missing %q; got %v", want, names)
+		}
+	}
+	if !slices.IsSorted(names) {
+		t.Errorf("SelectorNames() not sorted: %v", names)
 	}
 }
 

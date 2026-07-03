@@ -69,6 +69,11 @@ type SinkModel struct {
 	// [ArgSelector] — an argument index, a range, or "receiver". See its
 	// documentation for the accepted syntax.
 	Args []ArgSelector `yaml:"args,omitempty"`
+	// Select names a built-in argument selector for channels that positional
+	// indices cannot express (for example, "only the URL argument, accounting
+	// for a bound method value"). It is mutually exclusive with Args. The
+	// available names are reported by [SelectorNames].
+	Select string `yaml:"select,omitempty"`
 	// Kind is an optional, informational label (e.g. "sql-injection").
 	Kind string `yaml:"kind,omitempty"`
 }
@@ -342,6 +347,15 @@ func (m Model) validate() error {
 	for i, s := range m.Sinks {
 		if s.Method == "" {
 			return fmt.Errorf("taint: model %q sink #%d is missing 'method'", m.Package, i)
+		}
+		if s.Select != "" {
+			if len(s.Args) > 0 {
+				return fmt.Errorf("taint: model %q sink %q sets both 'select' and 'args'", m.Package, s.Method)
+			}
+			if !isKnownSelector(s.Select) {
+				return fmt.Errorf("taint: model %q sink %q has unknown 'select: %s' (known: %s)",
+					m.Package, s.Method, s.Select, strings.Join(SelectorNames(), ", "))
+			}
 		}
 	}
 	for i, s := range m.Sanitizers {

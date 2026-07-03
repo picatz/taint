@@ -1264,7 +1264,10 @@ func writeModelsSummary(bt *bufio.Writer, models []taint.Model) {
 		}
 		for _, s := range m.Sinks {
 			line := "  " + styleSubtle.Render("sink") + "   " + s.Method
-			if len(s.Args) > 0 {
+			switch {
+			case s.Select != "":
+				line += styleFaint.Render(" select=" + s.Select)
+			case len(s.Args) > 0:
 				line += styleFaint.Render(" args=" + selectorList(s.Args))
 			}
 			if s.Kind != "" {
