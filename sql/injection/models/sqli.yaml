@@ -1,0 +1,232 @@
+# Built-in SQL-injection rules for the sqli detector, as data.
+# Generated from the detector's sink list. Selection defaults to the
+# engine's built-in selector for each method (e.g. the SQL text after a
+# context argument for pgx/gdb methods).
+package: database/sql
+sources:
+  - type: "*net/http.Request"
+  - type: "google.golang.org/protobuf/proto.Message"
+sinks:
+  - { method: "(*database/sql.Conn).ExecContext", kind: sql-injection }
+  - { method: "(*database/sql.Conn).PrepareContext", kind: sql-injection }
+  - { method: "(*database/sql.Conn).QueryContext", kind: sql-injection }
+  - { method: "(*database/sql.Conn).QueryRowContext", kind: sql-injection }
+  - { method: "(*database/sql.DB).Exec", kind: sql-injection }
+  - { method: "(*database/sql.DB).ExecContext", kind: sql-injection }
+  - { method: "(*database/sql.DB).Prepare", kind: sql-injection }
+  - { method: "(*database/sql.DB).PrepareContext", kind: sql-injection }
+  - { method: "(*database/sql.DB).Query", kind: sql-injection }
+  - { method: "(*database/sql.DB).QueryContext", kind: sql-injection }
+  - { method: "(*database/sql.DB).QueryRow", kind: sql-injection }
+  - { method: "(*database/sql.DB).QueryRowContext", kind: sql-injection }
+  - { method: "(*database/sql.Tx).Exec", kind: sql-injection }
+  - { method: "(*database/sql.Tx).ExecContext", kind: sql-injection }
+  - { method: "(*database/sql.Tx).Prepare", kind: sql-injection }
+  - { method: "(*database/sql.Tx).PrepareContext", kind: sql-injection }
+  - { method: "(*database/sql.Tx).Query", kind: sql-injection }
+  - { method: "(*database/sql.Tx).QueryContext", kind: sql-injection }
+  - { method: "(*database/sql.Tx).QueryRow", kind: sql-injection }
+  - { method: "(*database/sql.Tx).QueryRowContext", kind: sql-injection }
+---
+package: github.com/Masterminds/squirrel
+sinks:
+  - { method: "github.com/Masterminds/squirrel.Expr", kind: sql-injection }
+---
+package: github.com/beego/beego/v2/client/orm
+sinks:
+  - { method: "(github.com/beego/beego/v2/client/orm.DML).Raw", kind: sql-injection }
+  - { method: "(github.com/beego/beego/v2/client/orm.DML).RawWithCtx", kind: sql-injection }
+---
+package: github.com/go-gorm/gorm
+sinks:
+  - { method: "(*github.com/go-gorm/gorm.DB).Distinct", kind: sql-injection }
+  - { method: "(*github.com/go-gorm/gorm.DB).Exec", kind: sql-injection }
+  - { method: "(*github.com/go-gorm/gorm.DB).Group", kind: sql-injection }
+  - { method: "(*github.com/go-gorm/gorm.DB).Having", kind: sql-injection }
+  - { method: "(*github.com/go-gorm/gorm.DB).Joins", kind: sql-injection }
+  - { method: "(*github.com/go-gorm/gorm.DB).Not", kind: sql-injection }
+  - { method: "(*github.com/go-gorm/gorm.DB).Or", kind: sql-injection }
+  - { method: "(*github.com/go-gorm/gorm.DB).Order", kind: sql-injection }
+  - { method: "(*github.com/go-gorm/gorm.DB).Pluck", kind: sql-injection }
+  - { method: "(*github.com/go-gorm/gorm.DB).Raw", kind: sql-injection }
+  - { method: "(*github.com/go-gorm/gorm.DB).Select", kind: sql-injection }
+  - { method: "(*github.com/go-gorm/gorm.DB).Where", kind: sql-injection }
+---
+package: github.com/go-pg/pg
+sinks:
+  - { method: "(*github.com/go-pg/pg.DB).Exec", kind: sql-injection }
+  - { method: "(*github.com/go-pg/pg.DB).ExecOne", kind: sql-injection }
+  - { method: "(*github.com/go-pg/pg.DB).Query", kind: sql-injection }
+  - { method: "(*github.com/go-pg/pg.DB).QueryOne", kind: sql-injection }
+  - { method: "(*github.com/go-pg/pg.Tx).Exec", kind: sql-injection }
+  - { method: "(*github.com/go-pg/pg.Tx).ExecOne", kind: sql-injection }
+  - { method: "(*github.com/go-pg/pg.Tx).Query", kind: sql-injection }
+  - { method: "(*github.com/go-pg/pg.Tx).QueryOne", kind: sql-injection }
+---
+package: github.com/go-xorm/xorm
+sinks:
+  - { method: "(*github.com/go-xorm/xorm.Engine).Alias", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Engine).And", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Engine).Exec", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Engine).GroupBy", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Engine).Having", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Engine).In", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Engine).Join", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Engine).NotIn", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Engine).Or", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Engine).OrderBy", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Engine).Query", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Engine).QueryInterface", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Engine).QueryString", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Engine).SQL", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Engine).Select", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Engine).SetExpr", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Engine).Where", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Session).Alias", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Session).And", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Session).Exec", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Session).GroupBy", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Session).Having", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Session).In", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Session).Join", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Session).NotIn", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Session).Or", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Session).OrderBy", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Session).Query", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Session).QueryInterface", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Session).QueryString", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Session).SQL", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Session).Select", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Session).SetExpr", kind: sql-injection }
+  - { method: "(*github.com/go-xorm/xorm.Session).Where", kind: sql-injection }
+---
+package: github.com/gogf/gf/v2/database/gdb
+sinks:
+  - { method: "(github.com/gogf/gf/v2/database/gdb.DB).Exec", kind: sql-injection }
+  - { method: "(github.com/gogf/gf/v2/database/gdb.DB).GetAll", kind: sql-injection }
+  - { method: "(github.com/gogf/gf/v2/database/gdb.DB).GetOne", kind: sql-injection }
+  - { method: "(github.com/gogf/gf/v2/database/gdb.DB).Query", kind: sql-injection }
+  - { method: "(github.com/gogf/gf/v2/database/gdb.DB).Raw", kind: sql-injection }
+---
+package: github.com/jackc/pgx/v5
+sinks:
+  - { method: "(*github.com/jackc/pgx/v5.Conn).Exec", kind: sql-injection }
+  - { method: "(*github.com/jackc/pgx/v5.Conn).Prepare", kind: sql-injection }
+  - { method: "(*github.com/jackc/pgx/v5.Conn).Query", kind: sql-injection }
+  - { method: "(*github.com/jackc/pgx/v5.Conn).QueryRow", kind: sql-injection }
+  - { method: "(github.com/jackc/pgx/v5.Tx).Exec", kind: sql-injection }
+  - { method: "(github.com/jackc/pgx/v5.Tx).Prepare", kind: sql-injection }
+  - { method: "(github.com/jackc/pgx/v5.Tx).Query", kind: sql-injection }
+  - { method: "(github.com/jackc/pgx/v5.Tx).QueryRow", kind: sql-injection }
+---
+package: github.com/jackc/pgx/v5/pgxpool
+sinks:
+  - { method: "(*github.com/jackc/pgx/v5/pgxpool.Pool).Exec", kind: sql-injection }
+  - { method: "(*github.com/jackc/pgx/v5/pgxpool.Pool).Query", kind: sql-injection }
+  - { method: "(*github.com/jackc/pgx/v5/pgxpool.Pool).QueryRow", kind: sql-injection }
+---
+package: github.com/jinzhu/gorm
+sinks:
+  - { method: "(*github.com/jinzhu/gorm.DB).Distinct", kind: sql-injection }
+  - { method: "(*github.com/jinzhu/gorm.DB).Exec", kind: sql-injection }
+  - { method: "(*github.com/jinzhu/gorm.DB).Group", kind: sql-injection }
+  - { method: "(*github.com/jinzhu/gorm.DB).Having", kind: sql-injection }
+  - { method: "(*github.com/jinzhu/gorm.DB).Joins", kind: sql-injection }
+  - { method: "(*github.com/jinzhu/gorm.DB).Not", kind: sql-injection }
+  - { method: "(*github.com/jinzhu/gorm.DB).Or", kind: sql-injection }
+  - { method: "(*github.com/jinzhu/gorm.DB).Order", kind: sql-injection }
+  - { method: "(*github.com/jinzhu/gorm.DB).Pluck", kind: sql-injection }
+  - { method: "(*github.com/jinzhu/gorm.DB).Raw", kind: sql-injection }
+  - { method: "(*github.com/jinzhu/gorm.DB).Select", kind: sql-injection }
+  - { method: "(*github.com/jinzhu/gorm.DB).Where", kind: sql-injection }
+---
+package: github.com/jmoiron/sqlx
+sinks:
+  - { method: "(*github.com/jmoiron/sqlx.DB).Exec", kind: sql-injection }
+  - { method: "(*github.com/jmoiron/sqlx.DB).Get", kind: sql-injection }
+  - { method: "(*github.com/jmoiron/sqlx.DB).Query", kind: sql-injection }
+  - { method: "(*github.com/jmoiron/sqlx.DB).QueryRow", kind: sql-injection }
+  - { method: "(*github.com/jmoiron/sqlx.DB).QueryRowx", kind: sql-injection }
+  - { method: "(*github.com/jmoiron/sqlx.DB).Queryx", kind: sql-injection }
+  - { method: "(*github.com/jmoiron/sqlx.DB).Select", kind: sql-injection }
+  - { method: "(*github.com/jmoiron/sqlx.Tx).Exec", kind: sql-injection }
+  - { method: "(*github.com/jmoiron/sqlx.Tx).Get", kind: sql-injection }
+  - { method: "(*github.com/jmoiron/sqlx.Tx).Query", kind: sql-injection }
+  - { method: "(*github.com/jmoiron/sqlx.Tx).QueryRow", kind: sql-injection }
+  - { method: "(*github.com/jmoiron/sqlx.Tx).QueryRowx", kind: sql-injection }
+  - { method: "(*github.com/jmoiron/sqlx.Tx).Queryx", kind: sql-injection }
+  - { method: "(*github.com/jmoiron/sqlx.Tx).Select", kind: sql-injection }
+---
+package: github.com/lann/squirrel
+sinks:
+  - { method: "github.com/lann/squirrel.Expr", kind: sql-injection }
+---
+package: github.com/raindog308/gorqlite
+sinks:
+  - { method: "(*github.com/raindog308/gorqlite.Connection).Query", kind: sql-injection }
+  - { method: "(*github.com/raindog308/gorqlite.Connection).QueryOne", kind: sql-injection }
+  - { method: "(*github.com/raindog308/gorqlite.Connection).Write", kind: sql-injection }
+  - { method: "(*github.com/raindog308/gorqlite.Connection).WriteOne", kind: sql-injection }
+---
+package: github.com/rqlite/gorqlite
+sinks:
+  - { method: "(*github.com/rqlite/gorqlite.Connection).Query", kind: sql-injection }
+  - { method: "(*github.com/rqlite/gorqlite.Connection).QueryOne", kind: sql-injection }
+  - { method: "(*github.com/rqlite/gorqlite.Connection).Write", kind: sql-injection }
+  - { method: "(*github.com/rqlite/gorqlite.Connection).WriteOne", kind: sql-injection }
+---
+package: gopkg.in/Masterminds/squirrel.v1
+sinks:
+  - { method: "gopkg.in/Masterminds/squirrel.v1.Expr", kind: sql-injection }
+---
+package: gorm.io/gorm
+sinks:
+  - { method: "(*gorm.io/gorm.DB).Distinct", kind: sql-injection }
+  - { method: "(*gorm.io/gorm.DB).Exec", kind: sql-injection }
+  - { method: "(*gorm.io/gorm.DB).Group", kind: sql-injection }
+  - { method: "(*gorm.io/gorm.DB).Having", kind: sql-injection }
+  - { method: "(*gorm.io/gorm.DB).Joins", kind: sql-injection }
+  - { method: "(*gorm.io/gorm.DB).Not", kind: sql-injection }
+  - { method: "(*gorm.io/gorm.DB).Or", kind: sql-injection }
+  - { method: "(*gorm.io/gorm.DB).Order", kind: sql-injection }
+  - { method: "(*gorm.io/gorm.DB).Pluck", kind: sql-injection }
+  - { method: "(*gorm.io/gorm.DB).Raw", kind: sql-injection }
+  - { method: "(*gorm.io/gorm.DB).Select", kind: sql-injection }
+  - { method: "(*gorm.io/gorm.DB).Where", kind: sql-injection }
+---
+package: xorm.io/xorm
+sinks:
+  - { method: "(*xorm.io/xorm.Engine).Alias", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Engine).And", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Engine).Exec", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Engine).GroupBy", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Engine).Having", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Engine).In", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Engine).Join", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Engine).NotIn", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Engine).Or", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Engine).OrderBy", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Engine).Query", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Engine).QueryInterface", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Engine).QueryString", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Engine).SQL", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Engine).Select", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Engine).SetExpr", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Engine).Where", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Session).Alias", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Session).And", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Session).Exec", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Session).GroupBy", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Session).Having", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Session).In", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Session).Join", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Session).NotIn", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Session).Or", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Session).OrderBy", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Session).Query", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Session).QueryInterface", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Session).QueryString", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Session).SQL", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Session).Select", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Session).SetExpr", kind: sql-injection }
+  - { method: "(*xorm.io/xorm.Session).Where", kind: sql-injection }

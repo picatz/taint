@@ -2,10 +2,12 @@ package injection
 
 import (
 	"context"
+	"embed"
 	"flag"
 	"fmt"
 	"go/token"
 	"go/types"
+	"io/fs"
 	"slices"
 	"strings"
 
@@ -19,216 +21,28 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-// userControlledValues are the sources of user controlled values that
-// can be tained and end up in a SQL query.
-var userControlledValues = taint.NewSources(
-	// Only high-level source types are enumerated. All method/field/data derived
-	// from these types (e.g., r.URL.Query().Get, r.FormValue, headers, body reads)
-	// is tainted via generalized propagation in the taint engine.
-	"*net/http.Request",
-	"google.golang.org/protobuf/proto.Message",
-)
+// builtinModelsFS holds the detector's built-in rules as data: the sources and
+// the SQL query/exec sinks. Selection defaults to the engine's built-in
+// selector for each method (e.g. the SQL text after a context argument for the
+// pgx and GoFrame methods). The import gate stays an explicit list below
+// because it includes driver packages (go-sqlite3) that host no sinks.
+//
+//go:embed models
+var builtinModelsFS embed.FS
 
-var injectableSQLMethods = taint.NewSinks(
-	// Note: at this time, they *must* be a function or method.
-	"(*database/sql.DB).Query",
-	"(*database/sql.DB).QueryContext",
-	"(*database/sql.DB).QueryRow",
-	"(*database/sql.DB).QueryRowContext",
-	"(*database/sql.DB).Exec",
-	"(*database/sql.DB).ExecContext",
-	"(*database/sql.DB).Prepare",
-	"(*database/sql.DB).PrepareContext",
-	"(*database/sql.Tx).Query",
-	"(*database/sql.Tx).QueryContext",
-	"(*database/sql.Tx).QueryRow",
-	"(*database/sql.Tx).QueryRowContext",
-	"(*database/sql.Tx).Exec",
-	"(*database/sql.Tx).ExecContext",
-	"(*database/sql.Tx).Prepare",
-	"(*database/sql.Tx).PrepareContext",
-	"(*database/sql.Conn).QueryContext",
-	"(*database/sql.Conn).QueryRowContext",
-	"(*database/sql.Conn).ExecContext",
-	"(*database/sql.Conn).PrepareContext",
-	// GORM v1
-	// https://gorm.io/docs/security.html
-	// https://gorm.io/docs/security.html#SQL-injection-Methods
-	"(*github.com/jinzhu/gorm.DB).Where",
-	"(*github.com/jinzhu/gorm.DB).Or",
-	"(*github.com/jinzhu/gorm.DB).Not",
-	"(*github.com/jinzhu/gorm.DB).Group",
-	"(*github.com/jinzhu/gorm.DB).Having",
-	"(*github.com/jinzhu/gorm.DB).Joins",
-	"(*github.com/jinzhu/gorm.DB).Select",
-	"(*github.com/jinzhu/gorm.DB).Distinct",
-	"(*github.com/jinzhu/gorm.DB).Pluck",
-	"(*github.com/jinzhu/gorm.DB).Raw",
-	"(*github.com/jinzhu/gorm.DB).Exec",
-	"(*github.com/jinzhu/gorm.DB).Order",
-	// GORM v2
-	"(*gorm.io/gorm.DB).Where",
-	"(*gorm.io/gorm.DB).Or",
-	"(*gorm.io/gorm.DB).Not",
-	"(*gorm.io/gorm.DB).Group",
-	"(*gorm.io/gorm.DB).Having",
-	"(*gorm.io/gorm.DB).Joins",
-	"(*gorm.io/gorm.DB).Select",
-	"(*gorm.io/gorm.DB).Distinct",
-	"(*gorm.io/gorm.DB).Pluck",
-	"(*gorm.io/gorm.DB).Raw",
-	"(*gorm.io/gorm.DB).Exec",
-	"(*gorm.io/gorm.DB).Order",
-	// Alternative GORM v2 import path
-	"(*github.com/go-gorm/gorm.DB).Where",
-	"(*github.com/go-gorm/gorm.DB).Or",
-	"(*github.com/go-gorm/gorm.DB).Not",
-	"(*github.com/go-gorm/gorm.DB).Group",
-	"(*github.com/go-gorm/gorm.DB).Having",
-	"(*github.com/go-gorm/gorm.DB).Joins",
-	"(*github.com/go-gorm/gorm.DB).Select",
-	"(*github.com/go-gorm/gorm.DB).Distinct",
-	"(*github.com/go-gorm/gorm.DB).Pluck",
-	"(*github.com/go-gorm/gorm.DB).Raw",
-	"(*github.com/go-gorm/gorm.DB).Exec",
-	"(*github.com/go-gorm/gorm.DB).Order",
-	// sqlx
-	"(*github.com/jmoiron/sqlx.DB).Queryx",
-	"(*github.com/jmoiron/sqlx.DB).QueryRowx",
-	"(*github.com/jmoiron/sqlx.DB).Query",
-	"(*github.com/jmoiron/sqlx.DB).QueryRow",
-	"(*github.com/jmoiron/sqlx.DB).Select",
-	"(*github.com/jmoiron/sqlx.DB).Get",
-	"(*github.com/jmoiron/sqlx.DB).Exec",
-	"(*github.com/jmoiron/sqlx.Tx).Queryx",
-	"(*github.com/jmoiron/sqlx.Tx).QueryRowx",
-	"(*github.com/jmoiron/sqlx.Tx).Query",
-	"(*github.com/jmoiron/sqlx.Tx).QueryRow",
-	"(*github.com/jmoiron/sqlx.Tx).Select",
-	"(*github.com/jmoiron/sqlx.Tx).Get",
-	"(*github.com/jmoiron/sqlx.Tx).Exec",
-	// xorm
-	"(*xorm.io/xorm.Engine).Query",
-	"(*xorm.io/xorm.Engine).Exec",
-	"(*xorm.io/xorm.Engine).QueryString",
-	"(*xorm.io/xorm.Engine).QueryInterface",
-	"(*xorm.io/xorm.Engine).SQL",
-	"(*xorm.io/xorm.Engine).Where",
-	"(*xorm.io/xorm.Engine).And",
-	"(*xorm.io/xorm.Engine).Or",
-	"(*xorm.io/xorm.Engine).Alias",
-	"(*xorm.io/xorm.Engine).NotIn",
-	"(*xorm.io/xorm.Engine).In",
-	"(*xorm.io/xorm.Engine).Select",
-	"(*xorm.io/xorm.Engine).SetExpr",
-	"(*xorm.io/xorm.Engine).OrderBy",
-	"(*xorm.io/xorm.Engine).Having",
-	"(*xorm.io/xorm.Engine).GroupBy",
-	"(*xorm.io/xorm.Engine).Join",
-	"(*xorm.io/xorm.Session).Query",
-	"(*xorm.io/xorm.Session).Exec",
-	"(*xorm.io/xorm.Session).QueryString",
-	"(*xorm.io/xorm.Session).QueryInterface",
-	"(*xorm.io/xorm.Session).SQL",
-	"(*xorm.io/xorm.Session).Where",
-	"(*xorm.io/xorm.Session).And",
-	"(*xorm.io/xorm.Session).Or",
-	"(*xorm.io/xorm.Session).Alias",
-	"(*xorm.io/xorm.Session).NotIn",
-	"(*xorm.io/xorm.Session).In",
-	"(*xorm.io/xorm.Session).Select",
-	"(*xorm.io/xorm.Session).SetExpr",
-	"(*xorm.io/xorm.Session).OrderBy",
-	"(*xorm.io/xorm.Session).Having",
-	"(*xorm.io/xorm.Session).GroupBy",
-	"(*xorm.io/xorm.Session).Join",
-	// Alternative xorm import path
-	"(*github.com/go-xorm/xorm.Engine).Query",
-	"(*github.com/go-xorm/xorm.Engine).Exec",
-	"(*github.com/go-xorm/xorm.Engine).QueryString",
-	"(*github.com/go-xorm/xorm.Engine).QueryInterface",
-	"(*github.com/go-xorm/xorm.Engine).SQL",
-	"(*github.com/go-xorm/xorm.Engine).Where",
-	"(*github.com/go-xorm/xorm.Engine).And",
-	"(*github.com/go-xorm/xorm.Engine).Or",
-	"(*github.com/go-xorm/xorm.Engine).Alias",
-	"(*github.com/go-xorm/xorm.Engine).NotIn",
-	"(*github.com/go-xorm/xorm.Engine).In",
-	"(*github.com/go-xorm/xorm.Engine).Select",
-	"(*github.com/go-xorm/xorm.Engine).SetExpr",
-	"(*github.com/go-xorm/xorm.Engine).OrderBy",
-	"(*github.com/go-xorm/xorm.Engine).Having",
-	"(*github.com/go-xorm/xorm.Engine).GroupBy",
-	"(*github.com/go-xorm/xorm.Engine).Join",
-	"(*github.com/go-xorm/xorm.Session).Query",
-	"(*github.com/go-xorm/xorm.Session).Exec",
-	"(*github.com/go-xorm/xorm.Session).QueryString",
-	"(*github.com/go-xorm/xorm.Session).QueryInterface",
-	"(*github.com/go-xorm/xorm.Session).SQL",
-	"(*github.com/go-xorm/xorm.Session).Where",
-	"(*github.com/go-xorm/xorm.Session).And",
-	"(*github.com/go-xorm/xorm.Session).Or",
-	"(*github.com/go-xorm/xorm.Session).Alias",
-	"(*github.com/go-xorm/xorm.Session).NotIn",
-	"(*github.com/go-xorm/xorm.Session).In",
-	"(*github.com/go-xorm/xorm.Session).Select",
-	"(*github.com/go-xorm/xorm.Session).SetExpr",
-	"(*github.com/go-xorm/xorm.Session).OrderBy",
-	"(*github.com/go-xorm/xorm.Session).Having",
-	"(*github.com/go-xorm/xorm.Session).GroupBy",
-	"(*github.com/go-xorm/xorm.Session).Join",
-	// go-pg
-	"(*github.com/go-pg/pg.DB).Query",
-	"(*github.com/go-pg/pg.DB).QueryOne",
-	"(*github.com/go-pg/pg.DB).Exec",
-	"(*github.com/go-pg/pg.DB).ExecOne",
-	"(*github.com/go-pg/pg.Tx).Query",
-	"(*github.com/go-pg/pg.Tx).QueryOne",
-	"(*github.com/go-pg/pg.Tx).Exec",
-	"(*github.com/go-pg/pg.Tx).ExecOne",
-	// rqlite
-	"(*github.com/rqlite/gorqlite.Connection).Query",
-	"(*github.com/rqlite/gorqlite.Connection).QueryOne",
-	"(*github.com/rqlite/gorqlite.Connection).Write",
-	"(*github.com/rqlite/gorqlite.Connection).WriteOne",
-	"(*github.com/raindog308/gorqlite.Connection).Query",
-	"(*github.com/raindog308/gorqlite.Connection).QueryOne",
-	"(*github.com/raindog308/gorqlite.Connection).Write",
-	"(*github.com/raindog308/gorqlite.Connection).WriteOne",
-	// Squirrel
-	"github.com/Masterminds/squirrel.Expr",
-	"gopkg.in/Masterminds/squirrel.v1.Expr",
-	"github.com/lann/squirrel.Expr",
-	// pgx v5 (github.com/jackc/pgx/v5): the modern PostgreSQL driver. These
-	// methods are (ctx, sql, args...); only the SQL text is the injection
-	// channel, so rules.go selects it positionally (via
-	// sqlContextQueryArgument) and bound parameters after it do not flag.
-	"(*github.com/jackc/pgx/v5.Conn).Query",
-	"(*github.com/jackc/pgx/v5.Conn).QueryRow",
-	"(*github.com/jackc/pgx/v5.Conn).Exec",
-	"(*github.com/jackc/pgx/v5.Conn).Prepare",
-	"(github.com/jackc/pgx/v5.Tx).Query",
-	"(github.com/jackc/pgx/v5.Tx).QueryRow",
-	"(github.com/jackc/pgx/v5.Tx).Exec",
-	"(github.com/jackc/pgx/v5.Tx).Prepare",
-	"(*github.com/jackc/pgx/v5/pgxpool.Pool).Query",
-	"(*github.com/jackc/pgx/v5/pgxpool.Pool).QueryRow",
-	"(*github.com/jackc/pgx/v5/pgxpool.Pool).Exec",
-	// beego ORM (github.com/beego/beego/v2/client/orm): Raw executes a raw
-	// SQL string. Raw is declared on the DML interface embedded by Ormer.
-	"(github.com/beego/beego/v2/client/orm.DML).Raw",
-	"(github.com/beego/beego/v2/client/orm.DML).RawWithCtx",
-	// GoFrame (github.com/gogf/gf/v2/database/gdb): the DB interface's
-	// raw-SQL methods. Query/Exec/GetAll/GetOne are (ctx, sql, args...);
-	// Raw is (sql, args...).
-	"(github.com/gogf/gf/v2/database/gdb.DB).Query",
-	"(github.com/gogf/gf/v2/database/gdb.DB).Exec",
-	"(github.com/gogf/gf/v2/database/gdb.DB).GetAll",
-	"(github.com/gogf/gf/v2/database/gdb.DB).GetOne",
-	"(github.com/gogf/gf/v2/database/gdb.DB).Raw",
-	//
-	// TODO: add more, consider (non-)pointer variants?
-)
+var builtinModels = mustLoadBuiltinModels()
+
+func mustLoadBuiltinModels() []taint.Model {
+	sub, err := fs.Sub(builtinModelsFS, "models")
+	if err != nil {
+		panic(fmt.Errorf("sqli: %w", err))
+	}
+	ms, err := taint.LoadModels(sub)
+	if err != nil {
+		panic(fmt.Errorf("sqli: loading built-in models: %w", err))
+	}
+	return ms
+}
 
 // Analyzer finds potential SQL injection issues to demonstrate
 // the github.com/picatz/taint package.
@@ -294,17 +108,17 @@ func run(pass *analysis.Pass) (any, error) {
 	// Require at least one supported SQL package to be imported before
 	// running the analysis. This avoids wasting time analyzing programs
 	// that do not use SQL.
-	loadedModels, err := models.Load()
+	userModels, err := models.Load()
 	if err != nil {
 		return nil, err
 	}
-	gate := supportedSQLPackages
-	if len(loadedModels) > 0 {
-		gate = append(slices.Clone(supportedSQLPackages), taint.ModelPackages(loadedModels)...)
-	}
+	// The gate stays an explicit list: it includes driver packages such as
+	// go-sqlite3 that host no sinks but signal SQL usage.
+	gate := append(slices.Clone(supportedSQLPackages), taint.ModelPackages(userModels)...)
 	if !imports(pass, gate...) {
 		return nil, nil
 	}
+	allModels := append(slices.Clone(builtinModels), userModels...)
 
 	// Get the built SSA IR.
 	buildSSA := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
@@ -359,7 +173,7 @@ func run(pass *analysis.Pass) (any, error) {
 
 	// Run taint check for user controlled values (sources) ending
 	// up in injectable SQL methods (sinks).
-	diagnostics := taint.CheckDetailed(cg, userControlledValues, injectableSQLMethods, taint.WithModels(loadedModels...))
+	diagnostics := taint.CheckDetailed(cg, taint.NewSources(), taint.NewSinks(), taint.WithModels(allModels...))
 
 	// fmt.Printf("DEBUG: Found %d taint results\n", len(results))
 	// for i, result := range results {
