@@ -1,0 +1,150 @@
+# Built-in taint-propagation summaries for the engine, as data.
+# Generated from the propagator table: a call passes taint from the
+# listed arguments to its result. 'from' omitted means every argument.
+package: append
+summaries:
+  - { func: 'append', to: result }
+---
+package: bufio
+summaries:
+  - { func: 'bufio.NewReader', to: result }
+  - { func: 'bufio.NewReaderSize', to: result }
+---
+package: bytes
+summaries:
+  - { func: 'bytes.Clone', from: [0], to: result }
+  - { func: 'bytes.Cut', from: [0], to: result }
+  - { func: 'bytes.CutPrefix', from: [0], to: result }
+  - { func: 'bytes.CutSuffix', from: [0], to: result }
+  - { func: 'bytes.Join', to: result }
+  - { func: 'bytes.Map', to: result }
+  - { func: 'bytes.NewBuffer', from: [0], to: result }
+  - { func: 'bytes.NewBufferString', from: [0], to: result }
+  - { func: 'bytes.NewReader', from: [0], to: result }
+  - { func: 'bytes.Repeat', from: [0], to: result }
+  - { func: 'bytes.Replace', from: [0, 2], to: result }
+  - { func: 'bytes.ReplaceAll', from: [0, 2], to: result }
+  - { func: 'bytes.ToLower', from: [0], to: result }
+  - { func: 'bytes.ToTitle', from: [0], to: result }
+  - { func: 'bytes.ToUpper', from: [0], to: result }
+  - { func: 'bytes.ToValidUTF8', from: [0, 1], to: result }
+  - { func: 'bytes.Trim', from: [0], to: result }
+  - { func: 'bytes.TrimFunc', from: [0], to: result }
+  - { func: 'bytes.TrimLeft', from: [0], to: result }
+  - { func: 'bytes.TrimLeftFunc', from: [0], to: result }
+  - { func: 'bytes.TrimPrefix', from: [0], to: result }
+  - { func: 'bytes.TrimRight', from: [0], to: result }
+  - { func: 'bytes.TrimRightFunc', from: [0], to: result }
+  - { func: 'bytes.TrimSpace', from: [0], to: result }
+  - { func: 'bytes.TrimSuffix', from: [0], to: result }
+---
+package: errors
+summaries:
+  - { func: 'errors.New', to: result }
+---
+package: fmt
+summaries:
+  - { func: 'fmt.Errorf', to: result }
+  - { func: 'fmt.Sprint', to: result }
+  - { func: 'fmt.Sprintf', to: result }
+  - { func: 'fmt.Sprintln', to: result }
+---
+package: go.uber.org/zap
+summaries:
+  - { func: 'go.uber.org/zap.Any', to: result }
+  - { func: 'go.uber.org/zap.ByteString', to: result }
+  - { func: 'go.uber.org/zap.Error', to: result }
+  - { func: 'go.uber.org/zap.String', to: result }
+  - { func: 'go.uber.org/zap.Stringer', to: result }
+---
+package: html
+summaries:
+  - { func: 'html.EscapeString', to: result }
+---
+package: io
+summaries:
+  - { func: 'io.ReadAll', to: result }
+---
+package: log/slog
+summaries:
+  - { func: 'log/slog.Any', to: result }
+  - { func: 'log/slog.Group', to: result }
+  - { func: 'log/slog.String', to: result }
+---
+package: net/url
+summaries:
+  - { func: 'net/url.Parse', from: [0], to: result }
+  - { func: 'net/url.ParseRequestURI', from: [0], to: result }
+  - { func: 'net/url.PathEscape', from: [0], to: result }
+  - { func: 'net/url.QueryEscape', from: [0], to: result }
+---
+package: path
+summaries:
+  - { func: 'path.Base', from: [0], to: result }
+  - { func: 'path.Clean', from: [0], to: result }
+  - { func: 'path.Dir', from: [0], to: result }
+  - { func: 'path.Join', to: result }
+---
+package: path/filepath
+summaries:
+  - { func: 'path/filepath.Abs', from: [0], to: result }
+  - { func: 'path/filepath.Base', from: [0], to: result }
+  - { func: 'path/filepath.Clean', from: [0], to: result }
+  - { func: 'path/filepath.Dir', from: [0], to: result }
+  - { func: 'path/filepath.EvalSymlinks', from: [0], to: result }
+  - { func: 'path/filepath.FromSlash', from: [0], to: result }
+  - { func: 'path/filepath.Join', to: result }
+  - { func: 'path/filepath.Rel', from: [0, 1], to: result }
+  - { func: 'path/filepath.ToSlash', from: [0], to: result }
+---
+package: strconv
+summaries:
+  - { func: 'strconv.AppendBool', to: result }
+  - { func: 'strconv.AppendFloat', to: result }
+  - { func: 'strconv.AppendInt', to: result }
+  - { func: 'strconv.AppendQuote', to: result }
+  - { func: 'strconv.AppendQuoteRune', to: result }
+  - { func: 'strconv.AppendQuoteRuneToASCII', to: result }
+  - { func: 'strconv.AppendQuoteRuneToGraphic', to: result }
+  - { func: 'strconv.AppendQuoteToASCII', to: result }
+  - { func: 'strconv.AppendQuoteToGraphic', to: result }
+  - { func: 'strconv.AppendUint', to: result }
+  - { func: 'strconv.FormatBool', to: result }
+  - { func: 'strconv.FormatFloat', to: result }
+  - { func: 'strconv.FormatInt', to: result }
+  - { func: 'strconv.FormatUint', to: result }
+  - { func: 'strconv.Itoa', to: result }
+  - { func: 'strconv.Quote', from: [0], to: result }
+  - { func: 'strconv.QuoteRune', from: [0], to: result }
+  - { func: 'strconv.QuoteRuneToASCII', from: [0], to: result }
+  - { func: 'strconv.QuoteRuneToGraphic', from: [0], to: result }
+  - { func: 'strconv.QuoteToASCII', from: [0], to: result }
+  - { func: 'strconv.QuoteToGraphic', from: [0], to: result }
+  - { func: 'strconv.Unquote', from: [0], to: result }
+  - { func: 'strconv.UnquoteChar', from: [0], to: result }
+---
+package: strings
+summaries:
+  - { func: 'strings.Clone', from: [0], to: result }
+  - { func: 'strings.Cut', from: [0], to: result }
+  - { func: 'strings.CutPrefix', from: [0], to: result }
+  - { func: 'strings.CutSuffix', from: [0], to: result }
+  - { func: 'strings.Join', to: result }
+  - { func: 'strings.Map', to: result }
+  - { func: 'strings.NewReader', from: [0], to: result }
+  - { func: 'strings.Repeat', from: [0], to: result }
+  - { func: 'strings.Replace', from: [0, 2], to: result }
+  - { func: 'strings.ReplaceAll', from: [0, 2], to: result }
+  - { func: 'strings.ToLower', from: [0], to: result }
+  - { func: 'strings.ToTitle', from: [0], to: result }
+  - { func: 'strings.ToUpper', from: [0], to: result }
+  - { func: 'strings.ToValidUTF8', from: [0, 1], to: result }
+  - { func: 'strings.Trim', from: [0], to: result }
+  - { func: 'strings.TrimFunc', from: [0], to: result }
+  - { func: 'strings.TrimLeft', from: [0], to: result }
+  - { func: 'strings.TrimLeftFunc', from: [0], to: result }
+  - { func: 'strings.TrimPrefix', from: [0], to: result }
+  - { func: 'strings.TrimRight', from: [0], to: result }
+  - { func: 'strings.TrimRightFunc', from: [0], to: result }
+  - { func: 'strings.TrimSpace', from: [0], to: result }
+  - { func: 'strings.TrimSuffix', from: [0], to: result }

@@ -1,6 +1,9 @@
 package taint
 
 import (
+	"bytes"
+	_ "embed"
+	"fmt"
 	"go/constant"
 	"go/token"
 	"go/types"
@@ -514,143 +517,29 @@ func exactSanitizerRule(id string) sanitizerRule {
 	}
 }
 
-func defaultPropagatorRules() []propagatorRule {
-	allArgs := func(call *ssa.CallCommon) []ssa.Value {
-		if call == nil {
-			return nil
-		}
-		return call.Args
-	}
-	argsAt := func(indexes ...int) func(*ssa.CallCommon) []ssa.Value {
-		return func(call *ssa.CallCommon) []ssa.Value {
-			if call == nil {
-				return nil
-			}
-			out := make([]ssa.Value, 0, len(indexes))
-			for _, index := range indexes {
-				if index >= 0 && index < len(call.Args) {
-					out = append(out, call.Args[index])
-				}
-			}
-			return out
-		}
-	}
-	firstArg := argsAt(0)
-	return []propagatorRule{
-		{id: "append", matchCall: exactCallMatcher("append"), selectArgs: allArgs},
-		{id: "fmt.Sprintf", matchCall: exactCallMatcher("fmt.Sprintf"), selectArgs: allArgs},
-		{id: "fmt.Sprint", matchCall: exactCallMatcher("fmt.Sprint"), selectArgs: allArgs},
-		{id: "fmt.Sprintln", matchCall: exactCallMatcher("fmt.Sprintln"), selectArgs: allArgs},
-		{id: "fmt.Errorf", matchCall: exactCallMatcher("fmt.Errorf"), selectArgs: allArgs},
-		{id: "errors.New", matchCall: exactCallMatcher("errors.New"), selectArgs: allArgs},
-		{id: "io.ReadAll", matchCall: exactCallMatcher("io.ReadAll"), selectArgs: allArgs},
-		{id: "bufio.NewReader", matchCall: exactCallMatcher("bufio.NewReader"), selectArgs: allArgs},
-		{id: "bufio.NewReaderSize", matchCall: exactCallMatcher("bufio.NewReaderSize"), selectArgs: allArgs},
-		{id: "go.uber.org/zap.Any", matchCall: exactCallMatcher("go.uber.org/zap.Any"), selectArgs: allArgs},
-		{id: "go.uber.org/zap.ByteString", matchCall: exactCallMatcher("go.uber.org/zap.ByteString"), selectArgs: allArgs},
-		{id: "go.uber.org/zap.Error", matchCall: exactCallMatcher("go.uber.org/zap.Error"), selectArgs: allArgs},
-		{id: "go.uber.org/zap.String", matchCall: exactCallMatcher("go.uber.org/zap.String"), selectArgs: allArgs},
-		{id: "go.uber.org/zap.Stringer", matchCall: exactCallMatcher("go.uber.org/zap.Stringer"), selectArgs: allArgs},
-		{id: "html.EscapeString", matchCall: exactCallMatcher("html.EscapeString"), selectArgs: allArgs},
-		{id: "log/slog.Any", matchCall: exactCallMatcher("log/slog.Any"), selectArgs: allArgs},
-		{id: "log/slog.Group", matchCall: exactCallMatcher("log/slog.Group"), selectArgs: allArgs},
-		{id: "log/slog.String", matchCall: exactCallMatcher("log/slog.String"), selectArgs: allArgs},
-		{id: "strings.Clone", matchCall: exactCallMatcher("strings.Clone"), selectArgs: firstArg},
-		{id: "strings.Cut", matchCall: exactCallMatcher("strings.Cut"), selectArgs: firstArg},
-		{id: "strings.CutPrefix", matchCall: exactCallMatcher("strings.CutPrefix"), selectArgs: firstArg},
-		{id: "strings.CutSuffix", matchCall: exactCallMatcher("strings.CutSuffix"), selectArgs: firstArg},
-		{id: "strings.Join", matchCall: exactCallMatcher("strings.Join"), selectArgs: allArgs},
-		{id: "strings.Map", matchCall: exactCallMatcher("strings.Map"), selectArgs: allArgs},
-		{id: "strings.NewReader", matchCall: exactCallMatcher("strings.NewReader"), selectArgs: firstArg},
-		{id: "strings.Repeat", matchCall: exactCallMatcher("strings.Repeat"), selectArgs: firstArg},
-		{id: "strings.Replace", matchCall: exactCallMatcher("strings.Replace"), selectArgs: argsAt(0, 2)},
-		{id: "strings.ReplaceAll", matchCall: exactCallMatcher("strings.ReplaceAll"), selectArgs: argsAt(0, 2)},
-		{id: "strings.ToLower", matchCall: exactCallMatcher("strings.ToLower"), selectArgs: firstArg},
-		{id: "strings.ToTitle", matchCall: exactCallMatcher("strings.ToTitle"), selectArgs: firstArg},
-		{id: "strings.ToUpper", matchCall: exactCallMatcher("strings.ToUpper"), selectArgs: firstArg},
-		{id: "strings.ToValidUTF8", matchCall: exactCallMatcher("strings.ToValidUTF8"), selectArgs: argsAt(0, 1)},
-		{id: "strings.Trim", matchCall: exactCallMatcher("strings.Trim"), selectArgs: firstArg},
-		{id: "strings.TrimFunc", matchCall: exactCallMatcher("strings.TrimFunc"), selectArgs: firstArg},
-		{id: "strings.TrimLeft", matchCall: exactCallMatcher("strings.TrimLeft"), selectArgs: firstArg},
-		{id: "strings.TrimLeftFunc", matchCall: exactCallMatcher("strings.TrimLeftFunc"), selectArgs: firstArg},
-		{id: "strings.TrimPrefix", matchCall: exactCallMatcher("strings.TrimPrefix"), selectArgs: firstArg},
-		{id: "strings.TrimRight", matchCall: exactCallMatcher("strings.TrimRight"), selectArgs: firstArg},
-		{id: "strings.TrimRightFunc", matchCall: exactCallMatcher("strings.TrimRightFunc"), selectArgs: firstArg},
-		{id: "strings.TrimSpace", matchCall: exactCallMatcher("strings.TrimSpace"), selectArgs: firstArg},
-		{id: "strings.TrimSuffix", matchCall: exactCallMatcher("strings.TrimSuffix"), selectArgs: firstArg},
-		{id: "bytes.Clone", matchCall: exactCallMatcher("bytes.Clone"), selectArgs: firstArg},
-		{id: "bytes.Cut", matchCall: exactCallMatcher("bytes.Cut"), selectArgs: firstArg},
-		{id: "bytes.CutPrefix", matchCall: exactCallMatcher("bytes.CutPrefix"), selectArgs: firstArg},
-		{id: "bytes.CutSuffix", matchCall: exactCallMatcher("bytes.CutSuffix"), selectArgs: firstArg},
-		{id: "bytes.Join", matchCall: exactCallMatcher("bytes.Join"), selectArgs: allArgs},
-		{id: "bytes.Map", matchCall: exactCallMatcher("bytes.Map"), selectArgs: allArgs},
-		{id: "bytes.NewBuffer", matchCall: exactCallMatcher("bytes.NewBuffer"), selectArgs: firstArg},
-		{id: "bytes.NewBufferString", matchCall: exactCallMatcher("bytes.NewBufferString"), selectArgs: firstArg},
-		{id: "bytes.NewReader", matchCall: exactCallMatcher("bytes.NewReader"), selectArgs: firstArg},
-		{id: "bytes.Repeat", matchCall: exactCallMatcher("bytes.Repeat"), selectArgs: firstArg},
-		{id: "bytes.Replace", matchCall: exactCallMatcher("bytes.Replace"), selectArgs: argsAt(0, 2)},
-		{id: "bytes.ReplaceAll", matchCall: exactCallMatcher("bytes.ReplaceAll"), selectArgs: argsAt(0, 2)},
-		{id: "bytes.ToLower", matchCall: exactCallMatcher("bytes.ToLower"), selectArgs: firstArg},
-		{id: "bytes.ToTitle", matchCall: exactCallMatcher("bytes.ToTitle"), selectArgs: firstArg},
-		{id: "bytes.ToUpper", matchCall: exactCallMatcher("bytes.ToUpper"), selectArgs: firstArg},
-		{id: "bytes.ToValidUTF8", matchCall: exactCallMatcher("bytes.ToValidUTF8"), selectArgs: argsAt(0, 1)},
-		{id: "bytes.Trim", matchCall: exactCallMatcher("bytes.Trim"), selectArgs: firstArg},
-		{id: "bytes.TrimFunc", matchCall: exactCallMatcher("bytes.TrimFunc"), selectArgs: firstArg},
-		{id: "bytes.TrimLeft", matchCall: exactCallMatcher("bytes.TrimLeft"), selectArgs: firstArg},
-		{id: "bytes.TrimLeftFunc", matchCall: exactCallMatcher("bytes.TrimLeftFunc"), selectArgs: firstArg},
-		{id: "bytes.TrimPrefix", matchCall: exactCallMatcher("bytes.TrimPrefix"), selectArgs: firstArg},
-		{id: "bytes.TrimRight", matchCall: exactCallMatcher("bytes.TrimRight"), selectArgs: firstArg},
-		{id: "bytes.TrimRightFunc", matchCall: exactCallMatcher("bytes.TrimRightFunc"), selectArgs: firstArg},
-		{id: "bytes.TrimSpace", matchCall: exactCallMatcher("bytes.TrimSpace"), selectArgs: firstArg},
-		{id: "bytes.TrimSuffix", matchCall: exactCallMatcher("bytes.TrimSuffix"), selectArgs: firstArg},
-		{id: "net/url.PathEscape", matchCall: exactCallMatcher("net/url.PathEscape"), selectArgs: firstArg},
-		{id: "net/url.QueryEscape", matchCall: exactCallMatcher("net/url.QueryEscape"), selectArgs: firstArg},
-		{id: "net/url.Parse", matchCall: exactCallMatcher("net/url.Parse"), selectArgs: firstArg},
-		{id: "net/url.ParseRequestURI", matchCall: exactCallMatcher("net/url.ParseRequestURI"), selectArgs: firstArg},
-		// Path manipulation does not strip traversal segments enough to be
-		// treated as a sanitizer. filepath.Clean removes "./" and resolves ".."
-		// lexically but a tainted result of Clean can still escape an intended
-		// directory unless followed by a prefix check, so we propagate taint.
-		{id: "path.Join", matchCall: exactCallMatcher("path.Join"), selectArgs: allArgs},
-		{id: "path.Clean", matchCall: exactCallMatcher("path.Clean"), selectArgs: firstArg},
-		{id: "path.Base", matchCall: exactCallMatcher("path.Base"), selectArgs: firstArg},
-		{id: "path.Dir", matchCall: exactCallMatcher("path.Dir"), selectArgs: firstArg},
-		{id: "path/filepath.Join", matchCall: exactCallMatcher("path/filepath.Join"), selectArgs: allArgs},
-		{id: "path/filepath.Clean", matchCall: exactCallMatcher("path/filepath.Clean"), selectArgs: firstArg},
-		{id: "path/filepath.Abs", matchCall: exactCallMatcher("path/filepath.Abs"), selectArgs: firstArg},
-		{id: "path/filepath.Base", matchCall: exactCallMatcher("path/filepath.Base"), selectArgs: firstArg},
-		{id: "path/filepath.Dir", matchCall: exactCallMatcher("path/filepath.Dir"), selectArgs: firstArg},
-		{id: "path/filepath.Rel", matchCall: exactCallMatcher("path/filepath.Rel"), selectArgs: argsAt(0, 1)},
-		{id: "path/filepath.ToSlash", matchCall: exactCallMatcher("path/filepath.ToSlash"), selectArgs: firstArg},
-		{id: "path/filepath.FromSlash", matchCall: exactCallMatcher("path/filepath.FromSlash"), selectArgs: firstArg},
-		{id: "path/filepath.EvalSymlinks", matchCall: exactCallMatcher("path/filepath.EvalSymlinks"), selectArgs: firstArg},
-		{id: "strconv.AppendBool", matchCall: exactCallMatcher("strconv.AppendBool"), selectArgs: allArgs},
-		{id: "strconv.AppendFloat", matchCall: exactCallMatcher("strconv.AppendFloat"), selectArgs: allArgs},
-		{id: "strconv.AppendInt", matchCall: exactCallMatcher("strconv.AppendInt"), selectArgs: allArgs},
-		{id: "strconv.AppendQuote", matchCall: exactCallMatcher("strconv.AppendQuote"), selectArgs: allArgs},
-		{id: "strconv.AppendQuoteRune", matchCall: exactCallMatcher("strconv.AppendQuoteRune"), selectArgs: allArgs},
-		{id: "strconv.AppendQuoteRuneToASCII", matchCall: exactCallMatcher("strconv.AppendQuoteRuneToASCII"), selectArgs: allArgs},
-		{id: "strconv.AppendQuoteRuneToGraphic", matchCall: exactCallMatcher("strconv.AppendQuoteRuneToGraphic"), selectArgs: allArgs},
-		{id: "strconv.AppendQuoteToASCII", matchCall: exactCallMatcher("strconv.AppendQuoteToASCII"), selectArgs: allArgs},
-		{id: "strconv.AppendQuoteToGraphic", matchCall: exactCallMatcher("strconv.AppendQuoteToGraphic"), selectArgs: allArgs},
-		{id: "strconv.AppendUint", matchCall: exactCallMatcher("strconv.AppendUint"), selectArgs: allArgs},
-		{id: "strconv.FormatBool", matchCall: exactCallMatcher("strconv.FormatBool"), selectArgs: allArgs},
-		{id: "strconv.FormatFloat", matchCall: exactCallMatcher("strconv.FormatFloat"), selectArgs: allArgs},
-		{id: "strconv.FormatInt", matchCall: exactCallMatcher("strconv.FormatInt"), selectArgs: allArgs},
-		{id: "strconv.FormatUint", matchCall: exactCallMatcher("strconv.FormatUint"), selectArgs: allArgs},
-		{id: "strconv.Itoa", matchCall: exactCallMatcher("strconv.Itoa"), selectArgs: allArgs},
-		{id: "strconv.Quote", matchCall: exactCallMatcher("strconv.Quote"), selectArgs: firstArg},
-		{id: "strconv.QuoteRune", matchCall: exactCallMatcher("strconv.QuoteRune"), selectArgs: firstArg},
-		{id: "strconv.QuoteRuneToASCII", matchCall: exactCallMatcher("strconv.QuoteRuneToASCII"), selectArgs: firstArg},
-		{id: "strconv.QuoteRuneToGraphic", matchCall: exactCallMatcher("strconv.QuoteRuneToGraphic"), selectArgs: firstArg},
-		{id: "strconv.QuoteToASCII", matchCall: exactCallMatcher("strconv.QuoteToASCII"), selectArgs: firstArg},
-		{id: "strconv.QuoteToGraphic", matchCall: exactCallMatcher("strconv.QuoteToGraphic"), selectArgs: firstArg},
-		{id: "strconv.Unquote", matchCall: exactCallMatcher("strconv.Unquote"), selectArgs: firstArg},
-		{id: "strconv.UnquoteChar", matchCall: exactCallMatcher("strconv.UnquoteChar"), selectArgs: firstArg},
-	}
-}
+// builtinPropagatorsYAML holds the engine's taint-propagation summaries as
+// data. Each summary passes taint from the listed arguments to the call's
+// result. All entries are package functions, so a receiver-excluded selector
+// matches the historical "all call arguments" behavior exactly.
+//
+//go:embed builtin/propagators.yaml
+var builtinPropagatorsYAML []byte
 
-var defaultPropagators = defaultPropagatorRules()
+var defaultPropagators = mustLoadBuiltinPropagators()
+
+func mustLoadBuiltinPropagators() []propagatorRule {
+	models, err := ParseModels(bytes.NewReader(builtinPropagatorsYAML))
+	if err != nil {
+		panic(fmt.Errorf("taint: loading built-in propagators: %w", err))
+	}
+	var rules []propagatorRule
+	for _, m := range models {
+		for _, s := range m.Summaries {
+			rules = append(rules, modelPropagatorRule(s))
+		}
+	}
+	return rules
+}
 
 func exactCallMatcher(id string) func(*ssa.CallCommon) bool {
 	return func(call *ssa.CallCommon) bool {

@@ -526,6 +526,14 @@ sinks:
 	}
 }
 
+func TestBuiltinPropagatorsLoaded(t *testing.T) {
+	// The built-in propagators are loaded from the embedded pack at init; guard
+	// against a corrupted or partially-parsed pack.
+	if got := len(defaultPropagators); got != 106 {
+		t.Fatalf("expected 106 built-in propagators, got %d", got)
+	}
+}
+
 func TestSelectorNames(t *testing.T) {
 	names := SelectorNames()
 	for _, want := range []string{"exec-command", "http-post-url", "sql-prepare", "sql-query"} {
