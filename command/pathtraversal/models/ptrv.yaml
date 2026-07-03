@@ -1,0 +1,27 @@
+# Built-in path-traversal (CWE-22) rules for the ptrv detector, as data.
+# Filesystem APIs keyed by a path argument are sinks; the path argument is the
+# injection channel.
+package: net/http
+sources:
+  - type: "*net/http.Request"
+  - type: "google.golang.org/protobuf/proto.Message"
+sinks:
+  - { method: net/http.ServeFile, args: [2], kind: path-traversal }
+---
+package: os
+sinks:
+  - { method: os.Open, args: [0], kind: path-traversal }
+  - { method: os.OpenFile, args: [0], kind: path-traversal }
+  - { method: os.Create, args: [0], kind: path-traversal }
+  - { method: os.ReadFile, args: [0], kind: path-traversal }
+  - { method: os.WriteFile, args: [0], kind: path-traversal }
+  - { method: os.Remove, args: [0], kind: path-traversal }
+  - { method: os.RemoveAll, args: [0], kind: path-traversal }
+  - { method: os.Mkdir, args: [0], kind: path-traversal }
+  - { method: os.MkdirAll, args: [0], kind: path-traversal }
+---
+package: io/ioutil
+sinks:
+  - { method: io/ioutil.ReadFile, args: [0], kind: path-traversal }
+  - { method: io/ioutil.WriteFile, args: [0], kind: path-traversal }
+  - { method: io/ioutil.ReadDir, args: [0], kind: path-traversal }

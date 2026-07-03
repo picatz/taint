@@ -309,12 +309,6 @@ func exactSinkRule(id string) sinkRule {
 	switch id {
 	case "os/exec.Command", "os/exec.CommandContext":
 		selectArgs = execCommandSinkArguments
-	case "os.Open", "os.OpenFile", "os.Create", "os.ReadFile", "os.WriteFile",
-		"os.Remove", "os.RemoveAll", "os.Mkdir", "os.MkdirAll",
-		"io/ioutil.ReadFile", "io/ioutil.WriteFile", "io/ioutil.ReadDir":
-		selectArgs = sinkArgAt(0)
-	case "net/http.ServeFile":
-		selectArgs = sinkArgAt(2)
 	case "net/http.Get", "net/http.Post", "net/http.PostForm", "net/http.Head":
 		selectArgs = sinkArgAt(0)
 	case "net/http.NewRequest":

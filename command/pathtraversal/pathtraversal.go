@@ -5,10 +5,12 @@ package pathtraversal
 
 import (
 	"context"
+	"embed"
 	"flag"
 	"fmt"
 	"go/token"
 	"go/types"
+	"io/fs"
 	"os"
 	"slices"
 	"strings"
@@ -21,34 +23,25 @@ import (
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 )
 
-var userControlledValues = taint.NewSources(
-	"*net/http.Request",
-	"google.golang.org/protobuf/proto.Message",
-)
+// builtinModelsFS holds the detector's built-in rules as data. The sources,
+// sinks (with their path-argument selectors), and the packages that gate the
+// analysis are all derived from this pack rather than hardcoded in Go.
+//
+//go:embed models
+var builtinModelsFS embed.FS
 
-var injectableFileFunctions = taint.NewSinks(
-	"os.Open",
-	"os.OpenFile",
-	"os.Create",
-	"os.ReadFile",
-	"os.WriteFile",
-	"os.Remove",
-	"os.RemoveAll",
-	"os.Mkdir",
-	"os.MkdirAll",
-	"io/ioutil.ReadFile",
-	"io/ioutil.WriteFile",
-	"io/ioutil.ReadDir",
-	"net/http.ServeFile",
-)
+var builtinModels = mustLoadBuiltinModels()
 
-// Trigger packages whose presence indicates the program performs filesystem
-// I/O that this analyzer could meaningfully inspect. We avoid running on
-// programs that obviously cannot trip a sink.
-var supportedFilePackages = []string{
-	"os",
-	"io/ioutil",
-	"net/http",
+func mustLoadBuiltinModels() []taint.Model {
+	sub, err := fs.Sub(builtinModelsFS, "models")
+	if err != nil {
+		panic(fmt.Errorf("ptrv: %w", err))
+	}
+	ms, err := taint.LoadModels(sub)
+	if err != nil {
+		panic(fmt.Errorf("ptrv: loading built-in models: %w", err))
+	}
+	return ms
 }
 
 // Analyzer finds potential path traversal issues.
@@ -100,15 +93,14 @@ func imports(pass *analysis.Pass, pkgs ...string) bool {
 }
 
 func run(pass *analysis.Pass) (any, error) {
-	loadedModels, err := models.Load()
+	userModels, err := models.Load()
 	if err != nil {
 		return nil, err
 	}
-	gate := supportedFilePackages
-	if len(loadedModels) > 0 {
-		gate = append(slices.Clone(supportedFilePackages), taint.ModelPackages(loadedModels)...)
-	}
-	if !imports(pass, gate...) {
+	allModels := append(slices.Clone(builtinModels), userModels...)
+	// Gate on the packages named by the models (the built-in file packages
+	// plus any the user added), so we skip programs that cannot trip a sink.
+	if !imports(pass, taint.ModelPackages(allModels)...) {
 		return nil, nil
 	}
 
@@ -126,7 +118,7 @@ func run(pass *analysis.Pass) (any, error) {
 		return nil, fmt.Errorf("failed to create callgraph: %w", err)
 	}
 
-	diagnostics := taint.CheckDetailed(cg, userControlledValues, injectableFileFunctions, taint.WithModels(loadedModels...))
+	diagnostics := taint.CheckDetailed(cg, taint.NewSources(), taint.NewSinks(), taint.WithModels(allModels...))
 	dbg("results=%d", len(diagnostics))
 
 	for _, diagnostic := range diagnostics {
