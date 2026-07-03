@@ -32,6 +32,15 @@ because chi carries no `expect` entry claiming that line is vulnerable,
 `expect` entries the engine does not yet find, so `report` counts them as
 false negatives while `check` stays green (their snapshots are empty).
 
+That `mux.go:506` finding is a known false positive: the line is a plain
+callback invocation (`fn(subMux)`) with no user input reaching a writer.
+The broad `(io.Writer).Write` sink combined with callback-dispatch
+imprecision misattributes a write sink to the callback call. It is a
+regression from the taint-precision work (it does not appear at the
+pre-precision baseline) and is a good regression test for the callgraph
+rework in [design/scalable-checking.md](design/scalable-checking.md); it
+is left recorded rather than silenced so the scoreboard reflects reality.
+
 ## Subcommands
 
 ```
