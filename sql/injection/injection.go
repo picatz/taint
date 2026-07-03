@@ -198,11 +198,10 @@ var injectableSQLMethods = taint.NewSinks(
 	"github.com/Masterminds/squirrel.Expr",
 	"gopkg.in/Masterminds/squirrel.v1.Expr",
 	"github.com/lann/squirrel.Expr",
-	// pgx v5 (github.com/jackc/pgx/v5): the modern PostgreSQL driver. The
-	// SQL text is the argument after the context; parameterized values
-	// passed after it are not the injection channel, but are included by
-	// the default whole-argument selection, matching database/sql's
-	// context methods.
+	// pgx v5 (github.com/jackc/pgx/v5): the modern PostgreSQL driver. These
+	// methods are (ctx, sql, args...); only the SQL text is the injection
+	// channel, so rules.go selects it positionally (via
+	// sqlContextQueryArgument) and bound parameters after it do not flag.
 	"(*github.com/jackc/pgx/v5.Conn).Query",
 	"(*github.com/jackc/pgx/v5.Conn).QueryRow",
 	"(*github.com/jackc/pgx/v5.Conn).Exec",
@@ -364,6 +363,16 @@ func run(pass *analysis.Pass) (any, error) {
 		}
 
 		// Skip the context argument, if using a *Context query variant.
+		//
+		// This constant-query suppression is a second layer for the
+		// default-selected sinks (database/sql and friends), where
+		// CheckDetailed considers every argument and this check clears the
+		// safe case of a constant query text with tainted bound parameters.
+		// Positionally-selected sinks such as pgx (see sqlContextQueryArgument
+		// in rules.go) are already precise upstream, so they are not relied
+		// on here; note this heuristic assumes the SQL text is the first
+		// argument after the context, which is not true for Prepare-style
+		// (ctx, name, sql) signatures.
 		if strings.HasSuffix(edgeCalleeName(queryEdge), "Context") {
 			if len(queryArgs) < 2 {
 				continue

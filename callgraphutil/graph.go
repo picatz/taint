@@ -1182,7 +1182,16 @@ func dedupeMapUpdates(updates []*ssa.MapUpdate) []*ssa.MapUpdate {
 }
 
 func isPackageInit(fn *ssa.Function) bool {
-	return fn != nil && (fn.Synthetic == "package initializer" || strings.HasPrefix(fn.Name(), "init"))
+	if fn == nil {
+		return false
+	}
+	// The synthesized package initializer is named "init"; a package with
+	// multiple `func init()` declarations yields "init#1", "init#2", ….
+	// Match those exactly rather than every identifier starting with "init"
+	// (which would also catch user functions like initServer).
+	return fn.Synthetic == "package initializer" ||
+		fn.Name() == "init" ||
+		strings.HasPrefix(fn.Name(), "init#")
 }
 
 func mapUpdateMayMatchLookupKey(updateKey, lookupKey ssa.Value) bool {
