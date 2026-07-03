@@ -126,6 +126,23 @@ $ sqli -models ./models ./...
 For import-aware gating to run your model, its `package` should be an import
 path the analyzed program actually imports.
 
+### From the interactive tool
+
+The `taint` interactive tool has a `models` command for iterating on a model
+and debugging it. `models <path>` loads a file or directory and prints what
+each model contributes — sources, sinks (with their argument selectors),
+sanitizers, and summaries — so you can confirm it parsed as intended:
+
+```console
+taint> models ./models/acme-db.yaml
+✓ loaded 1 model(s)
+package github.com/acme/db
+  sink   (*github.com/acme/db.Conn).Exec args=[1] kind=sql-injection
+```
+
+Loaded models are then applied by the `check` command, so you can load a
+model and immediately test a source→sink flow against it.
+
 ## Worked example
 
 Model a custom database helper the built-in `sqli` rules don't know about:

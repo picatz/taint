@@ -156,10 +156,11 @@ func colorReceiver(recv string) string {
 }
 
 var (
-	pkgs    []*packages.Package
-	ssaProg *ssa.Program
-	ssaPkgs []*ssa.Package
-	cg      *callgraph.Graph
+	pkgs         []*packages.Package
+	ssaProg      *ssa.Program
+	ssaPkgs      []*ssa.Package
+	cg           *callgraph.Graph
+	loadedModels []taint.Model
 )
 
 // highlightNode returns a string with the node highlighted, such that
@@ -1217,6 +1218,81 @@ var builtinCommandsCallpath = &command{
 	},
 }
 
+var builtinCommandModels = &command{
+	name: "models",
+	desc: "load and inspect data-driven taint models (used by check)",
+	args: []*commandArg{
+		{
+			name:     "path",
+			desc:     "a model YAML file or directory to load; omit to show the currently loaded models",
+			optional: true,
+		},
+	},
+	fn: func(ctx context.Context, bt *bufio.Writer, args []string, flags map[string]string) error {
+		if len(args) > 0 {
+			ms, err := taint.ModelsFromPath(args[0])
+			if err != nil {
+				bt.WriteString(styleWarning.Render("✗ "+err.Error()) + "\n")
+				bt.Flush()
+				return nil
+			}
+			loadedModels = ms
+			bt.WriteString("✓ " + styleSuccess.Render(fmt.Sprintf("loaded %d model(s)", len(ms))) + "\n")
+		}
+		if len(loadedModels) == 0 {
+			bt.WriteString("no models loaded\n")
+			bt.Flush()
+			return nil
+		}
+		writeModelsSummary(bt, loadedModels)
+		bt.Flush()
+		return nil
+	},
+}
+
+// writeModelsSummary renders what each model contributes, so a user can verify
+// a model parsed as intended before running check.
+func writeModelsSummary(bt *bufio.Writer, models []taint.Model) {
+	for _, m := range models {
+		bt.WriteString(styleHeader.Render("package "+m.Package) + "\n")
+		for _, s := range m.Sources {
+			what := "type " + s.Type
+			if s.Call != "" {
+				what = "call " + s.Call
+			}
+			bt.WriteString("  " + styleSubtle.Render("source") + " " + what + "\n")
+		}
+		for _, s := range m.Sinks {
+			line := "  " + styleSubtle.Render("sink") + "   " + s.Method
+			if len(s.Args) > 0 {
+				line += styleFaint.Render(" args=" + selectorList(s.Args))
+			}
+			if s.Kind != "" {
+				line += styleFaint.Render(" kind=" + s.Kind)
+			}
+			bt.WriteString(line + "\n")
+		}
+		for _, s := range m.Sanitizers {
+			bt.WriteString("  " + styleSubtle.Render("sanit") + "  " + s.Func + "\n")
+		}
+		for _, s := range m.Summaries {
+			from := "all"
+			if len(s.From) > 0 {
+				from = selectorList(s.From)
+			}
+			bt.WriteString("  " + styleSubtle.Render("summ") + "   " + s.Func + styleFaint.Render(" from="+from+" → result") + "\n")
+		}
+	}
+}
+
+func selectorList(sels []taint.ArgSelector) string {
+	parts := make([]string, len(sels))
+	for i, s := range sels {
+		parts[i] = s.String()
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}
+
 var builtinCommandCheck = &command{
 	name: "check",
 	desc: "perform a taint analysis check",
@@ -1247,7 +1323,10 @@ var builtinCommandCheck = &command{
 
 		sink := args[1]
 
-		results := taint.Check(cg, taint.NewSources(source), taint.NewSinks(sink))
+		results := taint.CheckDetailed(cg, taint.NewSources(source), taint.NewSinks(sink), taint.WithModels(loadedModels...)).Results()
+		if len(loadedModels) > 0 {
+			bt.WriteString(styleFaint.Render(fmt.Sprintf("(with %d loaded model(s))", len(loadedModels))) + "\n")
+		}
 
 		var out []string
 		seen := make(map[string]struct{})
@@ -1318,6 +1397,7 @@ var builtinCommands = commands{
 	builtinCommandRoot,
 	builtinCommandNodes,
 	builtinCommandsCallpath,
+	builtinCommandModels,
 	builtinCommandCheck,
 }
 
