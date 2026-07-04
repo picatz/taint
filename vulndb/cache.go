@@ -156,22 +156,37 @@ func (c *cachedSource) readFresh(path string) ([]byte, bool) {
 	return data, true
 }
 
-// writeDisk stores v as JSON at path, best-effort: a cache write failure never
-// fails the scan.
+// writeDisk stores v as JSON at path via a uniquely-named temp file and an
+// atomic rename, so concurrent writers for the same key cannot corrupt each
+// other's in-flight file. It is best-effort: a cache write failure never fails
+// the scan.
 func (c *cachedSource) writeDisk(path string, v any) {
 	if path == "" {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
 	data, err := json.Marshal(v)
 	if err != nil {
 		return
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
 		return
 	}
-	_ = os.Rename(tmp, path)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+	}
 }

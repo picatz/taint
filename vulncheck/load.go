@@ -92,7 +92,7 @@ func Load(ctx context.Context, cfg LoadConfig) (*Target, error) {
 
 	goVersion := cfg.GoVersion
 	if goVersion == "" {
-		goVersion = runtime.Version()
+		goVersion = normalizeGoVersion(runtime.Version())
 	}
 
 	return &Target{
@@ -102,6 +102,24 @@ func Load(ctx context.Context, cfg LoadConfig) (*Target, error) {
 		Modules:          buildList(pkgs, goVersion),
 		ImportedPackages: importedPackages(pkgs),
 	}, nil
+}
+
+// normalizeGoVersion reduces a runtime.Version() string to a matchable
+// "goX.Y.Z" form. A released toolchain already reports that; a development
+// build reports "devel go1.27-abcdef ...", from which the "go1.27" token is
+// extracted so standard-library advisories match against a real version rather
+// than falling through to the conservative "affects everything" default.
+func normalizeGoVersion(v string) string {
+	for _, field := range strings.Fields(v) {
+		if strings.HasPrefix(field, "go") {
+			// Trim a "-abcdef" devel suffix, keeping the goX.Y[.Z] core.
+			if i := strings.IndexByte(field, '-'); i >= 0 {
+				field = field[:i]
+			}
+			return field
+		}
+	}
+	return v
 }
 
 // builtPackages returns the SSA packages the program built, skipping nils.

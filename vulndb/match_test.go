@@ -109,6 +109,18 @@ func TestAffectsVersion(t *testing.T) {
 			version: "1.0.0",
 			want:    true,
 		},
+		{
+			name:    "fixed-first range affects versions below the fix",
+			ranges:  []Range{semverRange(RangeEvent{Fixed: "1.2.3"})},
+			version: "1.0.0",
+			want:    true,
+		},
+		{
+			name:    "fixed-first range clean at or above the fix",
+			ranges:  []Range{semverRange(RangeEvent{Fixed: "1.2.3"})},
+			version: "1.2.3",
+			want:    false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

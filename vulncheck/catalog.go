@@ -9,6 +9,8 @@ import "github.com/picatz/taint/vulndb"
 type symbolCatalog struct {
 	// entries are the affecting advisories, in the order returned by the client.
 	entries []*vulndb.Entry
+	// byID indexes entries for O(1) lookup during finding assembly.
+	byID map[string]*vulndb.Entry
 	// symbolOwner maps a fully-qualified symbol id to the advisory occurrences
 	// that named it (the same symbol id can appear in more than one advisory).
 	symbolOwner map[string][]symbolRef
@@ -34,11 +36,13 @@ type symbolRef struct {
 func buildSymbolCatalog(entries []*vulndb.Entry, imported map[string]bool) *symbolCatalog {
 	c := &symbolCatalog{
 		entries:     entries,
+		byID:        make(map[string]*vulndb.Entry, len(entries)),
 		symbolOwner: make(map[string][]symbolRef),
 		pkgLevel:    make(map[string][]string),
 		symbolLevel: make(map[string]bool),
 	}
 	for _, e := range entries {
+		c.byID[e.ID] = e
 		for _, a := range e.Affected {
 			es := a.EcosystemSpecific
 			if es == nil {
@@ -167,12 +171,7 @@ func (c *symbolCatalog) baseFinding(osv, module string, target *Target) Finding 
 }
 
 func (c *symbolCatalog) entryByID(id string) *vulndb.Entry {
-	for _, e := range c.entries {
-		if e.ID == id {
-			return e
-		}
-	}
-	return nil
+	return c.byID[id]
 }
 
 // moduleForEntry picks the affected module of e that the build actually

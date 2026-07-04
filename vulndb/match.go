@@ -41,7 +41,9 @@ func (a Affected) AffectsVersion(version string) bool {
 // v (already normalized to a comparable "vX.Y.Z" form). Events are processed
 // in order: an "introduced" opens an affected interval, a "fixed" closes it.
 func rangeAffects(r Range, v string) bool {
-	affected := false
+	// Per OSV semantics a range that opens with a "fixed" event has an implicit
+	// "introduced" at 0, so every version below that fix is affected.
+	affected := startsWithFixed(r.Events)
 	for _, e := range r.Events {
 		switch {
 		case e.Introduced == "0":
@@ -67,6 +69,20 @@ func rangeAffects(r Range, v string) bool {
 	return affected
 }
 
+// startsWithFixed reports whether the first meaningful event of a range is a
+// "fixed" boundary, meaning the range opens with an implicit "introduced" at 0.
+func startsWithFixed(events []RangeEvent) bool {
+	for _, e := range events {
+		if e.Introduced != "" {
+			return false
+		}
+		if e.Fixed != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // FixedVersion returns the version that fixes the vulnerability for the given
 // affected version, or "" when the advisory lists no applicable fix (an
 // open-ended range). It reports the "fixed" boundary of the interval that
@@ -77,7 +93,7 @@ func (a Affected) FixedVersion(version string) string {
 		return ""
 	}
 	for _, r := range a.Ranges {
-		affected := false
+		affected := startsWithFixed(r.Events)
 		for _, e := range r.Events {
 			switch {
 			case e.Introduced == "0":

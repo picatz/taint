@@ -22,6 +22,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/picatz/taint/internal/analyzercmd"
@@ -62,7 +65,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitError
 	}
 
-	ctx := context.Background()
+	// Cancel the scan on interrupt so a slow network fetch responds to Ctrl-C.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
 
 	src, err := openDatabase(opts)
 	if err != nil {
@@ -132,14 +137,20 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 // on-disk cache unless disabled.
 func openDatabase(opts options) (vulndb.Source, error) {
 	if isLocalPath(opts.db) {
-		info, err := os.Stat(opts.db)
+		// Resolve a relative database path against -C, so "-C svc -db ./db"
+		// finds svc/db rather than a db under the process working directory.
+		dbPath := opts.db
+		if opts.dir != "" && !filepath.IsAbs(dbPath) {
+			dbPath = filepath.Join(opts.dir, dbPath)
+		}
+		info, err := os.Stat(dbPath)
 		if err != nil {
-			return nil, fmt.Errorf("opening database %q: %w", opts.db, err)
+			return nil, fmt.Errorf("opening database %q: %w", dbPath, err)
 		}
 		if !info.IsDir() {
-			return nil, fmt.Errorf("database path %q is not a directory", opts.db)
+			return nil, fmt.Errorf("database path %q is not a directory", dbPath)
 		}
-		return vulndb.NewFSSource(os.DirFS(opts.db)), nil
+		return vulndb.NewFSSource(os.DirFS(dbPath)), nil
 	}
 	src, err := vulndb.NewHTTPSource(opts.db, nil)
 	if err != nil {
@@ -209,27 +220,38 @@ func findingLocation(f vulncheck.Finding) (uri string, line, col int) {
 	return "", 0, 0
 }
 
+// splitPosition parses a token.Position string ("file:line:col", "file:line",
+// or "file") into its parts. It scans from the right so a Windows drive letter
+// ("C:\path\file.go:12:5") is not mistaken for a field separator: the trailing
+// numeric fields are peeled off first, and whatever remains is the path.
 func splitPosition(pos string) (path string, line, col int) {
-	parts := strings.Split(pos, ":")
-	switch len(parts) {
-	case 3:
-		return parts[0], atoi(parts[1]), atoi(parts[2])
-	case 2:
-		return parts[0], atoi(parts[1]), 0
-	default:
-		return pos, 0, 0
+	path = pos
+	if rest, n, ok := trimTrailingNumber(path); ok {
+		col = n
+		path = rest
+		if rest, n, ok := trimTrailingNumber(path); ok {
+			line = col
+			col = n
+			path = rest
+		} else {
+			line, col = col, 0
+		}
 	}
+	return path, line, col
 }
 
-func atoi(s string) int {
-	n := 0
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return 0
-		}
-		n = n*10 + int(r-'0')
+// trimTrailingNumber splits a trailing ":<number>" off s, returning the
+// remainder and the parsed number. It reports false when s has no such suffix.
+func trimTrailingNumber(s string) (rest string, n int, ok bool) {
+	i := strings.LastIndexByte(s, ':')
+	if i < 0 || i == len(s)-1 {
+		return s, 0, false
 	}
-	return n
+	num, err := strconv.Atoi(s[i+1:])
+	if err != nil {
+		return s, 0, false
+	}
+	return s[:i], num, true
 }
 
 func filterByTier(res *vulncheck.Result, min string) *vulncheck.Result {

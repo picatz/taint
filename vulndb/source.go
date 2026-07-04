@@ -3,6 +3,7 @@ package vulndb
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -11,10 +12,18 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/picatz/taint/internal/httpx"
 )
 
 // DefaultBaseURL is the canonical Go vulnerability database endpoint.
 const DefaultBaseURL = "https://vuln.go.dev"
+
+// maxResponseBytes caps how much a single database document may be, so a
+// malformed or hostile mirror cannot drive unbounded memory. The real index
+// and per-advisory files are far smaller; the whole database zips to a few
+// megabytes, and this ceiling comfortably clears any single file within it.
+const maxResponseBytes = 256 << 20 // 256 MiB
 
 // ModuleIndexEntry is one module's row in the database's module index
 // (index/modules.json): the module path and the advisories that touch it, each
@@ -36,6 +45,10 @@ type ModuleIndexVuln struct {
 // HTTP endpoint at vuln.go.dev and a local mirror on any fs.FS. The scanner and
 // the higher-level Client depend only on this interface, so an offline CI run,
 // a test with a fixture filesystem, and a live scan share one code path.
+//
+// Returned values must be treated as read-only: a caching implementation may
+// hand back shared instances, and mutating them would corrupt the cache for
+// concurrent callers.
 type Source interface {
 	// ModuleIndex returns the module index: every module with a known
 	// advisory, for prefiltering.
@@ -54,7 +67,9 @@ type httpSource struct {
 
 // NewHTTPSource returns a Source that reads the database at baseURL (use
 // DefaultBaseURL for the canonical endpoint) over the given HTTP client. A nil
-// client uses http.DefaultClient.
+// client uses the module's hardened default (bounded timeouts, HTTP/2, and
+// retry-with-backoff for these idempotent GETs) rather than the unbounded
+// http.DefaultClient, so a stalled or flaky network cannot hang a scan.
 func NewHTTPSource(baseURL string, client *http.Client) (Source, error) {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
@@ -64,7 +79,7 @@ func NewHTTPSource(baseURL string, client *http.Client) (Source, error) {
 		return nil, fmt.Errorf("vulndb: invalid base URL %q: %w", baseURL, err)
 	}
 	if client == nil {
-		client = http.DefaultClient
+		client = httpx.New()
 	}
 	return &httpSource{base: u, client: client}, nil
 }
@@ -104,8 +119,50 @@ func (s *httpSource) getJSON(ctx context.Context, endpoint string, dst any) erro
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("vulndb: fetching %s: unexpected status %s", endpoint, resp.Status)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(dst); err != nil {
+	if err := decodeJSON(resp.Body, maxResponseBytes, dst); err != nil {
 		return fmt.Errorf("vulndb: decoding %s: %w", endpoint, err)
+	}
+	return nil
+}
+
+// ErrResponseTooLarge is returned when a database document exceeds the byte
+// limit, so a malformed or hostile source cannot exhaust memory.
+var ErrResponseTooLarge = errors.New("vulndb: response exceeds size limit")
+
+// decodeJSON reads exactly one JSON document from r into dst, streaming, with
+// two guarantees a bare json.Decoder does not give: it bounds the input to
+// limit bytes (returning ErrResponseTooLarge rather than allocating an
+// unbounded body), and it rejects trailing data after the document (so a
+// truncated or concatenated response is an error, not a silent partial parse).
+// Unknown fields are ignored, since the Go database carries OSV fields this
+// package does not model.
+func decodeJSON(r io.Reader, limit int64, dst any) error {
+	// Read one byte past the limit so hitting the cap is distinguishable from a
+	// document that ends exactly at it.
+	lr := &io.LimitedReader{R: r, N: limit + 1}
+	dec := json.NewDecoder(lr)
+
+	if err := dec.Decode(dst); err != nil {
+		if lr.N <= 0 {
+			// The decoder consumed the whole budget without a complete value:
+			// the input is larger than the limit.
+			return ErrResponseTooLarge
+		}
+		if errors.Is(err, io.EOF) {
+			return fmt.Errorf("vulndb: empty response")
+		}
+		return err
+	}
+
+	// A well-formed single document is followed only by optional whitespace and
+	// then EOF. A successful token means a second value follows; a parse error
+	// means non-JSON trailing bytes; exhausting the budget means the trailing
+	// data pushed the input past the limit. All are rejected.
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		if lr.N <= 0 {
+			return ErrResponseTooLarge
+		}
+		return fmt.Errorf("vulndb: unexpected trailing data after JSON document")
 	}
 	return nil
 }
@@ -155,11 +212,8 @@ func (s *fsSource) readJSON(name string, dst any) error {
 		return fmt.Errorf("vulndb: opening %s: %w", name, err)
 	}
 	defer f.Close()
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return fmt.Errorf("vulndb: reading %s: %w", name, err)
-	}
-	if err := json.Unmarshal(data, dst); err != nil {
+	// Cap the read so a hostile local mirror cannot exhaust memory either.
+	if err := decodeJSON(f, maxResponseBytes, dst); err != nil {
 		return fmt.Errorf("vulndb: decoding %s: %w", name, err)
 	}
 	return nil
