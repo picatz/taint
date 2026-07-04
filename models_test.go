@@ -722,6 +722,254 @@ sinks:
 	}
 }
 
+func TestCheckDetailedFieldSensitiveSinkWholeObjectStore(t *testing.T) {
+	// The tainted field arrives via a whole-object store (`*e = makeMsg()`),
+	// while only a sibling field is individually addressed. The sink must still
+	// fire: a whole-object write contributes every field.
+	cg, pkg := detailedGraphForSource(t, `package main
+
+type Entry struct {
+	Message string
+	Other   string
+}
+
+func source() string { return "user" }
+func sink(e Entry) {}
+func makeMsg() Entry { return Entry{Message: source(), Other: "x"} }
+
+func run() {
+	e := makeMsg()
+	e.Other = "safe" // a sibling field write forces the alloc + whole-object store
+	sink(e)
+}
+
+func main() { run() }
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sinks:
+  - method: "%[1]s.sink"
+    args: ["0.Field[Message]"]
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected one diagnostic (Message tainted via the whole-object store), got %d", len(diags))
+	}
+}
+
+func TestCheckDetailedFieldSensitiveSinkWholeObjectStoreSiblingClean(t *testing.T) {
+	// The whole-object store carries taint only in a sibling field, so a sink on
+	// Message must stay clean.
+	cg, pkg := detailedGraphForSource(t, `package main
+
+type Entry struct {
+	Message string
+	Other   string
+}
+
+func source() string { return "user" }
+func sink(e Entry) {}
+func makeOther() Entry { return Entry{Message: "safe", Other: source()} }
+
+func run() {
+	e := makeOther()
+	e.Message = "safe2" // force the alloc; Message stays clean
+	sink(e)
+}
+
+func main() { run() }
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sinks:
+  - method: "%[1]s.sink"
+    args: ["0.Field[Message]"]
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(), WithModels(model...))
+	if len(diags) != 0 {
+		t.Fatalf("expected no diagnostic (only sibling Other tainted via whole-object store), got %d", len(diags))
+	}
+}
+
+func TestCheckDetailedFieldSensitiveSinkEscapeFallsBack(t *testing.T) {
+	// A struct that is both field-addressed (a sibling write) AND passed to a
+	// helper that stores through the pointer would otherwise report a false
+	// "clean" verdict for the target field. Because the base escapes into the
+	// helper, the field resolver defers to the whole-value walk, which follows
+	// the cross-procedure whole-object store and still reports — the field sink
+	// never under-reports relative to a plain sink.
+	cg, pkg := detailedGraphForSource(t, `package main
+
+type Entry struct {
+	Message string
+	Other   string
+}
+
+func source() string   { return "user" }
+func sink(e Entry)      {}
+func makeMsg() Entry    { return Entry{Message: source(), Other: "x"} }
+func fill(e *Entry)     { *e = makeMsg() }
+
+func run() {
+	e := &Entry{}
+	e.Other = "safe" // field-addresses Other, so the field path is "resolved"
+	fill(e)          // helper whole-object store carries Message taint
+	sink(*e)
+}
+
+func main() { run() }
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sinks:
+  - method: "%[1]s.sink"
+    args: ["0.Field[Message]"]
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected one diagnostic (helper-written field via sound whole-value fallback), got %d", len(diags))
+	}
+}
+
+func TestCheckDetailedFieldSensitiveSinkMultiResult(t *testing.T) {
+	// The struct arrives as one element of a multi-result call (struct, error);
+	// the field constraint must follow into that specific return slot.
+	cg, pkg := detailedGraphForSource(t, `package main
+
+type Entry struct {
+	Message string
+	Other   string
+}
+
+func source() string { return "user" }
+func sink(e Entry) {}
+
+func makeMessage() (Entry, error) { return Entry{Message: source(), Other: "safe"}, nil }
+func makeOther() (Entry, error)   { return Entry{Message: "safe", Other: source()}, nil }
+
+func tainted() {
+	e, _ := makeMessage()
+	sink(e)
+}
+
+func clean() {
+	e, _ := makeOther()
+	sink(e)
+}
+
+func main() {
+	tainted()
+	clean()
+}
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sinks:
+  - method: "%[1]s.sink"
+    args: ["0.Field[Message]"]
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected one diagnostic (Message tainted via makeMessage's first result only), got %d", len(diags))
+	}
+}
+
+func TestCheckDetailedFieldSensitiveSinkPointerReceiver(t *testing.T) {
+	// The sink takes the struct by pointer; field precision must resolve through
+	// the pointer directly (the isPointerToStruct branch of structFieldBase).
+	cg, pkg := detailedGraphForSource(t, `package main
+
+type Entry struct {
+	Message string
+	Other   string
+}
+
+func source() string { return "user" }
+func sink(e *Entry) {}
+
+func tainted() {
+	e := &Entry{Message: source(), Other: "safe"}
+	sink(e)
+}
+
+func clean() {
+	e := &Entry{Message: "safe", Other: source()}
+	sink(e)
+}
+
+func main() {
+	tainted()
+	clean()
+}
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sinks:
+  - method: "%[1]s.sink"
+    args: ["0.Field[Message]"]
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected one diagnostic (pointer sink, Message tainted only), got %d", len(diags))
+	}
+}
+
+func TestCheckDetailedFieldSensitiveSourceByValue(t *testing.T) {
+	// A value-receiver read (`r.Body` on a struct value, not a pointer) lowers to
+	// *ssa.Field; the field-source must be recognized there and siblings stay
+	// clean.
+	cg, pkg := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+type Req struct {
+	Body     string
+	Internal string
+}
+
+func provide() Req { return Req{} }
+
+func handle() {
+	db := &sql.DB{}
+	db.Query(provide().Body)     // *ssa.Field on a struct value: Body is the source field
+	db.Query(provide().Internal) // clean: Internal is not
+}
+
+func main() {
+	handle()
+}
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sources:
+  - type: "%[1]s.Req"
+    field: Body
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(), NewSinks("(*database/sql.DB).Query"), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected exactly one diagnostic (by-value Body only), got %d", len(diags))
+	}
+}
+
+func TestArgSelectorMalformedFieldTail(t *testing.T) {
+	// A field tail with no closing ']' is not a valid field access. The bare
+	// index form then fails to parse; the Argument[...] form parses as the plain
+	// argument with no field (the malformed tail is dropped).
+	if err := (&ArgSelector{}).parse("0.Field["); err == nil {
+		t.Error(`parse("0.Field[") should error`)
+	}
+	if err := (&ArgSelector{}).parse("0.Field[]"); err == nil {
+		t.Error(`parse("0.Field[]") should error (empty field name)`)
+	}
+	var a ArgSelector
+	if err := a.parse("Argument[0].Field["); err != nil {
+		t.Fatalf(`parse("Argument[0].Field["): %v`, err)
+	}
+	if a.field != "" || a.lo != 0 || a.hi != 0 {
+		t.Errorf("parse(\"Argument[0].Field[\") = {field:%q lo:%d hi:%d}, want plain arg 0 with no field", a.field, a.lo, a.hi)
+	}
+}
+
 func TestArgSelectorFieldTail(t *testing.T) {
 	cases := []struct {
 		in    string

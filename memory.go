@@ -141,23 +141,31 @@ func addrStepsMayAlias(a, b []addrStep) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].kind != b[i].kind {
+		if stepsConflict(a[i], b[i]) {
 			return false
-		}
-		switch a[i].kind {
-		case addrStepField:
-			if a[i].field != b[i].field {
-				return false
-			}
-		case addrStepIndex:
-			ai, aOk := intConstant(a[i].index)
-			bi, bOk := intConstant(b[i].index)
-			if aOk && bOk && ai != bi {
-				return false
-			}
 		}
 	}
 	return true
+}
+
+// stepsConflict reports whether two address-path steps definitely refer to
+// different locations: a different access kind, a different struct field, or
+// two constant indices that differ. Non-constant indices conservatively do not
+// conflict (they may alias). This is the shared per-step comparison behind both
+// aliasing predicates, so they cannot drift apart if the step model grows.
+func stepsConflict(a, b addrStep) bool {
+	if a.kind != b.kind {
+		return true
+	}
+	switch a.kind {
+	case addrStepField:
+		return a.field != b.field
+	case addrStepIndex:
+		ai, aOk := intConstant(a.index)
+		bi, bOk := intConstant(b.index)
+		return aOk && bOk && ai != bi
+	}
+	return false
 }
 
 // storeMatchesLoadPath returns true when the helper's store at storeAddr could
@@ -193,22 +201,9 @@ func storeMatchesLoadPath(storeAddr ssa.Value, loadSteps []addrStep, paramArgs m
 // two distinct sibling fields never overlap. Constant indices that differ rule
 // out aliasing; unknown indices conservatively may alias.
 func addrStepsPrefixAlias(a, b []addrStep) bool {
-	n := min(len(a), len(b))
-	for i := 0; i < n; i++ {
-		if a[i].kind != b[i].kind {
+	for i := range min(len(a), len(b)) {
+		if stepsConflict(a[i], b[i]) {
 			return false
-		}
-		switch a[i].kind {
-		case addrStepField:
-			if a[i].field != b[i].field {
-				return false
-			}
-		case addrStepIndex:
-			ai, aOk := intConstant(a[i].index)
-			bi, bOk := intConstant(b[i].index)
-			if aOk && bOk && ai != bi {
-				return false
-			}
 		}
 	}
 	return true

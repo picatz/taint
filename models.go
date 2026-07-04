@@ -125,10 +125,12 @@ type SummaryModel struct {
 //	Argument[0..2]    # CodeQL-compatible range
 //	Argument[receiver]
 //
-// For portability with CodeQL models-as-data, a trailing field or element
-// access (e.g. "Argument[0].Field[pkg.T.f]" or "Argument[0].ArrayElement") is
-// accepted but interpreted loosely: this engine is not field-sensitive, so the
-// selector resolves to the whole argument rather than a sub-value.
+// A selector may carry a trailing field access, e.g. "Argument[0].Field[F]" or
+// the shorthand "0.Field[F]" (a CodeQL "pkg.T." qualifier on the field name is
+// stripped). On a sink this is field-sensitive: the sink fires only when field F
+// of the argument is the tainted channel. On a summary "from" selector the field
+// is currently ignored (summaries are not field-sensitive yet), as is an element
+// access such as "Argument[0].ArrayElement", which resolves to the whole value.
 type ArgSelector struct {
 	raw      string
 	receiver bool

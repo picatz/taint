@@ -388,8 +388,16 @@ func checkFieldOfValueTainted(path callgraphutil.Path, ctx taintContext, v ssa.V
 	inner := unwrapFieldValue(v)
 	switch val := inner.(type) {
 	case *ssa.Call:
-		if handled, tainted, src, tv := checkFieldOfCallReturnValues(path, ctx, val, field, visited); handled {
+		if handled, tainted, src, tv := checkFieldOfCallReturnValues(path, ctx, val, field, -1, visited); handled {
 			return tainted, src, tv
+		}
+	case *ssa.Extract:
+		// A multi-result call (e.g. `x, _ := f()`) yields the struct through an
+		// Extract of one tuple element; follow into that specific return slot.
+		if c, ok := val.Tuple.(*ssa.Call); ok {
+			if handled, tainted, src, tv := checkFieldOfCallReturnValues(path, ctx, c, field, val.Index, visited); handled {
+				return tainted, src, tv
+			}
 		}
 	case *ssa.Parameter:
 		if arg, ok := callArgForParameterOnPath(path, val); ok {
@@ -452,33 +460,85 @@ func isPointerToStruct(t types.Type) bool {
 	return ok
 }
 
-// checkAddressedFieldTainted checks the values stored into `field` of a struct
-// addressed through base. handled is true when base's struct is field-addressed
-// here at all, so the verdict is precise: a target field that is written carries
-// its stored value's taint, and one that is never written (only siblings are)
-// reads as the clean zero value rather than borrowing a sibling's taint. handled
-// is false only when base has no field addresses — e.g. the struct is copied
-// wholesale from an opaque source — so the caller can fall back to a whole-value
-// check.
+// checkAddressedFieldTainted checks whether `field` of a struct addressed through
+// base carries taint. It accounts for both writes that reach the field: a store
+// into the field's own address (`base.field = x`), and a whole-object store
+// (`*base = x`) which writes every field and so contributes field x.field.
+//
+// handled reports whether the verdict is trustworthy. It is true when base's
+// writes are all visible here — then a tainted write yields tainted=true and an
+// unwritten (or cleanly written) field yields a precise clean verdict, so a
+// sibling field's taint does not leak in. It is false when base has no field
+// addresses (the struct arrived wholesale from an opaque value) OR when base or
+// the field's address escapes into another call that may write the field out of
+// view; in those cases the caller falls back to the whole-value check so the
+// field sink never under-reports relative to a plain sink.
 func checkAddressedFieldTainted(path callgraphutil.Path, ctx taintContext, base ssa.Value, field string, visited valueSet) (handled, tainted bool, src string, tv ssa.Value) {
 	refs := base.Referrers()
-	if refs == nil {
+	if refs == nil || visited.includes(base) {
 		return false, false, "", nil
 	}
+	// The sink call at the end of the path is where base is consumed, not a
+	// write of it, so it does not count as an escape.
+	var sinkCall ssa.Instruction
+	if last := path.Last(); last != nil && last.Site != nil {
+		sinkCall = last.Site
+	}
+	escapes := false
 	for _, ref := range *refs {
-		fa, ok := ref.(*ssa.FieldAddr)
-		if !ok {
-			continue
-		}
-		handled = true
-		if fieldAddrName(fa) != field {
-			continue
-		}
-		if t, s, v := checkFieldAddrStores(path, ctx, fa, visited); t {
-			return true, true, s, v
+		switch r := ref.(type) {
+		case *ssa.FieldAddr:
+			handled = true
+			if fieldAddrName(r) != field {
+				continue
+			}
+			if t, s, v := checkFieldAddrStores(path, ctx, r, visited); t {
+				return true, true, s, v
+			}
+			// The field's address handed to a call may be written through by
+			// that callee — a store we cannot see from here.
+			if valueEscapesToCall(r, sinkCall) {
+				escapes = true
+			}
+		case *ssa.Store:
+			// A whole-object store `*base = x` writes every field, so field
+			// `field` of base may take field `field` of x. Missing this would
+			// under-report relative to a whole-value sink.
+			if r.Addr != base || r.Val == nil {
+				continue
+			}
+			handled = true
+			next := visited.clone()
+			next.add(base)
+			if t, s, v := checkFieldOfValueTainted(path, ctx, r.Val, field, next); t {
+				return true, true, s, v
+			}
+		case ssa.CallInstruction:
+			// base itself passed to a call: the callee may write the field.
+			if ref != sinkCall {
+				escapes = true
+			}
 		}
 	}
+	if escapes {
+		return false, false, "", nil
+	}
 	return handled, false, "", nil
+}
+
+// valueEscapesToCall reports whether v is passed to any call other than except,
+// i.e. flows somewhere a callee could mutate what it addresses.
+func valueEscapesToCall(v ssa.Value, except ssa.Instruction) bool {
+	refs := v.Referrers()
+	if refs == nil {
+		return false
+	}
+	for _, ref := range *refs {
+		if _, ok := ref.(ssa.CallInstruction); ok && ref != except {
+			return true
+		}
+	}
+	return false
 }
 
 // checkFieldAddrStores checks the values stored directly into a field address.
@@ -499,10 +559,12 @@ func checkFieldAddrStores(path callgraphutil.Path, ctx taintContext, fa *ssa.Fie
 	return false, "", nil
 }
 
-// checkFieldOfCallReturnValues checks `field` of each value a single-result call
-// returns, following the callee body when analyzable. handled is false when the
-// body is not analyzable, so the caller falls back to a whole-value check.
-func checkFieldOfCallReturnValues(path callgraphutil.Path, ctx taintContext, call *ssa.Call, field string, visited valueSet) (handled, tainted bool, src string, tv ssa.Value) {
+// checkFieldOfCallReturnValues checks `field` of a value a call returns,
+// following the callee body when analyzable. resultIndex selects which returned
+// value to inspect: a specific tuple element (>= 0, for a multi-result call) or
+// the sole result when < 0. handled is false when the body is not analyzable, so
+// the caller falls back to a whole-value check.
+func checkFieldOfCallReturnValues(path callgraphutil.Path, ctx taintContext, call *ssa.Call, field string, resultIndex int, visited valueSet) (handled, tainted bool, src string, tv ssa.Value) {
 	callee := staticCalleeForCall(call)
 	if callee == nil || len(callee.Blocks) == 0 {
 		return false, false, "", nil
@@ -519,10 +581,23 @@ func checkFieldOfCallReturnValues(path callgraphutil.Path, ctx taintContext, cal
 	for _, block := range callee.Blocks {
 		for _, instr := range block.Instrs {
 			ret, ok := instr.(*ssa.Return)
-			if !ok || len(ret.Results) != 1 {
+			if !ok {
 				continue
 			}
-			if t, s, v := checkFieldOfValueTainted(summaryPath, ctx, ret.Results[0], field, visited); t {
+			var result ssa.Value
+			switch {
+			case resultIndex >= 0:
+				if resultIndex >= len(ret.Results) {
+					continue
+				}
+				result = ret.Results[resultIndex]
+			default:
+				if len(ret.Results) != 1 {
+					continue
+				}
+				result = ret.Results[0]
+			}
+			if t, s, v := checkFieldOfValueTainted(summaryPath, ctx, result, field, visited); t {
 				return true, true, s, v
 			}
 		}
