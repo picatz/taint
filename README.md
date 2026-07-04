@@ -199,10 +199,27 @@ $ ptrv -sarif-output ptrv.sarif ./...
 $ ssrf -sarif-output ssrf.sarif ./...
 ```
 
+### `vuln`
+
+The `vuln` command scans a module for known vulnerabilities from the
+[Go vulnerability database](https://vuln.go.dev) and ranks each finding by how
+strongly the code is exposed, from merely depending on a vulnerable module up
+to attacker-controlled data reaching the vulnerable symbol. It is this
+project's taint-aware answer to `govulncheck`: the same data and reachability,
+plus a taint tier with a data-flow trace.
+
+```console
+$ go run github.com/picatz/taint/cmd/vuln@latest ./...
+```
+
+Findings are ranked by tier (`taint` > `symbol` > `package` > `module`), it
+emits text, JSON, or SARIF, and it exits `3` when findings are reported so CI
+can gate on it. See [docs/vulncheck.md](docs/vulncheck.md).
+
 ### Custom models
 
 Beyond the built-in coverage below, you can teach any detector about your own
-frameworks and helpers with **models** — data-driven sources, sinks,
+frameworks and helpers with **models**: data-driven sources, sinks,
 sanitizers, and flow summaries in YAML. Pass `-models path/` to any CLI, or use
 `taint.WithModels` from the library. See [docs/models.md](docs/models.md).
 

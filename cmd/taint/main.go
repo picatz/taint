@@ -1405,6 +1405,7 @@ var builtinCommands = commands{
 	builtinCommandsCallpath,
 	builtinCommandModels,
 	builtinCommandCheck,
+	builtinCommandVuln,
 }
 
 func startShell(ctx context.Context) error {
