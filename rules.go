@@ -95,9 +95,13 @@ func fieldSourceRule(typeID, field string) sourceRule {
 }
 
 type sinkRule struct {
-	id         string
-	matchEdge  func(*callgraph.Edge) bool
-	selectArgs func(*callgraph.Edge) []ssa.Value
+	id        string
+	matchEdge func(*callgraph.Edge) bool
+	// selectArgs names the whole-value sink channels. selectFieldArgs, when
+	// non-nil, supersedes it and names channels that may carry a struct field
+	// constraint (a field-sensitive sink). Exactly one is populated.
+	selectArgs      func(*callgraph.Edge) []ssa.Value
+	selectFieldArgs func(*callgraph.Edge) []sinkArg
 }
 
 type sanitizerRule struct {
@@ -231,9 +235,18 @@ func isKnownSelector(name string) bool {
 func modelSinkRule(sk SinkModel) sinkRule {
 	id := sk.Method
 	var selectArgs func(*callgraph.Edge) []ssa.Value
+	var selectFieldArgs func(*callgraph.Edge) []sinkArg
 	switch {
 	case sk.Select != "":
 		selectArgs = namedSinkSelectors[sk.Select]
+	case len(sk.Args) > 0 && selectorsHaveField(sk.Args):
+		// A field-sensitive selector ("Argument[0].Field[Message]") fires only
+		// when that field of the argument is the tainted channel.
+		selectors := slices.Clone(sk.Args)
+		selectFieldArgs = func(edge *callgraph.Edge) []sinkArg {
+			params := defaultSinkArguments(edge)
+			return resolveSinkSelectors(selectors, params, sinkReceiver(edge))
+		}
 	case len(sk.Args) > 0:
 		selectors := slices.Clone(sk.Args)
 		selectArgs = func(edge *callgraph.Edge) []ssa.Value {
@@ -253,7 +266,8 @@ func modelSinkRule(sk SinkModel) sinkRule {
 		matchEdge: func(edge *callgraph.Edge) bool {
 			return edgeCallsSink(edge, id)
 		},
-		selectArgs: selectArgs,
+		selectArgs:      selectArgs,
+		selectFieldArgs: selectFieldArgs,
 	}
 }
 

@@ -4,9 +4,10 @@ Status: implemented for user-supplied models. Models augment the built-in
 rules via `taint.WithModels` / `LoadModels` / `ModelsFromPath`, a `-models`
 CLI flag on every detector, and a `models` command in the interactive tool.
 Argument selectors support indices, ranges, `receiver`, and the CodeQL
-`Argument[...]` spellings (field/element access parses but resolves loosely,
-since the engine is not field-sensitive). Packs can be embedded via
-`//go:embed` + `LoadModels(fs.FS)`. See [../models.md](../models.md).
+`Argument[...]` spellings; a trailing field access (`Argument[0].Field[f]`) is
+field-sensitive for sinks, while element access still resolves to the whole
+argument. Packs can be embedded via `//go:embed` + `LoadModels(fs.FS)`. See
+[../models.md](../models.md).
 
 Built-in-table migration (done for detectors): **all six detectors** —
 `sqli`, `logi`, `cmdi`, `xss`, `ptrv`, `ssrf` — now load their sources, sinks,
@@ -45,9 +46,20 @@ a legitimate flow. Local scalar stores were already field-distinct via SSA
 registers, and cross-procedure helper stores already used this comparator; this
 closes the remaining coarse case.
 
-Remaining here: field-sensitive sinks/summaries (argument access paths into
-fields), and field precision for buffered writes. The rest of this document is
-the original design.
+Field-sensitive sinks are now supported too: a sink `args` selector with a
+field access (`Argument[0].Field[Message]` or the shorthand `0.Field[Message]`)
+fires only when that struct field of the argument is the tainted channel. The
+sink check resolves the field precisely for the common shapes (a struct built
+and passed by value or pointer, returned from an analyzable helper, or threaded
+through parameters — `checkFieldOfValueTainted`), and falls back to the whole
+value for shapes it cannot resolve, so it never under-reports relative to a
+non-field-sensitive sink. This also added the by-value `*ssa.Field` case to the
+walk, closing a latent gap where a field-source read out of a struct *value*
+(rather than through its address) was not recognized.
+
+Remaining here: field-sensitive summaries (argument access paths into fields),
+cross-procedure field stores into a sink argument, and field precision for
+buffered writes. The rest of this document is the original design.
 
 ## Problem
 

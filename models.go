@@ -132,7 +132,8 @@ type SummaryModel struct {
 type ArgSelector struct {
 	raw      string
 	receiver bool
-	lo, hi   int // inclusive argument range; used when !receiver
+	lo, hi   int    // inclusive argument range; used when !receiver
+	field    string // trailing ".Field[name]" access, "" when the whole value
 }
 
 // Arg selects the argument at the given zero-based position (receiver excluded).
@@ -150,14 +151,19 @@ func Receiver() ArgSelector { return ArgSelector{raw: "receiver", receiver: true
 
 // String returns the selector's canonical textual form.
 func (a ArgSelector) String() string {
+	var base string
 	switch {
 	case a.receiver:
-		return "receiver"
+		base = "receiver"
 	case a.lo == a.hi:
-		return strconv.Itoa(a.lo)
+		base = strconv.Itoa(a.lo)
 	default:
-		return fmt.Sprintf("%d..%d", a.lo, a.hi)
+		base = fmt.Sprintf("%d..%d", a.lo, a.hi)
 	}
+	if a.field != "" {
+		return base + ".Field[" + a.field + "]"
+	}
+	return base
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler, parsing a scalar selector.
@@ -175,8 +181,14 @@ func (a *ArgSelector) parse(s string) error {
 	a.raw = s
 	body := strings.TrimSpace(s)
 
-	// CodeQL "Argument[...]" spelling, with an optional trailing field or
-	// element access after the closing bracket that we accept but ignore.
+	// Pull off a trailing ".Field[name]" access first, so it works after
+	// either the "Argument[...]" or the bare-index form. Unlike other trailing
+	// access paths (e.g. ".ArrayElement"), a field access is resolved precisely
+	// for sinks; anything else is left on the head and ignored below.
+	body, a.field = extractFieldTail(body)
+
+	// CodeQL "Argument[...]" spelling, with an optional trailing element access
+	// after the closing bracket that we accept but ignore.
 	if rest, ok := strings.CutPrefix(body, "Argument["); ok {
 		end := strings.IndexByte(rest, ']')
 		if end < 0 {
@@ -196,6 +208,31 @@ func (a *ArgSelector) parse(s string) error {
 	}
 	a.receiver, a.lo, a.hi = false, lo, hi
 	return nil
+}
+
+// extractFieldTail splits a trailing ".Field[name]" access off a selector
+// string, returning the remaining head and the bare field name (a "pkg.T."
+// qualifier on the CodeQL spelling is stripped). When there is no field access,
+// or it is malformed, the input is returned unchanged with an empty field.
+func extractFieldTail(s string) (head, field string) {
+	const marker = ".Field["
+	idx := strings.Index(s, marker)
+	if idx < 0 {
+		return s, ""
+	}
+	rest := s[idx+len(marker):]
+	end := strings.IndexByte(rest, ']')
+	if end < 0 {
+		return s, ""
+	}
+	name := strings.TrimSpace(rest[:end])
+	if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
+		name = name[dot+1:]
+	}
+	if name == "" {
+		return s, ""
+	}
+	return strings.TrimSpace(s[:idx]), name
 }
 
 func parseArgRange(s string) (lo, hi int, err error) {
@@ -259,6 +296,59 @@ func resolveSelectors(sels []ArgSelector, params []ssa.Value, receiver ssa.Value
 		out = s.resolve(params, receiver, out)
 	}
 	return out
+}
+
+// sinkArg is a sink channel value together with an optional struct field: when
+// field is non-empty the sink fires only if that field of value is tainted,
+// not the whole value. Sinks carry this (rather than a bare ssa.Value) so a
+// field-sensitive selector such as "Argument[0].Field[Message]" stays precise.
+type sinkArg struct {
+	value ssa.Value
+	field string
+}
+
+// resolveSink appends the field-carrying sink arguments the selector names.
+func (a ArgSelector) resolveSink(params []ssa.Value, receiver ssa.Value, out []sinkArg) []sinkArg {
+	if a.receiver {
+		if receiver != nil {
+			out = append(out, sinkArg{value: receiver, field: a.field})
+		}
+		return out
+	}
+	for i := a.lo; i <= a.hi; i++ {
+		if i >= 0 && i < len(params) {
+			out = append(out, sinkArg{value: params[i], field: a.field})
+		}
+	}
+	return out
+}
+
+// resolveSinkSelectors resolves selectors to field-carrying sink arguments. An
+// empty list selects every parameter as a whole value (no field constraint).
+func resolveSinkSelectors(sels []ArgSelector, params []ssa.Value, receiver ssa.Value) []sinkArg {
+	if len(sels) == 0 {
+		out := make([]sinkArg, len(params))
+		for i, p := range params {
+			out[i] = sinkArg{value: p}
+		}
+		return out
+	}
+	out := make([]sinkArg, 0, len(sels))
+	for _, s := range sels {
+		out = s.resolveSink(params, receiver, out)
+	}
+	return out
+}
+
+// selectorsHaveField reports whether any selector carries a field access, i.e.
+// the sink needs field-precise argument resolution.
+func selectorsHaveField(sels []ArgSelector) bool {
+	for _, s := range sels {
+		if s.field != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseModels decodes zero or more [Model] values from YAML. Each YAML document

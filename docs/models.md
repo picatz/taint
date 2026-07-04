@@ -108,11 +108,14 @@ summaries:
     to: result
 ```
 
-For portability with CodeQL models-as-data you may also write a trailing field
-or element access, e.g. `Argument[0].Field[pkg.T.f]` or
-`Argument[0].ArrayElement`. This engine is **not field-sensitive**, so such a
-selector is interpreted loosely: it resolves to the whole argument rather than
-a sub-value.
+A sink selector may carry a trailing **field access**, e.g.
+`Argument[0].Field[Message]` or the shorthand `0.Field[Message]` (a CodeQL
+`pkg.T.` qualifier on the field name is accepted and stripped). This is
+field-sensitive: the sink fires only when that struct field of the argument is
+the tainted channel, not the whole value or a sibling field — see below. An
+**element access** (`Argument[0].ArrayElement`) is still interpreted loosely and
+resolves to the whole argument, as does a field access used in a summary `from`
+selector (summaries are not field-sensitive yet).
 
 When a sink lists no `args` and no `select`, it inherits the engine's built-in
 selector for that method — so naming a well-known standard-library sink yields
@@ -135,6 +138,29 @@ The available names are `exec-command` (the command string, including the
 argument to `sh -c`), `http-post-url`, `sql-query` (the SQL text after a
 context argument), and `sql-prepare` (the SQL text of a `Prepare(ctx, name,
 sql)` method).
+
+### Field-sensitive sinks
+
+When the dangerous channel is one field of a struct argument — not the whole
+value — give the selector a field access:
+
+```yaml
+sinks:
+  - method: "github.com/acme/log.Write"
+    args: ["0.Field[Message]"]   # only entry.Message is the channel
+```
+
+With this model, `Write(Entry{Message: userInput})` is reported, but
+`Write(Entry{Other: userInput})` — a sibling field — stays clean, and a struct
+whose `Message` is a constant does not flag even if another field is tainted.
+
+This resolves precisely for the common shapes: a struct built and passed by
+value or pointer, a struct returned from an analyzable helper, and a struct
+threaded through parameters. When the field cannot be resolved to a specific
+store — for example a struct copied wholesale out of opaque third-party code, or
+a field written only inside a helper through a passed pointer — the check falls
+back to the whole value, so it never reports *less* than the same sink without a
+field would. The field name is matched against the struct's declared fields.
 
 ## Using models
 
@@ -221,9 +247,13 @@ stays clean.
 
 - Summaries flow only to the result (`to: result`); flowing taint into an
   output-parameter is not modeled yet.
-- Sources are field-sensitive (via `field`), but sink/summary argument access
-  paths are not: a field- or element-level access path in `args`/`from`
-  resolves to the whole argument (see above).
+- Sources (via `field`) and sinks (via an `args` field access) are
+  field-sensitive; **summaries** are not — a field access in a `from` selector
+  resolves to the whole argument. Element-level access paths
+  (`Argument[0].ArrayElement`) are also whole-value everywhere.
+- A field-sensitive sink resolves a field written only inside a helper (through
+  a passed pointer) conservatively as the whole value; a precise cross-procedure
+  field store is future work.
 - Import-aware gating in the CLIs keys on the model's `package`, so it should
   match the imported path.
 

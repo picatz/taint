@@ -624,6 +624,142 @@ func TestParseModelsFieldSource(t *testing.T) {
 	}
 }
 
+func TestCheckDetailedFieldSensitiveSink(t *testing.T) {
+	cg, pkg := detailedGraphForSource(t, `package main
+
+type Entry struct {
+	Message string
+	Other   string
+}
+
+func source() string { return "user" }
+func sink(e Entry) {}
+
+func run() {
+	e := Entry{Message: source(), Other: "safe"}
+	sink(e)
+}
+
+func main() { run() }
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sinks:
+  - method: "%[1]s.sink"
+    args: ["0.Field[Message]"]
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected one diagnostic (Message is the tainted field), got %d", len(diags))
+	}
+}
+
+func TestCheckDetailedFieldSensitiveSinkSiblingStaysClean(t *testing.T) {
+	// The sink models field Message, but only the sibling field Other is
+	// tainted, so the sink must stay clean.
+	cg, pkg := detailedGraphForSource(t, `package main
+
+type Entry struct {
+	Message string
+	Other   string
+}
+
+func source() string { return "user" }
+func sink(e Entry) {}
+
+func run() {
+	e := Entry{Message: "safe", Other: source()}
+	sink(e)
+}
+
+func main() { run() }
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sinks:
+  - method: "%[1]s.sink"
+    args: ["0.Field[Message]"]
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(), WithModels(model...))
+	if len(diags) != 0 {
+		t.Fatalf("expected no diagnostic (only sibling Other is tainted), got %d", len(diags))
+	}
+}
+
+func TestCheckDetailedFieldSensitiveSinkReturnedStruct(t *testing.T) {
+	// The tainted struct is produced by a helper returning it by value; the
+	// field constraint must follow into the callee's returned struct.
+	cg, pkg := detailedGraphForSource(t, `package main
+
+type Entry struct {
+	Message string
+	Other   string
+}
+
+func source() string { return "user" }
+func sink(e Entry) {}
+
+func makeMessage(m string) Entry { return Entry{Message: m, Other: "safe"} }
+func makeOther(o string) Entry   { return Entry{Message: "safe", Other: o} }
+
+func tainted() { sink(makeMessage(source())) }
+func clean()   { sink(makeOther(source())) }
+
+func main() {
+	tainted()
+	clean()
+}
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sinks:
+  - method: "%[1]s.sink"
+    args: ["0.Field[Message]"]
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected one diagnostic (Message tainted via makeMessage only), got %d", len(diags))
+	}
+}
+
+func TestArgSelectorFieldTail(t *testing.T) {
+	cases := []struct {
+		in    string
+		field string
+		lo    int
+		hi    int
+		recv  bool
+	}{
+		{in: "0.Field[Message]", field: "Message", lo: 0, hi: 0},
+		{in: "Argument[1].Field[Body]", field: "Body", lo: 1, hi: 1},
+		{in: "Argument[0].Field[pkg.T.Name]", field: "Name", lo: 0, hi: 0},
+		{in: "receiver.Field[X]", field: "X", recv: true},
+		{in: "0..2", field: "", lo: 0, hi: 2},
+		{in: "Argument[0].ArrayElement", field: "", lo: 0, hi: 0},
+	}
+	for _, tc := range cases {
+		var a ArgSelector
+		if err := a.parse(tc.in); err != nil {
+			t.Fatalf("parse(%q): %v", tc.in, err)
+		}
+		if a.field != tc.field {
+			t.Errorf("parse(%q).field = %q, want %q", tc.in, a.field, tc.field)
+		}
+		if a.receiver != tc.recv {
+			t.Errorf("parse(%q).receiver = %v, want %v", tc.in, a.receiver, tc.recv)
+		}
+		if !tc.recv && (a.lo != tc.lo || a.hi != tc.hi) {
+			t.Errorf("parse(%q) range = [%d,%d], want [%d,%d]", tc.in, a.lo, a.hi, tc.lo, tc.hi)
+		}
+		// Round-trip: a selector carrying a field prints it back.
+		if tc.field != "" {
+			if got := a.String(); !strings.Contains(got, ".Field["+tc.field+"]") {
+				t.Errorf("String() = %q, want it to contain .Field[%s]", got, tc.field)
+			}
+		}
+	}
+}
+
 func TestCheckDetailedModelSummary(t *testing.T) {
 	cg, pkg := detailedGraphForSource(t, `package main
 
