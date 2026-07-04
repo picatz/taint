@@ -876,16 +876,23 @@ func (ctx taintContext) matchSourceValue(v ssa.Value) (string, bool) {
 	return "", false
 }
 
-func (ctx taintContext) propagatorForCall(call *ssa.CallCommon) (propagatorRule, []ssa.Value, bool) {
+func (ctx taintContext) propagatorForCall(call *ssa.CallCommon) (propagatorRule, []sinkArg, bool) {
 	propagators := ctx.propagators
 	if len(propagators) == 0 {
 		propagators = defaultPropagators
 	}
 	for _, rule := range propagators {
 		if rule.matchCall != nil && rule.matchCall(call) {
-			args := call.Args
+			if rule.selectFieldArgs != nil {
+				return rule, rule.selectFieldArgs(call), true
+			}
+			values := call.Args
 			if rule.selectArgs != nil {
-				args = rule.selectArgs(call)
+				values = rule.selectArgs(call)
+			}
+			args := make([]sinkArg, len(values))
+			for i, v := range values {
+				args[i] = sinkArg{value: v}
 			}
 			return rule, args, true
 		}
@@ -1040,7 +1047,16 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 
 		if _, args, ok := ctx.propagatorForCall(&value.Call); ok {
 			for _, arg := range args {
-				tainted, src, tv := checkSSAValueWithContext(path, ctx, arg, visited)
+				var (
+					tainted bool
+					src     string
+					tv      ssa.Value
+				)
+				if arg.field != "" {
+					tainted, src, tv = checkFieldOfValueTainted(path, ctx, arg.value, arg.field, visited)
+				} else {
+					tainted, src, tv = checkSSAValueWithContext(path, ctx, arg.value, visited)
+				}
 				if tainted {
 					return true, src, tv
 				}

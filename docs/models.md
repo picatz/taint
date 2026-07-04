@@ -112,10 +112,12 @@ A sink selector may carry a trailing **field access**, e.g.
 `Argument[0].Field[Message]` or the shorthand `0.Field[Message]` (a CodeQL
 `pkg.T.` qualifier on the field name is accepted and stripped). This is
 field-sensitive: the sink fires only when that struct field of the argument is
-the tainted channel, not the whole value or a sibling field — see below. An
+the tainted channel, not the whole value or a sibling field — see below. A
+summary `from` selector is field-sensitive the same way: `from:
+["0.Field[Message]"]` flows taint only from that field of the argument. An
 **element access** (`Argument[0].ArrayElement`) is still interpreted loosely and
-resolves to the whole argument, as does a field access used in a summary `from`
-selector (summaries are not field-sensitive yet).
+resolves to the whole argument, as does a field access on a summary's `to`
+destination (the whole result is tainted).
 
 When a sink lists no `args` and no `select`, it inherits the engine's built-in
 selector for that method — so naming a well-known standard-library sink yields
@@ -247,10 +249,10 @@ stays clean.
 
 - Summaries flow only to the result (`to: result`); flowing taint into an
   output-parameter is not modeled yet.
-- Sources (via `field`) and sinks (via an `args` field access) are
-  field-sensitive; **summaries** are not — a field access in a `from` selector
-  resolves to the whole argument. Element-level access paths
-  (`Argument[0].ArrayElement`) are also whole-value everywhere.
+- Sources (via `field`), sinks (via an `args` field access), and a summary's
+  `from` selector are field-sensitive. A summary's `to` destination is not: a
+  field access there taints the whole result. Element-level access paths
+  (`Argument[0].ArrayElement`) are whole-value everywhere.
 - A field-sensitive sink resolves a field written only inside a helper (through
   a passed pointer) conservatively as the whole value; a precise cross-procedure
   field store is future work.

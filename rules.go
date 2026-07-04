@@ -110,9 +110,14 @@ type sanitizerRule struct {
 }
 
 type propagatorRule struct {
-	id         string
-	matchCall  func(*ssa.CallCommon) bool
-	selectArgs func(*ssa.CallCommon) []ssa.Value
+	id        string
+	matchCall func(*ssa.CallCommon) bool
+	// selectArgs names the whole-value arguments taint flows from.
+	// selectFieldArgs, when non-nil, supersedes it and names arguments that may
+	// carry a struct-field constraint (a field-sensitive summary). At most one
+	// is populated.
+	selectArgs      func(*ssa.CallCommon) []ssa.Value
+	selectFieldArgs func(*ssa.CallCommon) []sinkArg
 }
 
 type ruleRegistry struct {
@@ -277,14 +282,24 @@ func modelSinkRule(sk SinkModel) sinkRule {
 func modelPropagatorRule(sm SummaryModel) propagatorRule {
 	id := sm.Func
 	selectors := slices.Clone(sm.From)
-	return propagatorRule{
+	rule := propagatorRule{
 		id:        id,
 		matchCall: exactCallMatcher(id),
-		selectArgs: func(call *ssa.CallCommon) []ssa.Value {
+	}
+	if selectorsHaveField(selectors) {
+		// A field-sensitive `from` selector flows taint only from that struct
+		// field of the argument.
+		rule.selectFieldArgs = func(call *ssa.CallCommon) []sinkArg {
+			params, receiver := callParams(call)
+			return resolveSinkSelectors(selectors, params, receiver)
+		}
+	} else {
+		rule.selectArgs = func(call *ssa.CallCommon) []ssa.Value {
 			params, receiver := callParams(call)
 			return resolveSelectors(selectors, params, receiver)
-		},
+		}
 	}
+	return rule
 }
 
 // sinkReceiver returns the receiver value of a sink call site, or nil when the

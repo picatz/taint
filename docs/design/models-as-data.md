@@ -57,9 +57,21 @@ non-field-sensitive sink. This also added the by-value `*ssa.Field` case to the
 walk, closing a latent gap where a field-source read out of a struct *value*
 (rather than through its address) was not recognized.
 
-Remaining here: field-sensitive summaries (argument access paths into fields),
-cross-procedure field stores into a sink argument, and field precision for
-buffered writes. The rest of this document is the original design.
+Field-sensitive summaries followed the same seam: a summary `from` selector
+with a field access (`from: ["0.Field[Message]"]`) flows taint only from that
+struct field of the argument. `modelPropagatorRule` routes a field-carrying
+`from` to a `propagatorRule.selectFieldArgs`, and the propagator consumption
+site dispatches through the same `checkFieldOfValueTainted` resolver the sinks
+use — so sources, sinks, and summaries share one field engine. A summary's `to`
+destination stays whole-result: a backward walk fires the summary at the call
+result without knowing which field a downstream reader selected, so narrowing it
+would need a cross-cutting "pending result field" thread for little gain, and
+the whole-result default is a sound over-approximation.
+
+Remaining here: cross-procedure field stores into a sink argument (a helper that
+writes a field through a passed pointer, currently resolved conservatively as
+the whole value), and field precision for buffered writes. The rest of this
+document is the original design.
 
 ## Problem
 

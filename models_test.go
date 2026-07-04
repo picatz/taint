@@ -1037,3 +1037,84 @@ summaries:
 		t.Fatalf("expected model summary to propagate taint through wrap, got %d", len(diags))
 	}
 }
+
+// fieldSummaryProgram is a helper whose result carries no taint on its own
+// (it returns a constant), so taint reaches the sink only through the modeled
+// summary — isolating the summary's field selector.
+const fieldSummaryProgram = `package main
+
+import "database/sql"
+
+type Entry struct {
+	Message string
+	Other   string
+}
+
+func source() string     { return "user" }
+func wrap(e Entry) string { return "const" }
+
+func run() {
+	db := &sql.DB{}
+	e := Entry{Message: %s, Other: %s}
+	db.Query(wrap(e))
+}
+
+func main() { run() }
+`
+
+func TestCheckDetailedFieldSensitiveSummary(t *testing.T) {
+	// Summary flows taint only from e.Message; Message is the tainted field.
+	cg, pkg := detailedGraphForSource(t, fmt.Sprintf(fieldSummaryProgram, "source()", `"safe"`))
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+summaries:
+  - func: %[1]s.wrap
+    from: ["0.Field[Message]"]
+    to: result
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks("(*database/sql.DB).Query"), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected field summary to propagate taint from e.Message, got %d", len(diags))
+	}
+}
+
+func TestCheckDetailedFieldSensitiveSummarySiblingStaysClean(t *testing.T) {
+	// Summary flows only from e.Message, but only the sibling Other is tainted.
+	cg, pkg := detailedGraphForSource(t, fmt.Sprintf(fieldSummaryProgram, `"safe"`, "source()"))
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+summaries:
+  - func: %[1]s.wrap
+    from: ["0.Field[Message]"]
+    to: result
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks("(*database/sql.DB).Query"), WithModels(model...))
+	if len(diags) != 0 {
+		t.Fatalf("expected field summary to stay clean when only the sibling is tainted, got %d", len(diags))
+	}
+}
+
+func TestCheckDetailedWholeArgSummaryFiresOnSibling(t *testing.T) {
+	// The same program with a whole-argument summary (no field) fires even when
+	// only the sibling is tainted — proving the field selector is what adds the
+	// precision, not some unrelated pruning.
+	cg, pkg := detailedGraphForSource(t, fmt.Sprintf(fieldSummaryProgram, `"safe"`, "source()"))
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+summaries:
+  - func: %[1]s.wrap
+    from: [0]
+    to: result
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks("(*database/sql.DB).Query"), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected whole-argument summary to fire on the tainted sibling, got %d", len(diags))
+	}
+}
+
+func TestParseModelsSummaryFieldFrom(t *testing.T) {
+	ms := mustParseModels(t, "package: p\nsummaries:\n  - { func: p.wrap, from: [\"0.Field[Message]\"], to: result }")
+	if got := ms[0].Summaries[0].From[0].field; got != "Message" {
+		t.Fatalf("summary from field = %q, want Message", got)
+	}
+}
