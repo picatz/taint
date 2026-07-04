@@ -31,10 +31,23 @@ The shared propagator table is also embedded now
 Field-level flow (first phase): sources are now field-sensitive — a
 `SourceModel` with a `field` taints only accesses to that struct field, and
 the FieldAddr walk skips sibling-field referrers when a field-source applies
-to the base type, so one field's taint does not leak into another. Remaining
-here: field-sensitive sinks/summaries (argument access paths into fields), and
-tracking field taint through stores in the memory model. The rest of this
-document is the original design.
+to the base type, so one field's taint does not leak into another.
+
+Field taint through stores is now field-precise for **globals** as well:
+the reaching-store search for a package-level variable compares the load's
+field/index path against each store's path (`globalStoreMatchesLoad` +
+`addrStepsPrefixAlias`), so writing `G.A` no longer taints a read of `G.B`.
+The comparison uses prefix-aliasing (a whole-object access overlaps any field,
+a parent-field write overlaps a nested-field read, siblings never overlap) and
+falls back to matching whenever either path is unresolved or an index is
+non-constant, so the change only ever removes false positives — it never drops
+a legitimate flow. Local scalar stores were already field-distinct via SSA
+registers, and cross-procedure helper stores already used this comparator; this
+closes the remaining coarse case.
+
+Remaining here: field-sensitive sinks/summaries (argument access paths into
+fields), and field precision for buffered writes. The rest of this document is
+the original design.
 
 ## Problem
 

@@ -186,6 +186,60 @@ func storeMatchesLoadPath(storeAddr ssa.Value, loadSteps []addrStep, paramArgs m
 	return addrStepsMayAlias(loadSteps, total)
 }
 
+// addrStepsPrefixAlias reports whether two address paths may refer to
+// overlapping locations, treating a shorter path as encompassing a longer one
+// that extends it. A whole-object access (empty path) overlaps any field
+// access, and writing a parent field overlaps a read of a nested field, while
+// two distinct sibling fields never overlap. Constant indices that differ rule
+// out aliasing; unknown indices conservatively may alias.
+func addrStepsPrefixAlias(a, b []addrStep) bool {
+	n := min(len(a), len(b))
+	for i := 0; i < n; i++ {
+		if a[i].kind != b[i].kind {
+			return false
+		}
+		switch a[i].kind {
+		case addrStepField:
+			if a[i].field != b[i].field {
+				return false
+			}
+		case addrStepIndex:
+			ai, aOk := intConstant(a[i].index)
+			bi, bOk := intConstant(b[i].index)
+			if aOk && bOk && ai != bi {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// globalLoadPath carries the field/index path from a global to the address a
+// load reads, so global store filters can compare it precisely.
+type globalLoadPath struct {
+	steps []addrStep
+	ok    bool
+}
+
+// globalStoreMatchesLoad reports whether a store to storeAddr (which must
+// resolve to global) can affect a load whose path from global is lp. It falls
+// back to matching whenever either path cannot be resolved, so the model stays
+// sound (never dropping a legitimate finding) while gaining field precision on
+// the common case.
+func globalStoreMatchesLoad(storeAddr ssa.Value, global *ssa.Global, lp globalLoadPath) bool {
+	if globalAddress(storeAddr) != global {
+		return false
+	}
+	if !lp.ok {
+		return true
+	}
+	storeSteps, ok := addressPathStepsFromBase(storeAddr, global)
+	if !ok {
+		return true
+	}
+	return addrStepsPrefixAlias(lp.steps, storeSteps)
+}
+
 // -----------------------------------------------------------------------------
 // Base / aliasing
 // -----------------------------------------------------------------------------
@@ -1744,7 +1798,9 @@ func reachingGlobalValuesForLoad(path callgraphutil.Path, load *ssa.UnOp, maxDep
 	if global == nil {
 		return nil, false
 	}
-	states := reachingGlobalDefStates(path, load.Parent(), load, global, maxDepth, map[globalCursorKey]struct{}{})
+	steps, ok := addressPathStepsFromBase(load.X, global)
+	lp := globalLoadPath{steps: steps, ok: ok}
+	states := reachingGlobalDefStates(path, load.Parent(), load, global, lp, maxDepth, map[globalCursorKey]struct{}{})
 	var defs []memoryDef
 	for _, state := range states {
 		defs = append(defs, state.defs...)
@@ -1771,7 +1827,7 @@ type globalCursorKey struct {
 	global *ssa.Global
 }
 
-func reachingGlobalDefStates(path callgraphutil.Path, fn *ssa.Function, before ssa.Instruction, global *ssa.Global, maxDepth int, seen map[globalCursorKey]struct{}) []memoryDefState {
+func reachingGlobalDefStates(path callgraphutil.Path, fn *ssa.Function, before ssa.Instruction, global *ssa.Global, lp globalLoadPath, maxDepth int, seen map[globalCursorKey]struct{}) []memoryDefState {
 	if fn == nil || before == nil || global == nil {
 		return nil
 	}
@@ -1785,7 +1841,7 @@ func reachingGlobalDefStates(path callgraphutil.Path, fn *ssa.Function, before s
 	}
 	nextSeen[key] = struct{}{}
 
-	localDefs := globalDefsInFunction(fn, global, maxDepth)
+	localDefs := globalDefsInFunction(fn, global, lp, maxDepth)
 	localStates := reachingMemoryDefStates(localDefs, before)
 	if len(localStates) == 0 {
 		localStates = []memoryDefState{{}}
@@ -1805,7 +1861,7 @@ func reachingGlobalDefStates(path callgraphutil.Path, fn *ssa.Function, before s
 			out = append(out, state)
 			continue
 		}
-		parentStates := reachingGlobalDefStates(path, site.Parent(), site, global, maxDepth, nextSeen)
+		parentStates := reachingGlobalDefStates(path, site.Parent(), site, global, lp, maxDepth, nextSeen)
 		if len(parentStates) == 0 {
 			out = append(out, state)
 			continue
@@ -1832,7 +1888,7 @@ func callerEdgeForFunction(path callgraphutil.Path, fn *ssa.Function) *callgraph
 	return nil
 }
 
-func globalDefsInFunction(fn *ssa.Function, global *ssa.Global, maxDepth int) []memoryDef {
+func globalDefsInFunction(fn *ssa.Function, global *ssa.Global, lp globalLoadPath, maxDepth int) []memoryDef {
 	if fn == nil || global == nil {
 		return nil
 	}
@@ -1841,14 +1897,14 @@ func globalDefsInFunction(fn *ssa.Function, global *ssa.Global, maxDepth int) []
 		for _, instr := range block.Instrs {
 			switch v := instr.(type) {
 			case *ssa.Store:
-				if v.Val != nil && sameGlobalAddress(v.Addr, global) {
+				if v.Val != nil && globalStoreMatchesLoad(v.Addr, global, lp) {
 					defs = append(defs, memoryDef{instr: v, value: v.Val, definite: true})
 				}
 			case *ssa.Call:
 				if maxDepth <= 0 {
 					continue
 				}
-				for _, effect := range directCalleeGlobalStoresWithLimit(v, global, maxDepth) {
+				for _, effect := range directCalleeGlobalStoresWithLimit(v, global, lp, maxDepth) {
 					defs = append(defs, memoryDef{
 						instr:    v,
 						value:    effect.value,
@@ -1863,8 +1919,8 @@ func globalDefsInFunction(fn *ssa.Function, global *ssa.Global, maxDepth int) []
 	return defs
 }
 
-func directCalleeGlobalStoresWithLimit(call *ssa.Call, global *ssa.Global, maxDepth int) []sideEffectValue {
-	return directCalleeGlobalStoresRecursive(call, global, summaryLimit(maxDepth), map[globalSummaryKey]struct{}{})
+func directCalleeGlobalStoresWithLimit(call *ssa.Call, global *ssa.Global, lp globalLoadPath, maxDepth int) []sideEffectValue {
+	return directCalleeGlobalStoresRecursive(call, global, lp, summaryLimit(maxDepth), map[globalSummaryKey]struct{}{})
 }
 
 type globalSummaryKey struct {
@@ -1872,7 +1928,7 @@ type globalSummaryKey struct {
 	global *ssa.Global
 }
 
-func directCalleeGlobalStoresRecursive(call *ssa.Call, global *ssa.Global, depth int, seen map[globalSummaryKey]struct{}) []sideEffectValue {
+func directCalleeGlobalStoresRecursive(call *ssa.Call, global *ssa.Global, lp globalLoadPath, depth int, seen map[globalSummaryKey]struct{}) []sideEffectValue {
 	if call == nil || global == nil || depth <= 0 {
 		return nil
 	}
@@ -1895,14 +1951,14 @@ func directCalleeGlobalStoresRecursive(call *ssa.Call, global *ssa.Global, depth
 		for _, instr := range block.Instrs {
 			switch v := instr.(type) {
 			case *ssa.Store:
-				if v.Val != nil && sameGlobalAddress(v.Addr, global) {
+				if v.Val != nil && globalStoreMatchesLoad(v.Addr, global, lp) {
 					defs = append(defs, memoryDef{instr: v, value: v.Val, definite: true})
 				}
 			case *ssa.Call:
 				if depth <= 1 {
 					continue
 				}
-				for _, effect := range directCalleeGlobalStoresRecursive(v, global, depth-1, nextSeen) {
+				for _, effect := range directCalleeGlobalStoresRecursive(v, global, lp, depth-1, nextSeen) {
 					value := effect.value
 					if effect.call != nil && effect.callee != nil {
 						value = resolveCalleeValue(value, effect.callee, effect.call)
@@ -1973,8 +2029,4 @@ func globalAddress(v ssa.Value) *ssa.Global {
 		return globalAddress(value.X)
 	}
 	return nil
-}
-
-func sameGlobalAddress(addr ssa.Value, global *ssa.Global) bool {
-	return global != nil && globalAddress(addr) == global
 }

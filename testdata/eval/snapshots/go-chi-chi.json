@@ -25,15 +25,8 @@
       "findings": []
     },
     "xss": {
-      "count": 1,
-      "findings": [
-        {
-          "file": "mux.go",
-          "line": 506,
-          "column": 5,
-          "message": "potential XSS"
-        }
-      ]
+      "count": 0,
+      "findings": []
     }
   }
 }

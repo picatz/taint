@@ -2492,6 +2492,102 @@ func main() {
 	}
 }
 
+func TestCheckDetailedGlobalFieldStoreReachesMatchingField(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+var G struct {
+	A string
+	B string
+}
+
+func source() string { return "user" }
+func set() { G.A = source() }
+func run() {
+	db := &sql.DB{}
+	db.Query(G.A)
+}
+
+func main() {
+	set()
+	run()
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected store to G.A to reach a load of G.A, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedGlobalFieldStoreCleanForSiblingField(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+var G struct {
+	A string
+	B string
+}
+
+func source() string { return "user" }
+func set() { G.A = source() }
+func run() {
+	db := &sql.DB{}
+	db.Query(G.B)
+}
+
+func main() {
+	set()
+	run()
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected store to G.A to leave a load of sibling G.B clean, got %d diagnostics", len(diagnostics))
+	}
+}
+
+func TestCheckDetailedGlobalNonConstantIndexFallbackReachesLoad(t *testing.T) {
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+var G [4]string
+
+func source() string { return "user" }
+func set(i int) { G[i] = source() }
+func run(j int) {
+	db := &sql.DB{}
+	db.Query(G[j])
+}
+
+func main() {
+	set(0)
+	run(1)
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected non-constant index store/load to conservatively alias, got %d diagnostics", len(diagnostics))
+	}
+}
+
 func TestCheckDetailedNestedPointerHelperStoreReachesLoad(t *testing.T) {
 	cg, pkgPath := detailedGraphForSource(t, `package main
 
