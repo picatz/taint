@@ -80,6 +80,12 @@ type addrStepKind int
 const (
 	addrStepField addrStepKind = iota
 	addrStepIndex
+	// addrStepDeref marks a pointer dereference crossed on the way to the
+	// address. It separates accesses inside an object from accesses inside
+	// whatever a pointer field of it points at, where sibling-field
+	// disjointness no longer holds: two different pointer fields may hold the
+	// same address.
+	addrStepDeref
 )
 
 type addrStep struct {
@@ -90,8 +96,9 @@ type addrStep struct {
 
 // addressPathStepsFromBase peels FieldAddr / IndexAddr / UnOp(MUL) wrappers off
 // addr until reaching base, returning the chain of accesses from the base down
-// to addr. Returns (steps, true) when the peel ends exactly at base, or
-// (nil, false) when the path cannot be reconciled to base.
+// to addr (a dereference records an addrStepDeref step). Returns (steps, true)
+// when the peel ends exactly at base, or (nil, false) when the path cannot be
+// reconciled to base.
 func addressPathStepsFromBase(addr, base ssa.Value) ([]addrStep, bool) {
 	if addr == nil || base == nil {
 		return nil, false
@@ -117,6 +124,7 @@ func addressPathStepsFromBase(addr, base ssa.Value) ([]addrStep, bool) {
 			if v.Op != token.MUL {
 				return nil, false
 			}
+			steps = append([]addrStep{{kind: addrStepDeref}}, steps...)
 			addr = v.X
 		case *ssa.ChangeType:
 			addr = v.X
@@ -142,7 +150,7 @@ func addrStepsMayAlias(a, b []addrStep) bool {
 	}
 	for i := range a {
 		if stepsConflict(a[i], b[i]) {
-			return false
+			return pathsCrossDerefFrom(a, b, i)
 		}
 	}
 	return true
@@ -164,6 +172,28 @@ func stepsConflict(a, b addrStep) bool {
 		ai, aOk := intConstant(a.index)
 		bi, bOk := intConstant(b.index)
 		return aOk && bOk && ai != bi
+	}
+	return false
+}
+
+// pathsCrossDerefFrom reports whether both address paths cross a pointer
+// dereference at or after step i. A step conflict separates two locations
+// inside the same object, which rules out aliasing only while the paths stay
+// inside that object: once each continues through a dereference, the divergent
+// pointer fields may hold the same address, so the deeper locations can still
+// alias (e.g. a store through g.Primary.Query and a load of g.Fallback.Query
+// where both pointers refer to one object).
+func pathsCrossDerefFrom(a, b []addrStep, i int) bool {
+	return hasDerefFrom(a, i) && hasDerefFrom(b, i)
+}
+
+// hasDerefFrom reports whether steps contains a pointer dereference at or
+// after position i.
+func hasDerefFrom(steps []addrStep, i int) bool {
+	for _, s := range steps[i:] {
+		if s.kind == addrStepDeref {
+			return true
+		}
 	}
 	return false
 }
@@ -198,12 +228,14 @@ func storeMatchesLoadPath(storeAddr ssa.Value, loadSteps []addrStep, paramArgs m
 // overlapping locations, treating a shorter path as encompassing a longer one
 // that extends it. A whole-object access (empty path) overlaps any field
 // access, and writing a parent field overlaps a read of a nested field, while
-// two distinct sibling fields never overlap. Constant indices that differ rule
-// out aliasing; unknown indices conservatively may alias.
+// two distinct sibling fields never overlap (unless both paths then cross a
+// pointer dereference, where the divergent pointers may share a pointee).
+// Constant indices that differ rule out aliasing; unknown indices
+// conservatively may alias.
 func addrStepsPrefixAlias(a, b []addrStep) bool {
 	for i := range min(len(a), len(b)) {
 		if stepsConflict(a[i], b[i]) {
-			return false
+			return pathsCrossDerefFrom(a, b, i)
 		}
 	}
 	return true

@@ -320,7 +320,7 @@ func checkPathDetailed(path callgraphutil.Path, rules *ruleRegistry, sink sinkRu
 			tv      ssa.Value
 		)
 		if sarg.field != "" {
-			tainted, src, tv = checkFieldOfValueTainted(path, ctx, arg, sarg.field, valueSet{})
+			tainted, src, tv = checkFieldOfValueTainted(path, ctx, arg, sarg.field, valueSet{}, last.Site)
 		} else {
 			tainted, src, tv = checkSSAValueWithContext(path, ctx, arg, valueSet{})
 		}
@@ -373,21 +373,29 @@ func sinkArgsForEdge(sink sinkRule, last *callgraph.Edge) []sinkArg {
 }
 
 // checkFieldOfValueTainted answers "was struct field `field` of v set from a
-// source" — the field-sensitive counterpart to checkSSAValueWithContext used
-// for field-sensitive sinks. It resolves the shapes it understands precisely (a
-// load of, or pointer to, a struct whose field is individually addressed; a
-// call returning such a struct; a parameter bound to a caller argument) and
-// returns their exact verdict, so a sibling field's taint does not fire the
-// sink. Any shape it cannot resolve to a specific field falls back to the
-// whole-value check, which never under-reports relative to a non-field
-// sensitive sink.
-func checkFieldOfValueTainted(path callgraphutil.Path, ctx taintContext, v ssa.Value, field string, visited valueSet) (bool, string, ssa.Value) {
+// source"; it is the field-sensitive counterpart to checkSSAValueWithContext,
+// used for field-sensitive sinks and summaries. It resolves the shapes it
+// understands precisely (a load of, or pointer to, a struct whose field is
+// individually addressed; a call returning such a struct; a parameter bound to
+// a caller argument) and returns their exact verdict, so a sibling field's
+// taint does not fire the sink. Any shape it cannot resolve to a specific
+// field falls back to the whole-value check, which never under-reports
+// relative to a non-field sensitive sink.
+//
+// consumer is the call instruction consuming v as the sink or summary
+// argument, or nil. It reads the value rather than writing it, so it does not
+// count as an escape of the value's base.
+func checkFieldOfValueTainted(path callgraphutil.Path, ctx taintContext, v ssa.Value, field string, visited valueSet, consumer ssa.Instruction) (bool, string, ssa.Value) {
 	if v == nil || field == "" {
 		return checkSSAValueWithContext(path, ctx, v, visited)
 	}
 	inner := unwrapFieldValue(v)
 	switch val := inner.(type) {
 	case *ssa.Call:
+		// A call that is itself a source taints every field of its result.
+		if src, ok := ctx.matchSourceCall(&val.Call); ok {
+			return true, src, val.Call.Value
+		}
 		if handled, tainted, src, tv := checkFieldOfCallReturnValues(path, ctx, val, field, -1, visited); handled {
 			return tainted, src, tv
 		}
@@ -395,17 +403,29 @@ func checkFieldOfValueTainted(path callgraphutil.Path, ctx taintContext, v ssa.V
 		// A multi-result call (e.g. `x, _ := f()`) yields the struct through an
 		// Extract of one tuple element; follow into that specific return slot.
 		if c, ok := val.Tuple.(*ssa.Call); ok {
+			if src, ok := ctx.matchSourceCall(&c.Call); ok {
+				return true, src, c.Call.Value
+			}
 			if handled, tainted, src, tv := checkFieldOfCallReturnValues(path, ctx, c, field, val.Index, visited); handled {
 				return tainted, src, tv
 			}
 		}
 	case *ssa.Parameter:
-		if arg, ok := callArgForParameterOnPath(path, val); ok {
-			return checkFieldOfValueTainted(path, ctx, arg, field, visited)
+		// Hop to the caller's concrete argument on the active path. The visited
+		// guard breaks the cycle a self-recursive callee would otherwise cause:
+		// its synthetic call edge resolves the parameter back to itself, so an
+		// unguarded hop recurses forever. The consuming call becomes the site
+		// where the argument was passed.
+		if !visited.includes(val) {
+			if arg, edge, ok := callArgForParameterOnPath(path, val); ok {
+				next := visited.clone()
+				next.add(val)
+				return checkFieldOfValueTainted(path, ctx, arg, field, next, edge.Site)
+			}
 		}
 	default:
 		if base := structFieldBase(inner); base != nil {
-			if handled, tainted, src, tv := checkAddressedFieldTainted(path, ctx, base, field, visited); handled {
+			if handled, tainted, src, tv := checkAddressedFieldTainted(path, ctx, base, field, visited, consumer); handled {
 				return tainted, src, tv
 			}
 		}
@@ -462,27 +482,25 @@ func isPointerToStruct(t types.Type) bool {
 
 // checkAddressedFieldTainted checks whether `field` of a struct addressed through
 // base carries taint. It accounts for both writes that reach the field: a store
-// into the field's own address (`base.field = x`), and a whole-object store
+// into the field's own address (`base.field = x`, including through a derived
+// nested address such as `base.field.sub = x`), and a whole-object store
 // (`*base = x`) which writes every field and so contributes field x.field.
 //
 // handled reports whether the verdict is trustworthy. It is true when base's
-// writes are all visible here — then a tainted write yields tainted=true and an
+// writes are all visible here: a tainted write yields tainted=true, and an
 // unwritten (or cleanly written) field yields a precise clean verdict, so a
 // sibling field's taint does not leak in. It is false when base has no field
-// addresses (the struct arrived wholesale from an opaque value) OR when base or
-// the field's address escapes into another call that may write the field out of
-// view; in those cases the caller falls back to the whole-value check so the
-// field sink never under-reports relative to a plain sink.
-func checkAddressedFieldTainted(path callgraphutil.Path, ctx taintContext, base ssa.Value, field string, visited valueSet) (handled, tainted bool, src string, tv ssa.Value) {
+// addresses (the struct arrived wholesale from an opaque value) OR when base
+// escapes out of view. Escape detection is deliberately an allowlist: only
+// uses this walk fully models (field addressing, visible stores, loads, and
+// the consuming call itself) keep the verdict precise. Any other use (a call,
+// a stored alias, a closure capture, a phi) forfeits it, so the caller falls
+// back to the whole-value check and the field sink never under-reports
+// relative to a plain sink.
+func checkAddressedFieldTainted(path callgraphutil.Path, ctx taintContext, base ssa.Value, field string, visited valueSet, consumer ssa.Instruction) (handled, tainted bool, src string, tv ssa.Value) {
 	refs := base.Referrers()
 	if refs == nil || visited.includes(base) {
 		return false, false, "", nil
-	}
-	// The sink call at the end of the path is where base is consumed, not a
-	// write of it, so it does not count as an escape.
-	var sinkCall ssa.Instruction
-	if last := path.Last(); last != nil && last.Site != nil {
-		sinkCall = last.Site
 	}
 	escapes := false
 	for _, ref := range *refs {
@@ -492,32 +510,47 @@ func checkAddressedFieldTainted(path callgraphutil.Path, ctx taintContext, base 
 			if fieldAddrName(r) != field {
 				continue
 			}
-			if t, s, v := checkFieldAddrStores(path, ctx, r, visited); t {
+			taintedWrite, s, v, unknown := checkFieldAddrWrites(path, ctx, r, visited, consumer)
+			if taintedWrite {
 				return true, true, s, v
 			}
-			// The field's address handed to a call may be written through by
-			// that callee — a store we cannot see from here.
-			if valueEscapesToCall(r, sinkCall) {
+			if unknown {
 				escapes = true
 			}
 		case *ssa.Store:
-			// A whole-object store `*base = x` writes every field, so field
-			// `field` of base may take field `field` of x. Missing this would
-			// under-report relative to a whole-value sink.
-			if r.Addr != base || r.Val == nil {
-				continue
-			}
-			handled = true
-			next := visited.clone()
-			next.add(base)
-			if t, s, v := checkFieldOfValueTainted(path, ctx, r.Val, field, next); t {
-				return true, true, s, v
-			}
-		case ssa.CallInstruction:
-			// base itself passed to a call: the callee may write the field.
-			if ref != sinkCall {
+			switch {
+			case r.Addr == base && r.Val != nil:
+				// A whole-object store `*base = x` writes every field, so field
+				// `field` of base may take field `field` of x. Missing this
+				// would under-report relative to a whole-value sink.
+				handled = true
+				next := visited.clone()
+				next.add(base)
+				if t, s, v := checkFieldOfValueTainted(path, ctx, r.Val, field, next, consumer); t {
+					return true, true, s, v
+				}
+			case r.Val == base:
+				// base's address saved into another location: writes through
+				// that alias are invisible from here.
 				escapes = true
 			}
+		case *ssa.UnOp:
+			// A load `*base` reads the struct; it cannot write the field.
+			if r.Op != token.MUL {
+				escapes = true
+			}
+		case *ssa.DebugRef:
+			// Debug metadata, not a use.
+		case ssa.CallInstruction:
+			// base itself passed to a call: the callee may write the field. The
+			// consuming sink/summary call only reads it.
+			if ref != consumer {
+				escapes = true
+			}
+		default:
+			// Any use this walk does not model may hide a write; give up the
+			// precise verdict rather than risk under-reporting.
+			escapes = true
 		}
 	}
 	if escapes {
@@ -526,37 +559,78 @@ func checkAddressedFieldTainted(path callgraphutil.Path, ctx taintContext, base 
 	return handled, false, "", nil
 }
 
-// valueEscapesToCall reports whether v is passed to any call other than except,
-// i.e. flows somewhere a callee could mutate what it addresses.
-func valueEscapesToCall(v ssa.Value, except ssa.Instruction) bool {
-	refs := v.Referrers()
+// checkFieldAddrWrites checks the values written through a field address: both
+// stores into the address itself and stores through addresses derived from it
+// (`s.A.B = x` writes into field A through a derived nested address). unknown
+// reports that the address flows somewhere writes cannot be observed from here
+// (a call, a stored alias, or a use this walk does not model), so the caller
+// must not trust a clean verdict. The recursion cannot cycle: derived
+// addresses form a DAG in SSA form.
+func checkFieldAddrWrites(path callgraphutil.Path, ctx taintContext, addr ssa.Value, visited valueSet, consumer ssa.Instruction) (tainted bool, src string, tv ssa.Value, unknown bool) {
+	refs := addr.Referrers()
 	if refs == nil {
-		return false
+		return false, "", nil, false
 	}
 	for _, ref := range *refs {
-		if _, ok := ref.(ssa.CallInstruction); ok && ref != except {
-			return true
+		switch r := ref.(type) {
+		case *ssa.Store:
+			if r.Addr == addr {
+				if t, s, v := checkSSAValueWithContext(path, ctx, r.Val, visited); t {
+					return true, s, v, false
+				}
+			} else if r.Val == addr {
+				// The address itself stored elsewhere: an alias we cannot track.
+				unknown = true
+			}
+		case *ssa.FieldAddr, *ssa.IndexAddr:
+			// An address derived from this one: a write through it lands inside
+			// this field.
+			if t, s, v, u := checkFieldAddrWrites(path, ctx, r.(ssa.Value), visited, consumer); t {
+				return true, s, v, false
+			} else if u {
+				unknown = true
+			}
+		case *ssa.UnOp:
+			// A load reads through the address; it cannot write it.
+			if r.Op != token.MUL {
+				unknown = true
+			}
+		case *ssa.DebugRef:
+			// Debug metadata, not a use.
+		case ssa.CallInstruction:
+			// The address handed to a call may be written through by the
+			// callee, a store we cannot see from here. The consuming
+			// sink/summary call only reads it.
+			if ref != consumer {
+				unknown = true
+			}
+		default:
+			unknown = true
 		}
 	}
-	return false
+	return false, "", nil, unknown
 }
 
-// checkFieldAddrStores checks the values stored directly into a field address.
-func checkFieldAddrStores(path callgraphutil.Path, ctx taintContext, fa *ssa.FieldAddr, visited valueSet) (bool, string, ssa.Value) {
-	refs := fa.Referrers()
-	if refs == nil {
-		return false, "", nil
+// calleeSummaryPath resolves the static callee of call and extends path with
+// the synthetic edge the summary walk descends through, enforcing the
+// summary-depth budget. Both the whole-value and the field-sensitive
+// call-return walks build their paths here, so the mechanics (callee
+// resolution, depth accounting, edge shape) cannot drift apart.
+func calleeSummaryPath(path callgraphutil.Path, ctx taintContext, call *ssa.Call) (*ssa.Function, callgraphutil.Path, bool) {
+	callee := staticCalleeForCall(call)
+	if callee == nil || len(callee.Blocks) == 0 {
+		return nil, nil, false
 	}
-	for _, ref := range *refs {
-		st, ok := ref.(*ssa.Store)
-		if !ok || st.Addr != fa {
-			continue
-		}
-		if t, src, tv := checkSSAValueWithContext(path, ctx, st.Val, visited); t {
-			return true, src, tv
-		}
+	if summaryDepth(path) >= ctx.maxSummaryDepth {
+		return nil, nil, false
 	}
-	return false, "", nil
+	summaryPath := make(callgraphutil.Path, 0, len(path)+1)
+	summaryPath = append(summaryPath, path...)
+	summaryPath = append(summaryPath, &callgraph.Edge{
+		Site:   call,
+		Callee: &callgraph.Node{Func: callee},
+	})
+	return callee, summaryPath, true
 }
 
 // checkFieldOfCallReturnValues checks `field` of a value a call returns,
@@ -565,19 +639,10 @@ func checkFieldAddrStores(path callgraphutil.Path, ctx taintContext, fa *ssa.Fie
 // the sole result when < 0. handled is false when the body is not analyzable, so
 // the caller falls back to a whole-value check.
 func checkFieldOfCallReturnValues(path callgraphutil.Path, ctx taintContext, call *ssa.Call, field string, resultIndex int, visited valueSet) (handled, tainted bool, src string, tv ssa.Value) {
-	callee := staticCalleeForCall(call)
-	if callee == nil || len(callee.Blocks) == 0 {
+	callee, summaryPath, ok := calleeSummaryPath(path, ctx, call)
+	if !ok {
 		return false, false, "", nil
 	}
-	if summaryDepth(path) >= ctx.maxSummaryDepth {
-		return false, false, "", nil
-	}
-	summaryPath := make(callgraphutil.Path, 0, len(path)+1)
-	summaryPath = append(summaryPath, path...)
-	summaryPath = append(summaryPath, &callgraph.Edge{
-		Site:   call,
-		Callee: &callgraph.Node{Func: callee},
-	})
 	for _, block := range callee.Blocks {
 		for _, instr := range block.Instrs {
 			ret, ok := instr.(*ssa.Return)
@@ -597,7 +662,9 @@ func checkFieldOfCallReturnValues(path callgraphutil.Path, ctx taintContext, cal
 				}
 				result = ret.Results[0]
 			}
-			if t, s, v := checkFieldOfValueTainted(summaryPath, ctx, result, field, visited); t {
+			// The result is consumed by the return, not by a call, so there is
+			// no consuming call to exempt inside the callee.
+			if t, s, v := checkFieldOfValueTainted(summaryPath, ctx, result, field, visited, nil); t {
 				return true, true, s, v
 			}
 		}
@@ -606,11 +673,12 @@ func checkFieldOfCallReturnValues(path callgraphutil.Path, ctx taintContext, cal
 }
 
 // callArgForParameterOnPath resolves the concrete caller argument bound to param
-// on the active path, mirroring the *ssa.Parameter case of the main walk.
-func callArgForParameterOnPath(path callgraphutil.Path, param *ssa.Parameter) (ssa.Value, bool) {
+// on the active path (and the edge it was found on), mirroring the
+// *ssa.Parameter case of the main walk.
+func callArgForParameterOnPath(path callgraphutil.Path, param *ssa.Parameter) (ssa.Value, *callgraph.Edge, bool) {
 	parent := param.Parent()
 	if parent == nil {
-		return nil, false
+		return nil, nil, false
 	}
 	for i := len(path) - 1; i >= 0; i-- {
 		edge := path[i]
@@ -618,10 +686,10 @@ func callArgForParameterOnPath(path callgraphutil.Path, param *ssa.Parameter) (s
 			continue
 		}
 		if arg, ok := callArgForParameter(edge, param); ok {
-			return arg, true
+			return arg, edge, true
 		}
 	}
-	return nil, false
+	return nil, nil, false
 }
 
 func buildDiagnosticEvidence(path callgraphutil.Path, sink sinkRule, result Result, sanitizerEvidence []Evidence) []Evidence {
@@ -950,29 +1018,12 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 		// uses of the parameter, so following them can attribute unrelated
 		// later expressions back to an earlier sink argument. Parameter taint
 		// should flow from the concrete caller argument on the active path.
-		for i := len(path) - 1; i >= 0; i-- {
-			edge := path[i]
-			if edge == nil || edge.Callee == nil || edge.Callee.Func == nil || edge.Site == nil {
-				continue
+		if arg, _, ok := callArgForParameterOnPath(path, value); ok {
+			ta, src, tv := checkSSAValueWithContext(path, ctx, arg, visited)
+			if ta {
+				return true, src, tv
 			}
-			parent := value.Parent()
-			if parent == nil {
-				continue
-			}
-			if edge.Callee.Func != parent {
-				continue
-			}
-			common := edge.Site.Common()
-			if common == nil {
-				continue
-			}
-			if arg, ok := callArgForParameter(edge, value); ok {
-				ta, src, tv := checkSSAValueWithContext(path, ctx, arg, visited)
-				if ta {
-					return true, src, tv
-				}
-				return false, "", nil
-			}
+			return false, "", nil
 		}
 		// If the active path has no concrete runtime argument for this
 		// parameter, fall back to source-type matching. This keeps external
@@ -1053,7 +1104,10 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 					tv      ssa.Value
 				)
 				if arg.field != "" {
-					tainted, src, tv = checkFieldOfValueTainted(path, ctx, arg.value, arg.field, visited)
+					// The summarized call consumes the argument; per the
+					// model's contract it reads the named field rather than
+					// writing the struct, so it must not count as an escape.
+					tainted, src, tv = checkFieldOfValueTainted(path, ctx, arg.value, arg.field, visited, value)
 				} else {
 					tainted, src, tv = checkSSAValueWithContext(path, ctx, arg.value, visited)
 				}
@@ -1181,9 +1235,12 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 		}
 		// A field-sensitive source on the base type must not leak one field's
 		// taint into a sibling, so do not walk the struct value's provenance
-		// wholesale when this read selects a non-source field.
+		// wholesale when this read selects a non-source field. Resolve this
+		// specific field instead: taint that genuinely reaches it (a source
+		// call, a tainted store, a summary flow) is still found, while a
+		// sibling's stays out.
 		if ctx.hasFieldSource(value.X.Type()) {
-			return false, "", nil
+			return checkFieldOfValueTainted(path, ctx, value.X, fieldName(value), visited, nil)
 		}
 		tainted, src, tv := checkSSAValueWithContext(path, ctx, value.X, visited)
 		if tainted {
@@ -1781,20 +1838,10 @@ func checkCallReturnValues(path callgraphutil.Path, ctx taintContext, call *ssa.
 	if call == nil {
 		return false, "", nil
 	}
-	callee := staticCalleeForCall(call)
-	if callee == nil || len(callee.Blocks) == 0 {
+	callee, summaryPath, ok := calleeSummaryPath(path, ctx, call)
+	if !ok {
 		return false, "", nil
 	}
-	if summaryDepth(path) >= ctx.maxSummaryDepth {
-		return false, "", nil
-	}
-
-	summaryPath := make(callgraphutil.Path, 0, len(path)+1)
-	summaryPath = append(summaryPath, path...)
-	summaryPath = append(summaryPath, &callgraph.Edge{
-		Site:   call,
-		Callee: &callgraph.Node{Func: callee},
-	})
 
 	for _, block := range callee.Blocks {
 		for _, instr := range block.Instrs {

@@ -2558,6 +2558,57 @@ func main() {
 	}
 }
 
+func TestCheckDetailedGlobalAliasedPointerFieldStoreReachesLoad(t *testing.T) {
+	// Two pointer fields of a global hold the same object, the store goes
+	// through one and the load through the other. Sibling-field precision only
+	// applies to locations inside the same object: once each path crosses a
+	// pointer dereference the pointees may be shared, so the store must still
+	// be treated as reaching the load.
+	cg, pkgPath := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+type Conn struct {
+	Query string
+}
+
+var reg struct {
+	Primary  *Conn
+	Fallback *Conn
+}
+
+func source() string { return "user" }
+
+func setup() {
+	c := &Conn{}
+	reg.Primary = c
+	reg.Fallback = c
+}
+
+func set() { reg.Primary.Query = source() }
+
+func run() {
+	db := &sql.DB{}
+	db.Query(reg.Fallback.Query)
+}
+
+func main() {
+	setup()
+	set()
+	run()
+}
+`)
+
+	diagnostics := CheckDetailed(
+		cg,
+		NewSources(pkgPath+".source"),
+		NewSinks("(*database/sql.DB).Query"),
+	)
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected store through reg.Primary to reach the aliased load through reg.Fallback, got %d diagnostics", len(diagnostics))
+	}
+}
+
 func TestCheckDetailedGlobalNonConstantIndexFallbackReachesLoad(t *testing.T) {
 	cg, pkgPath := detailedGraphForSource(t, `package main
 

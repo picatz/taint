@@ -796,7 +796,7 @@ func TestCheckDetailedFieldSensitiveSinkEscapeFallsBack(t *testing.T) {
 	// helper that stores through the pointer would otherwise report a false
 	// "clean" verdict for the target field. Because the base escapes into the
 	// helper, the field resolver defers to the whole-value walk, which follows
-	// the cross-procedure whole-object store and still reports — the field sink
+	// the cross-procedure whole-object store and still reports: the field sink
 	// never under-reports relative to a plain sink.
 	cg, pkg := detailedGraphForSource(t, `package main
 
@@ -1040,7 +1040,7 @@ summaries:
 
 // fieldSummaryProgram is a helper whose result carries no taint on its own
 // (it returns a constant), so taint reaches the sink only through the modeled
-// summary — isolating the summary's field selector.
+// summary, isolating the summary's field selector.
 const fieldSummaryProgram = `package main
 
 import "database/sql"
@@ -1096,7 +1096,7 @@ summaries:
 
 func TestCheckDetailedWholeArgSummaryFiresOnSibling(t *testing.T) {
 	// The same program with a whole-argument summary (no field) fires even when
-	// only the sibling is tainted — proving the field selector is what adds the
+	// only the sibling is tainted, proving the field selector is what adds the
 	// precision, not some unrelated pruning.
 	cg, pkg := detailedGraphForSource(t, fmt.Sprintf(fieldSummaryProgram, `"safe"`, "source()"))
 	model := mustParseModels(t, fmt.Sprintf(`
@@ -1116,5 +1116,402 @@ func TestParseModelsSummaryFieldFrom(t *testing.T) {
 	ms := mustParseModels(t, "package: p\nsummaries:\n  - { func: p.wrap, from: [\"0.Field[Message]\"], to: result }")
 	if got := ms[0].Summaries[0].From[0].field; got != "Message" {
 		t.Fatalf("summary from field = %q, want Message", got)
+	}
+}
+
+func TestCheckDetailedFieldSensitiveSinkSelfRecursiveCallee(t *testing.T) {
+	// A self-recursive callee used to send the field resolver's parameter hop
+	// into unbounded recursion (the synthetic self edge resolves the parameter
+	// to itself), crashing the analysis with a stack overflow. The cycle must
+	// terminate and the taint still be found through the non-cyclic return.
+	cg, pkg := detailedGraphForSource(t, `package main
+
+type Entry struct {
+	Message string
+	Other   string
+}
+
+func source() string { return "user" }
+func sink(e Entry)   {}
+
+func echo(e Entry, n int) Entry {
+	if n > 0 {
+		return echo(e, n-1)
+	}
+	return e
+}
+
+func run() {
+	sink(echo(Entry{Message: source(), Other: "safe"}, 2))
+}
+
+func main() { run() }
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sinks:
+  - method: "%[1]s.sink"
+    args: ["0.Field[Message]"]
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected one diagnostic (Message tainted through the recursive echo), got %d", len(diags))
+	}
+}
+
+func TestCheckDetailedFieldSensitiveSinkNestedFieldStore(t *testing.T) {
+	// A write through a nested field address (s.A.B = x) writes into field A,
+	// so a sink on Field[A] must fire. The nested store is invisible to the
+	// direct-store scan and must be found through the derived field address.
+	cg, pkg := detailedGraphForSource(t, `package main
+
+type Inner struct{ B string }
+
+type S struct {
+	A Inner
+	C string
+}
+
+func source() string { return "user" }
+func sink(s *S)      {}
+
+func run() {
+	s := &S{}
+	s.A.B = source()
+	sink(s)
+}
+
+func main() { run() }
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sinks:
+  - method: "%[1]s.sink"
+    args: ["0.Field[A]"]
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected one diagnostic (nested write s.A.B taints field A), got %d", len(diags))
+	}
+}
+
+func TestCheckDetailedFieldSensitiveSinkNestedFieldStoreSiblingClean(t *testing.T) {
+	// The nested write lands under field A; a sink on the sibling field C must
+	// stay clean, so nested-store handling does not cost the sibling precision.
+	cg, pkg := detailedGraphForSource(t, `package main
+
+type Inner struct{ B string }
+
+type S struct {
+	A Inner
+	C string
+}
+
+func source() string { return "user" }
+func sink(s *S)      {}
+
+func run() {
+	s := &S{}
+	s.A.B = source()
+	sink(s)
+}
+
+func main() { run() }
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sinks:
+  - method: "%[1]s.sink"
+    args: ["0.Field[C]"]
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(), WithModels(model...))
+	if len(diags) != 0 {
+		t.Fatalf("expected no diagnostic (nested write is under sibling A, sink is on C), got %d", len(diags))
+	}
+}
+
+func TestCheckDetailedFieldSensitiveSinkNestedFieldPathModel(t *testing.T) {
+	// A nested CodeQL access path (Field[A].Field[B]) widens to its outermost
+	// field: the sink fires whenever field A carries taint, including a write
+	// into the nested A.B. It must not be silently dropped.
+	cg, pkg := detailedGraphForSource(t, `package main
+
+type Inner struct{ B string }
+
+type S struct {
+	A Inner
+	C string
+}
+
+func source() string { return "user" }
+func sink(s *S)      {}
+
+func run() {
+	s := &S{}
+	s.A.B = source()
+	sink(s)
+}
+
+func main() { run() }
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sinks:
+  - method: "%[1]s.sink"
+    args: ["Argument[0].Field[A].Field[B]"]
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected one diagnostic (nested field path widens to Field[A]), got %d", len(diags))
+	}
+}
+
+func TestArgSelectorNestedFieldTailWidens(t *testing.T) {
+	// A nested field access widens to the outermost field, a sound
+	// over-approximation (taint anywhere under A includes taint in A.B),
+	// rather than silently dropping the tail.
+	var a ArgSelector
+	if err := a.parse("Argument[0].Field[A].Field[B]"); err != nil {
+		t.Fatalf(`parse("Argument[0].Field[A].Field[B]"): %v`, err)
+	}
+	if a.field != "A" || a.lo != 0 || a.hi != 0 || a.receiver {
+		t.Errorf("nested field tail = {field:%q lo:%d hi:%d}, want field A of arg 0", a.field, a.lo, a.hi)
+	}
+	if got, want := a.String(), "0.Field[A]"; got != want {
+		t.Errorf("String() = %q, want canonical widened form %q", got, want)
+	}
+}
+
+func TestCheckDetailedFieldSensitiveSourceUnrelatedTaintByValue(t *testing.T) {
+	// Declaring a field-sensitive source on a type must not suppress unrelated
+	// taint reaching a by-value field read of that type: here taint flows into
+	// the read field itself through a constructor's body, a flow only the
+	// provenance walk can find. The field-source declaration (on a different
+	// field) must not cut that walk off.
+	cg, pkg := detailedGraphForSource(t, `package main
+
+import "database/sql"
+
+type Req struct {
+	Body  string
+	Other string
+}
+
+func input() string        { return "user" }
+func makeReq(s string) Req { return Req{Other: s} }
+
+func handle() {
+	db := &sql.DB{}
+	db.Query(makeReq(input()).Other)
+}
+
+func main() { handle() }
+`)
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+sources:
+  - type: "%[1]s.Req"
+    field: Body
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".input"), NewSinks("(*database/sql.DB).Query"), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected one diagnostic (Other is tainted through makeReq's body), got %d", len(diags))
+	}
+}
+
+func TestCheckDetailedFieldSensitiveSinkParameterThreaded(t *testing.T) {
+	// The struct is threaded through an intermediate function's parameter; the
+	// field constraint must resolve back to the caller's concrete argument and
+	// keep its precision in both directions.
+	program := `package main
+
+type Entry struct {
+	Message string
+	Other   string
+}
+
+func source() string { return "user" }
+func sink(e Entry)   {}
+
+func mid(e Entry) { sink(e) }
+
+func run() {
+	e := Entry{Message: %s, Other: %s}
+	mid(e)
+}
+
+func main() { run() }
+`
+	modelYAML := `
+package: %[1]s
+sinks:
+  - method: "%[1]s.sink"
+    args: ["0.Field[Message]"]
+`
+	t.Run("tainted field reports", func(t *testing.T) {
+		cg, pkg := detailedGraphForSource(t, fmt.Sprintf(program, "source()", `"safe"`))
+		model := mustParseModels(t, fmt.Sprintf(modelYAML, pkg))
+		diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(), WithModels(model...))
+		if len(diags) != 1 {
+			t.Fatalf("expected one diagnostic (Message tainted through mid's parameter), got %d", len(diags))
+		}
+	})
+	t.Run("sibling stays clean", func(t *testing.T) {
+		cg, pkg := detailedGraphForSource(t, fmt.Sprintf(program, `"safe"`, "source()"))
+		model := mustParseModels(t, fmt.Sprintf(modelYAML, pkg))
+		diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(), WithModels(model...))
+		if len(diags) != 0 {
+			t.Fatalf("expected no diagnostic (only sibling Other tainted through mid), got %d", len(diags))
+		}
+	})
+}
+
+// fieldSummaryPointerProgram mirrors fieldSummaryProgram with a pointer
+// argument, so the summarized callee consumes the struct through its address.
+const fieldSummaryPointerProgram = `package main
+
+import "database/sql"
+
+type Entry struct {
+	Message string
+	Other   string
+}
+
+func source() string       { return "user" }
+func wrap(e *Entry) string { return "const" }
+
+func run() {
+	db := &sql.DB{}
+	e := Entry{Message: %s, Other: %s}
+	db.Query(wrap(&e))
+}
+
+func main() { run() }
+`
+
+func TestCheckDetailedFieldSensitiveSummaryPointerArg(t *testing.T) {
+	// Field-sensitive summary on a pointer argument: Message is tainted, the
+	// summary flows it to the result feeding the sink.
+	cg, pkg := detailedGraphForSource(t, fmt.Sprintf(fieldSummaryPointerProgram, "source()", `"safe"`))
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+summaries:
+  - func: %[1]s.wrap
+    from: ["0.Field[Message]"]
+    to: result
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks("(*database/sql.DB).Query"), WithModels(model...))
+	if len(diags) != 1 {
+		t.Fatalf("expected field summary to propagate taint from (&e).Message, got %d", len(diags))
+	}
+}
+
+func TestCheckDetailedFieldSensitiveSummaryPointerArgSiblingStaysClean(t *testing.T) {
+	// The summarized callee consuming &e must not count as an escape of e: the
+	// field selector was written to suppress exactly this sibling's taint.
+	cg, pkg := detailedGraphForSource(t, fmt.Sprintf(fieldSummaryPointerProgram, `"safe"`, "source()"))
+	model := mustParseModels(t, fmt.Sprintf(`
+package: %[1]s
+summaries:
+  - func: %[1]s.wrap
+    from: ["0.Field[Message]"]
+    to: result
+`, pkg))
+	diags := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks("(*database/sql.DB).Query"), WithModels(model...))
+	if len(diags) != 0 {
+		t.Fatalf("expected field summary to stay clean when only the sibling is tainted, got %d", len(diags))
+	}
+}
+
+func TestCheckDetailedFieldSinkNeverUnderReportsClosureWrite(t *testing.T) {
+	// A closure captures the struct and writes the modeled field. Whether or
+	// not the engine can see through the closure, the field-sensitive sink must
+	// report at least as much as a whole-value sink on the identical program:
+	// the field resolver has to treat the closure capture as out-of-view and
+	// fall back rather than claim a precise clean verdict.
+	program := `package main
+
+type Entry struct {
+	Message string
+	Other   string
+}
+
+func source() string { return "user" }
+func sink(e Entry)   {}
+
+func run() {
+	e := Entry{}
+	fill := func() { e.Message = source() }
+	fill()
+	sink(e)
+}
+
+func main() { run() }
+`
+	fieldModel := `
+package: %[1]s
+sinks:
+  - method: "%[1]s.sink"
+    args: ["0.Field[Message]"]
+`
+	wholeModel := `
+package: %[1]s
+sinks:
+  - method: "%[1]s.sink"
+    args: ["0"]
+`
+	cg, pkg := detailedGraphForSource(t, program)
+	field := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(),
+		WithModels(mustParseModels(t, fmt.Sprintf(fieldModel, pkg))...))
+	whole := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(),
+		WithModels(mustParseModels(t, fmt.Sprintf(wholeModel, pkg))...))
+	if len(field) < len(whole) {
+		t.Fatalf("field-sensitive sink under-reports: field=%d whole=%d", len(field), len(whole))
+	}
+}
+
+func TestCheckDetailedFieldSinkNeverUnderReportsStoredAlias(t *testing.T) {
+	// The struct's address is stored into another location and the field is
+	// written through that alias. The field resolver cannot see such writes, so
+	// it must fall back and never report less than a whole-value sink.
+	program := `package main
+
+type Entry struct {
+	Message string
+	Other   string
+}
+
+func source() string { return "user" }
+func sink(e Entry)   {}
+
+func run() {
+	e := Entry{}
+	p := &e
+	pp := &p
+	(*pp).Message = source()
+	sink(e)
+}
+
+func main() { run() }
+`
+	fieldModel := `
+package: %[1]s
+sinks:
+  - method: "%[1]s.sink"
+    args: ["0.Field[Message]"]
+`
+	wholeModel := `
+package: %[1]s
+sinks:
+  - method: "%[1]s.sink"
+    args: ["0"]
+`
+	cg, pkg := detailedGraphForSource(t, program)
+	field := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(),
+		WithModels(mustParseModels(t, fmt.Sprintf(fieldModel, pkg))...))
+	whole := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(),
+		WithModels(mustParseModels(t, fmt.Sprintf(wholeModel, pkg))...))
+	if len(field) < len(whole) {
+		t.Fatalf("field-sensitive sink under-reports: field=%d whole=%d", len(field), len(whole))
 	}
 }

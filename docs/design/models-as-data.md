@@ -9,8 +9,8 @@ field-sensitive for sinks, while element access still resolves to the whole
 argument. Packs can be embedded via `//go:embed` + `LoadModels(fs.FS)`. See
 [../models.md](../models.md).
 
-Built-in-table migration (done for detectors): **all six detectors** —
-`sqli`, `logi`, `cmdi`, `xss`, `ptrv`, `ssrf` — now load their sources, sinks,
+Built-in-table migration (done for detectors): **all six detectors**
+(`sqli`, `logi`, `cmdi`, `xss`, `ptrv`, `ssrf`) now load their sources, sinks,
 and (where it coincides with the sink packages) their import gate from an
 embedded pack next to the detector, instead of Go tables. Each is proven by
 its analysistest suite; the large `sqli`/`logi` packs were generated from the
@@ -29,7 +29,7 @@ post-filter in `sqli` stays in Go.
 The shared propagator table is also embedded now
 (`builtin/propagators.yaml`), generated from the Go table.
 
-Field-level flow (first phase): sources are now field-sensitive — a
+Field-level flow (first phase): sources are now field-sensitive: a
 `SourceModel` with a `field` taints only accesses to that struct field, and
 the FieldAddr walk skips sibling-field referrers when a field-source applies
 to the base type, so one field's taint does not leak into another.
@@ -41,8 +41,12 @@ field/index path against each store's path (`globalStoreMatchesLoad` +
 The comparison uses prefix-aliasing (a whole-object access overlaps any field,
 a parent-field write overlaps a nested-field read, siblings never overlap) and
 falls back to matching whenever either path is unresolved or an index is
-non-constant, so the change only ever removes false positives — it never drops
-a legitimate flow. Local scalar stores were already field-distinct via SSA
+non-constant, so the change only ever removes false positives; it never drops
+a legitimate flow. Address paths record pointer dereferences as explicit steps,
+so two accesses that diverge at a pointer field and then dereference (say a
+store through `G.Primary.Query` and a load of `G.Fallback.Query`, where both
+pointers may hold one object) still conservatively alias, while sibling fields
+inside the same object stay disjoint. Local scalar stores were already field-distinct via SSA
 registers, and cross-procedure helper stores already used this comparator; this
 closes the remaining coarse case.
 
@@ -51,7 +55,7 @@ field access (`Argument[0].Field[Message]` or the shorthand `0.Field[Message]`)
 fires only when that struct field of the argument is the tainted channel. The
 sink check resolves the field precisely for the common shapes (a struct built
 and passed by value or pointer, returned from an analyzable helper, or threaded
-through parameters — `checkFieldOfValueTainted`), and falls back to the whole
+through parameters: `checkFieldOfValueTainted`), and falls back to the whole
 value for shapes it cannot resolve, so it never under-reports relative to a
 non-field-sensitive sink. This also added the by-value `*ssa.Field` case to the
 walk, closing a latent gap where a field-source read out of a struct *value*
@@ -62,11 +66,23 @@ with a field access (`from: ["0.Field[Message]"]`) flows taint only from that
 struct field of the argument. `modelPropagatorRule` routes a field-carrying
 `from` to a `propagatorRule.selectFieldArgs`, and the propagator consumption
 site dispatches through the same `checkFieldOfValueTainted` resolver the sinks
-use — so sources, sinks, and summaries share one field engine. A summary's `to`
+use, so sources, sinks, and summaries share one field engine. A summary's `to`
 destination stays whole-result: a backward walk fires the summary at the call
 result without knowing which field a downstream reader selected, so narrowing it
 would need a cross-cutting "pending result field" thread for little gain, and
 the whole-result default is a sound over-approximation.
+
+Hardening pass (post-review): the field resolver's escape detection is an
+allowlist. Only uses the walk fully models (field addressing, visible stores,
+loads, and the consuming sink or summary call itself) keep the precise verdict;
+any other use of the struct's base (a closure capture, a stored alias, a phi, a
+call) falls back to the whole-value walk, keeping the never-under-report
+invariant future-proof. Writes through derived nested addresses (`s.A.B = x`
+taints `Field[A]`) are followed, the parameter hop carries a visited guard so a
+self-recursive callee cannot loop it, the consuming call is threaded explicitly
+so a summarized call reading `&e` does not count as an escape of `e`, and a
+nested model access path (`Field[A].Field[B]`) widens to its outermost field
+instead of being silently truncated.
 
 Remaining here: cross-procedure field stores into a sink argument (a helper that
 writes a field through a passed pointer, currently resolved conservatively as

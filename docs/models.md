@@ -1,13 +1,13 @@
 # Models (data-driven taint rules)
 
-Models let you extend the engine's built-in knowledge — sources, sinks,
-sanitizers, and flow summaries — with data instead of code. They cover the
+Models let you extend the engine's built-in knowledge (sources, sinks,
+sanitizers, and flow summaries) with data instead of code. They cover the
 frameworks and helpers the built-in detectors don't, and they are additive:
 your models augment the built-in rules, they never replace them.
 
 A model is written in YAML, one package per document (documents are separated
 by `---`). Identifiers are the fully-qualified strings the engine matches
-against — the same form the built-in rules use.
+against, the same form the built-in rules use.
 
 ## Schema
 
@@ -69,14 +69,14 @@ sources:
     field: Body
 ```
 
-With this model, `req.Body` reaching a sink is reported, but `req.Method` — a
-different field of the same request — stays clean, and passing `req` itself to
+With this model, `req.Body` reaching a sink is reported, but `req.Method`, a
+different field of the same request, stays clean, and passing `req` itself to
 a sink does not flag. `field` requires `type`.
 
 ### Argument selectors (`args` and `from`)
 
 `args` (for sinks) and `from` (for summaries) are lists of **argument
-selectors**. Each selector names one or more parameters — **zero-based, as
+selectors**. Each selector names one or more parameters, **zero-based, as
 written in the source signature, excluding the receiver**. For
 `func (c *Conn) Exec(ctx context.Context, sql string)`, `ctx` is `0` and `sql`
 is `1`. Omitting the list means *every* parameter is selected.
@@ -112,22 +112,25 @@ A sink selector may carry a trailing **field access**, e.g.
 `Argument[0].Field[Message]` or the shorthand `0.Field[Message]` (a CodeQL
 `pkg.T.` qualifier on the field name is accepted and stripped). This is
 field-sensitive: the sink fires only when that struct field of the argument is
-the tainted channel, not the whole value or a sibling field — see below. A
+the tainted channel, not the whole value or a sibling field (see below). A
 summary `from` selector is field-sensitive the same way: `from:
-["0.Field[Message]"]` flows taint only from that field of the argument. An
-**element access** (`Argument[0].ArrayElement`) is still interpreted loosely and
-resolves to the whole argument, as does a field access on a summary's `to`
-destination (the whole result is tainted).
+["0.Field[Message]"]` flows taint only from that field of the argument.
+Deeper access paths widen soundly rather than being dropped: a **nested field
+access** (`Argument[0].Field[A].Field[B]`) resolves to its outermost field
+(`Field[A]`, which contains `A.B`), and an **element access**
+(`Argument[0].ArrayElement`) is interpreted loosely and resolves to the whole
+argument, as does a field access on a summary's `to` destination (the whole
+result is tainted).
 
 When a sink lists no `args` and no `select`, it inherits the engine's built-in
-selector for that method — so naming a well-known standard-library sink yields
-its precise channel — falling back to every argument for methods the engine
+selector for that method, so naming a well-known standard-library sink yields
+its precise channel. It falls back to every argument for methods the engine
 does not specifically model.
 
 ### Named selectors (`select`)
 
-Some channels can't be expressed positionally — for example, "only the URL
-argument, accounting for a bound method value." A sink may instead name a
+Some channels can't be expressed positionally, for example "only the URL
+argument, accounting for a bound method value". A sink may instead name a
 built-in selector with `select` (mutually exclusive with `args`):
 
 ```yaml
@@ -143,8 +146,8 @@ sql)` method).
 
 ### Field-sensitive sinks
 
-When the dangerous channel is one field of a struct argument — not the whole
-value — give the selector a field access:
+When the dangerous channel is one field of a struct argument, not the whole
+value, give the selector a field access:
 
 ```yaml
 sinks:
@@ -153,14 +156,14 @@ sinks:
 ```
 
 With this model, `Write(Entry{Message: userInput})` is reported, but
-`Write(Entry{Other: userInput})` — a sibling field — stays clean, and a struct
+`Write(Entry{Other: userInput})`, a sibling field, stays clean, and a struct
 whose `Message` is a constant does not flag even if another field is tainted.
 
 This resolves precisely for the common shapes: a struct built and passed by
 value or pointer, a struct returned from an analyzable helper, and a struct
 threaded through parameters. When the field cannot be resolved to a specific
-store — for example a struct copied wholesale out of opaque third-party code, or
-a field written only inside a helper through a passed pointer — the check falls
+store (for example a struct copied wholesale out of opaque third-party code, or
+a field written only inside a helper through a passed pointer), the check falls
 back to the whole value, so it never reports *less* than the same sink without a
 field would. The field name is matched against the struct's declared fields.
 
@@ -211,8 +214,8 @@ path the analyzed program actually imports.
 
 The `taint` interactive tool has a `models` command for iterating on a model
 and debugging it. `models <path>` loads a file or directory and prints what
-each model contributes — sources, sinks (with their argument selectors),
-sanitizers, and summaries — so you can confirm it parsed as intended:
+each model contributes (sources, sinks with their argument selectors,
+sanitizers, and summaries) so you can confirm it parsed as intended:
 
 ```console
 taint> models ./models/acme-db.yaml
@@ -242,7 +245,7 @@ $ sqli -models models/acme-db.yaml ./...
 ```
 
 A call like `conn.Exec(ctx, r.URL.Query().Get("q"))` is now reported, while
-`conn.Exec(ctx, "SELECT 1", userID)` — constant SQL with a bound parameter —
+`conn.Exec(ctx, "SELECT 1", userID)`, constant SQL with a bound parameter,
 stays clean.
 
 ## Limitations

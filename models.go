@@ -127,10 +127,13 @@ type SummaryModel struct {
 //
 // A selector may carry a trailing field access, e.g. "Argument[0].Field[F]" or
 // the shorthand "0.Field[F]" (a CodeQL "pkg.T." qualifier on the field name is
-// stripped). On a sink this is field-sensitive: the sink fires only when field F
-// of the argument is the tainted channel. On a summary "from" selector the field
-// is currently ignored (summaries are not field-sensitive yet), as is an element
-// access such as "Argument[0].ArrayElement", which resolves to the whole value.
+// stripped). The field is resolved precisely on both channels that accept it:
+// on a sink, the sink fires only when field F of the argument is the tainted
+// channel; on a summary "from" selector, taint flows to the result only from
+// field F of the argument. A deeper access path widens soundly: a nested field
+// access such as "Argument[0].Field[A].Field[B]" resolves to its outermost
+// field (Field[A], which contains A.B), and any other trailing access, such as
+// "Argument[0].ArrayElement", resolves to the whole value.
 type ArgSelector struct {
 	raw      string
 	receiver bool
@@ -212,10 +215,13 @@ func (a *ArgSelector) parse(s string) error {
 	return nil
 }
 
-// extractFieldTail splits a trailing ".Field[name]" access off a selector
+// extractFieldTail splits the first ".Field[name]" access off a selector
 // string, returning the remaining head and the bare field name (a "pkg.T."
-// qualifier on the CodeQL spelling is stripped). When there is no field access,
-// or it is malformed, the input is returned unchanged with an empty field.
+// qualifier on the CodeQL spelling is stripped). Splitting on the first access
+// widens a deeper path to its outermost field: "Argument[0].Field[A].Field[B]"
+// resolves to field A, a sound over-approximation since taint in A.B is taint
+// in A. When there is no field access, or it is malformed, the input is
+// returned unchanged with an empty field.
 func extractFieldTail(s string) (head, field string) {
 	const marker = ".Field["
 	idx := strings.Index(s, marker)
@@ -270,20 +276,30 @@ func parseIndex(s string) (int, error) {
 	return n, nil
 }
 
-// resolve appends the SSA values the selector names to out, given the call's
-// receiver-excluded parameters and its receiver (which may be nil).
-func (a ArgSelector) resolve(params []ssa.Value, receiver ssa.Value, out []ssa.Value) []ssa.Value {
+// forEachSelected calls yield for each SSA value the selector names, given the
+// call's receiver-excluded parameters and its receiver (which may be nil).
+// Both resolution flavors (whole-value and field-carrying) select through
+// here, so the receiver/range semantics cannot drift apart.
+func (a ArgSelector) forEachSelected(params []ssa.Value, receiver ssa.Value, yield func(ssa.Value)) {
 	if a.receiver {
 		if receiver != nil {
-			out = append(out, receiver)
+			yield(receiver)
 		}
-		return out
+		return
 	}
 	for i := a.lo; i <= a.hi; i++ {
 		if i >= 0 && i < len(params) {
-			out = append(out, params[i])
+			yield(params[i])
 		}
 	}
+}
+
+// resolve appends the SSA values the selector names to out, given the call's
+// receiver-excluded parameters and its receiver (which may be nil).
+func (a ArgSelector) resolve(params []ssa.Value, receiver ssa.Value, out []ssa.Value) []ssa.Value {
+	a.forEachSelected(params, receiver, func(v ssa.Value) {
+		out = append(out, v)
+	})
 	return out
 }
 
@@ -311,17 +327,9 @@ type sinkArg struct {
 
 // resolveSink appends the field-carrying sink arguments the selector names.
 func (a ArgSelector) resolveSink(params []ssa.Value, receiver ssa.Value, out []sinkArg) []sinkArg {
-	if a.receiver {
-		if receiver != nil {
-			out = append(out, sinkArg{value: receiver, field: a.field})
-		}
-		return out
-	}
-	for i := a.lo; i <= a.hi; i++ {
-		if i >= 0 && i < len(params) {
-			out = append(out, sinkArg{value: params[i], field: a.field})
-		}
-	}
+	a.forEachSelected(params, receiver, func(v ssa.Value) {
+		out = append(out, sinkArg{value: v, field: a.field})
+	})
 	return out
 }
 
