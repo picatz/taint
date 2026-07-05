@@ -39,5 +39,6 @@ results/
 # Agent worktrees (transient)
 .claude/worktrees/
 
-# stray cmd/vuln build artifact
+# stray build artifacts (cmd/vuln, cmd/taint)
 /vuln
+/taint
