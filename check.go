@@ -131,6 +131,28 @@ type Result struct {
 	SinkValue ssa.Value
 }
 
+// ReportPos returns the best source position to report for the result: the
+// last call site on the path with a valid position, scanning backwards
+// because synthetic thunks and bound-method wrappers can leave the final
+// call site without one. It falls back to the sink value's position, and
+// returns token.NoPos only when nothing on the path carries a position; a
+// confirmed tainted flow should not be dropped over a missing position.
+func (r Result) ReportPos() token.Pos {
+	for i := len(r.Path) - 1; i >= 0; i-- {
+		edge := r.Path[i]
+		if edge == nil || edge.Site == nil {
+			continue
+		}
+		if pos := edge.Site.Pos(); pos.IsValid() {
+			return pos
+		}
+	}
+	if r.SinkValue != nil {
+		return r.SinkValue.Pos()
+	}
+	return token.NoPos
+}
+
 // Results is a collection of unique findings from a taint check.
 type Results []Result
 

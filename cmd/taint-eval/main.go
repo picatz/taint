@@ -44,7 +44,11 @@ import (
 )
 
 func main() {
-	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	// Cancel on interrupt so Ctrl-C stops clones and analyzer runs cleanly
+	// instead of killing the harness mid-write.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "taint-eval:", err)
 		os.Exit(1)
 	}

@@ -117,6 +117,9 @@ func (s *httpSource) getJSON(ctx context.Context, endpoint string, dst any) erro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		// Drain a bounded amount so the connection can return to the pool;
+		// error responses here are tiny (or absent).
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 		return fmt.Errorf("vulndb: fetching %s: unexpected status %s", endpoint, resp.Status)
 	}
 	if err := decodeJSON(resp.Body, maxResponseBytes, dst); err != nil {
@@ -163,6 +166,11 @@ func decodeJSON(r io.Reader, limit int64, dst any) error {
 			return ErrResponseTooLarge
 		}
 		return fmt.Errorf("vulndb: unexpected trailing data after JSON document")
+	}
+	// A clean EOF that consumed the entire limit+1 budget means the input was
+	// larger than limit, even if it decoded: the cap is exact.
+	if lr.N <= 0 {
+		return ErrResponseTooLarge
 	}
 	return nil
 }
@@ -225,7 +233,10 @@ func validID(id string) error {
 	if id == "" {
 		return fmt.Errorf("vulndb: empty advisory ID")
 	}
-	if strings.ContainsAny(id, "/\\.") || strings.Contains(id, "..") {
+	// No separators and no dots at all: stricter than path-traversal defense
+	// strictly needs, but real IDs (GO-, CVE-, GHSA-) never contain them, and
+	// rejecting "." also rules out relative and hidden names outright.
+	if strings.ContainsAny(id, `/\.`) {
 		return fmt.Errorf("vulndb: invalid advisory ID %q", id)
 	}
 	return nil

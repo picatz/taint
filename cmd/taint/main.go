@@ -256,6 +256,8 @@ type commandArg struct {
 type commandFlag struct {
 	name string
 	desc string
+	// boolean marks a flag that takes no value (e.g. --full).
+	boolean bool
 }
 
 type command struct {
@@ -361,21 +363,53 @@ func (c commands) eval(ctx context.Context, bt *bufio.Writer, input string) erro
 
 	argsAndFlags := fields[1:]
 
-	// Parse flags with Go's flag package.
+	var cmd *command
+	for _, candidate := range c {
+		if candidate.name == cmdName {
+			cmd = candidate
+			break
+		}
+	}
+	if cmd == nil {
+		bt.WriteString("unknown command: " + cmdName + "\n")
+		bt.Flush()
+		return nil
+	}
+
+	// Parse flags with Go's flag package, registering the command's declared
+	// flags first: an unregistered flag is a visible parse error rather than
+	// a silently ignored token.
 	flagSet := flag.NewFlagSet(cmdName, flag.ContinueOnError)
 
 	flagSet.SetOutput(bt)
 
 	flagSet.Usage = func() {
-		// Print command help.
-		bt.WriteString(c.help())
+		bt.WriteString("usage: " + cmd.help())
 		bt.Flush()
 	}
 
-	// Parse the flags.
-	err := flagSet.Parse(argsAndFlags)
+	for _, f := range cmd.flags {
+		if f.boolean {
+			flagSet.Bool(f.name, false, f.desc)
+		} else {
+			flagSet.String(f.name, "", f.desc)
+		}
+	}
+
+	// The flag package stops at the first positional argument, which surprises
+	// interactive use ("vuln . --min taint"): lift flags (and their values) to
+	// the front so they parse wherever they appear on the line.
+	lifted, err := liftFlags(flagSet, argsAndFlags)
 	if err != nil {
-		return err
+		bt.WriteString(err.Error() + "\n")
+		flagSet.Usage()
+		return nil
+	}
+	if err := flagSet.Parse(lifted); err != nil {
+		// The FlagSet already printed the problem and usage to bt; a mistyped
+		// flag must not exit the shell.
+		bt.Flush()
+		return nil
 	}
 
 	// Get the flags.
@@ -384,24 +418,55 @@ func (c commands) eval(ctx context.Context, bt *bufio.Writer, input string) erro
 		flags[f.Name] = f.Value.String()
 	})
 
-	for _, cmd := range c {
-		if cmd.name == cmdName {
-			// Check there are enough arguments.
-			if len(flagSet.Args()) < cmd.nRequiredArgs() {
-				bt.WriteString("not enough arguments, expected " + styleNumber.Render(fmt.Sprintf("%d", cmd.nRequiredArgs())) + " but got " + styleNumber.Render(fmt.Sprintf("%d", len(flagSet.Args()))) + "\n")
-				bt.WriteString("usage: " + cmd.help())
-				bt.Flush()
-				return nil
-			}
-
-			return cmd.fn(ctx, bt, flagSet.Args(), flags)
-		}
+	// Check there are enough arguments.
+	if len(flagSet.Args()) < cmd.nRequiredArgs() {
+		bt.WriteString("not enough arguments, expected " + styleNumber.Render(fmt.Sprintf("%d", cmd.nRequiredArgs())) + " but got " + styleNumber.Render(fmt.Sprintf("%d", len(flagSet.Args()))) + "\n")
+		bt.WriteString("usage: " + cmd.help())
+		bt.Flush()
+		return nil
 	}
 
-	bt.WriteString("unknown command: " + cmdName + "\n")
-	bt.Flush()
+	return cmd.fn(ctx, bt, flagSet.Args(), flags)
+}
 
-	return nil
+// liftFlags reorders tokens so every dash-prefixed flag (with its value, for
+// registered non-boolean flags) precedes the positional arguments. Unknown
+// dash tokens are lifted too, so Parse reports them instead of the command
+// silently ignoring them. A "--" terminator is honored: everything after it
+// stays positional (Parse still sees and consumes the "--" itself). A
+// registered non-boolean flag with no value left on the line is an error,
+// matching the flag package, rather than eating a preceding positional.
+func liftFlags(fs *flag.FlagSet, tokens []string) ([]string, error) {
+	var flagTokens, positional []string
+	for i := 0; i < len(tokens); i++ {
+		tok := tokens[i]
+		if tok == "--" {
+			positional = append(positional, tokens[i:]...)
+			break
+		}
+		if len(tok) < 2 || tok[0] != '-' {
+			positional = append(positional, tok)
+			continue
+		}
+		flagTokens = append(flagTokens, tok)
+		name := strings.TrimLeft(tok, "-")
+		if strings.Contains(name, "=") {
+			continue // value attached with "="
+		}
+		f := fs.Lookup(name)
+		if f == nil {
+			continue // unknown: lift alone so Parse reports it
+		}
+		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+			continue // booleans take no separate value
+		}
+		if i+1 >= len(tokens) {
+			return nil, fmt.Errorf("flag needs an argument: -%s", name)
+		}
+		i++
+		flagTokens = append(flagTokens, tokens[i])
+	}
+	return append(flagTokens, positional...), nil
 }
 
 var builtinCommandExit = &command{
@@ -434,13 +499,15 @@ var builtinCommandLoad = &command{
 	},
 	flags: []*commandFlag{
 		{
-			name: "full",
-			desc: "include all dependencies in analysis (slower, more complete)",
+			name:    "full",
+			desc:    "include all dependencies in analysis (slower, more complete)",
+			boolean: true,
 		},
-		// {
-		// 	name: "local-only",
-		// 	desc: "only analyze local packages, exclude dependencies (default: true)",
-		// },
+		{
+			name:    "all",
+			desc:    "alias for --full",
+			boolean: true,
+		},
 	},
 	fn: func(ctx context.Context, bt *bufio.Writer, args []string, flags map[string]string) error {
 		arg := args[0]
@@ -455,7 +522,9 @@ var builtinCommandLoad = &command{
 			forceFull           bool   // --full flag
 		)
 
-		// Detect flags in args (simple parse before patterns) e.g. --full
+		// The registered flags carry --full / --all; the args scan stays as a
+		// safety net for tokens the flag parser passed through.
+		forceFull = flags["full"] == "true" || flags["all"] == "true"
 		var cleanedArgs []string
 		for _, a := range args {
 			if a == "--full" || a == "-full" || a == "--all" {
@@ -1184,8 +1253,10 @@ var builtinCommandsCallpath = &command{
 					}
 				}
 				printed := false
-				for _, n := range cg.Nodes {
-					if n == nil || n.Func == nil {
+				// Sorted iteration so the displayed direct match does not
+				// change from run to run (cg.Nodes is a map).
+				for _, n := range callgraphutil.SortedNodes(cg) {
+					if n.Func == nil {
 						continue
 					}
 					fnStr := n.Func.String()

@@ -8,12 +8,9 @@ import (
 	"embed"
 	"flag"
 	"fmt"
-	"go/token"
-	"go/types"
 	"io/fs"
 	"os"
 	"slices"
-	"strings"
 
 	"github.com/picatz/taint"
 	"github.com/picatz/taint/callgraphutil"
@@ -74,24 +71,6 @@ func dbg(format string, args ...any) {
 	}
 }
 
-func imports(pass *analysis.Pass, pkgs ...string) bool {
-	visited := make(map[*types.Package]bool)
-	var walk func(*types.Package) bool
-	walk = func(p *types.Package) bool {
-		if p == nil || visited[p] {
-			return false
-		}
-		visited[p] = true
-		for _, pkg := range pkgs {
-			if p.Path() == pkg || strings.HasPrefix(p.Path(), pkg+"/") {
-				return true
-			}
-		}
-		return slices.ContainsFunc(p.Imports(), walk)
-	}
-	return walk(pass.Pkg)
-}
-
 func run(pass *analysis.Pass) (any, error) {
 	userModels, err := models.Load()
 	if err != nil {
@@ -100,7 +79,7 @@ func run(pass *analysis.Pass) (any, error) {
 	allModels := append(slices.Clone(builtinModels), userModels...)
 	// Gate on the packages named by the models (the built-in file packages
 	// plus any the user added), so we skip programs that cannot trip a sink.
-	if !imports(pass, taint.ModelPackages(allModels)...) {
+	if !taint.ImportsAny(pass.Pkg, taint.ModelPackages(allModels)...) {
 		return nil, nil
 	}
 
@@ -129,7 +108,7 @@ func run(pass *analysis.Pass) (any, error) {
 				dbg("evidence=%s rule=%s msg=%s", evidence.Kind, evidence.Rule, evidence.Message)
 			}
 		}
-		reportPos := resultPosition(result)
+		reportPos := result.ReportPos()
 		if !reportPos.IsValid() {
 			continue
 		}
@@ -137,16 +116,4 @@ func run(pass *analysis.Pass) (any, error) {
 	}
 
 	return nil, nil
-}
-
-func resultPosition(result taint.Result) token.Pos {
-	if len(result.Path) > 0 {
-		if last := result.Path.Last(); last != nil && last.Site != nil {
-			return last.Site.Pos()
-		}
-	}
-	if result.SinkValue != nil {
-		return result.SinkValue.Pos()
-	}
-	return token.NoPos
 }

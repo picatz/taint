@@ -150,6 +150,12 @@ func exitCode(err error) int {
 func parseAnalyzerJSON(out []byte) (analyzerJSON, error) {
 	idx := bytes.IndexByte(out, '{')
 	if idx < 0 {
+		// No JSON at all: only acceptable for genuinely empty output.
+		// Anything else means the driver reported in a shape we cannot
+		// parse, and dropping it would silently lose diagnostics.
+		if len(bytes.TrimSpace(out)) > 0 {
+			return nil, fmt.Errorf("analyzer output contains no JSON document: %q", truncateForError(out))
+		}
 		return analyzerJSON{}, nil
 	}
 	var doc analyzerJSON
@@ -160,6 +166,16 @@ func parseAnalyzerJSON(out []byte) (analyzerJSON, error) {
 		doc = analyzerJSON{}
 	}
 	return doc, nil
+}
+
+// truncateForError bounds raw driver output quoted into an error message.
+func truncateForError(out []byte) string {
+	const max = 256
+	s := string(bytes.TrimSpace(out))
+	if len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
 }
 
 type SARIFLog struct {
@@ -279,7 +295,7 @@ func SARIFLogFromAnalyzerJSON(analyzer *analysis.Analyzer, doc analyzerJSON, roo
 				ruleName = driverName
 			}
 			for _, diagnostic := range diagnostics {
-				path, line, column := splitPosn(diagnostic.Posn)
+				path, line, column := SplitPosition(diagnostic.Posn)
 				findings = append(findings, Finding{
 					RuleID:  ruleName,
 					URI:     artifactURI(path, root),
@@ -631,29 +647,6 @@ func partialFingerprint(f Finding) string {
 	_, _ = h.Write([]byte(f.Message))
 	sum := h.Sum(nil)
 	return hex.EncodeToString(sum[:16])
-}
-
-func splitPosn(posn string) (path string, line, col int) {
-	if posn == "" {
-		return "", 0, 0
-	}
-	parts := strings.Split(posn, ":")
-	if len(parts) >= 3 {
-		col = atoiSafe(parts[len(parts)-1])
-		line = atoiSafe(parts[len(parts)-2])
-		path = strings.Join(parts[:len(parts)-2], ":")
-	} else if len(parts) == 2 {
-		line = atoiSafe(parts[1])
-		path = parts[0]
-	} else {
-		path = parts[0]
-	}
-	return path, line, col
-}
-
-func atoiSafe(s string) int {
-	n, _ := strconv.Atoi(s)
-	return n
 }
 
 func artifactURI(path, root string) string {

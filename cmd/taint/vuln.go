@@ -36,6 +36,12 @@ var builtinCommandVuln = &command{
 			dir = args[0]
 		}
 
+		if _, ok := parseVulnTier(flags["min"]); !ok {
+			bt.WriteString(styleWarning.Render(fmt.Sprintf("✗ invalid --min tier %q (want module, package, symbol, or taint)", flags["min"])) + "\n")
+			bt.Flush()
+			return nil
+		}
+
 		src, err := vulnSource(flags["db"])
 		if err != nil {
 			bt.WriteString(styleWarning.Render("✗ "+err.Error()) + "\n")
@@ -136,7 +142,7 @@ func filterVulnTier(res *vulncheck.Result, min string) *vulncheck.Result {
 }
 
 func parseVulnTier(s string) (vulncheck.Tier, bool) {
-	switch s {
+	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "", "module":
 		return vulncheck.TierModule, true
 	case "package":

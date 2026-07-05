@@ -1,9 +1,12 @@
 package httpx
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -121,6 +124,103 @@ func TestRetryStopsOnContextCancel(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+func TestRetryRewindsBody(t *testing.T) {
+	// Each attempt must see the full request body, not the drained leftovers
+	// of the previous attempt.
+	var bodies []string
+	base := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("reading attempt body: %v", err)
+		}
+		r.Body.Close()
+		bodies = append(bodies, string(b))
+		code := http.StatusServiceUnavailable
+		if len(bodies) >= 2 {
+			code = http.StatusOK
+		}
+		return &http.Response{StatusCode: code, Body: http.NoBody, Header: http.Header{}}, nil
+	})
+	client := newTestClient(base, 3)
+
+	// A GET with a body is unusual but legal, and it is the rewindable case
+	// replayable() advertises: http.NewRequest sets GetBody for a bytes.Reader.
+	req, err := http.NewRequest(http.MethodGet, "http://example.test/x", bytes.NewReader([]byte("payload")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("made %d attempts, want 2", len(bodies))
+	}
+	for i, b := range bodies {
+		if b != "payload" {
+			t.Errorf("attempt %d body = %q, want %q (body not rewound)", i+1, b, "payload")
+		}
+	}
+}
+
+func TestRetryAfterBeyondBudgetGivesUp(t *testing.T) {
+	// A server Retry-After longer than maxDelay means "come back much later";
+	// the client must surface the response instead of retrying early.
+	var calls atomic.Int64
+	base := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Body:       http.NoBody,
+			Header:     http.Header{"Retry-After": []string{"120"}},
+		}, nil
+	})
+	client := newTestClient(base, 3) // maxDelay is 1ms in the test client
+
+	resp, err := client.Get("http://example.test/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 surfaced to the caller", resp.StatusCode)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("made %d calls, want 1 (no early retry against Retry-After)", got)
+	}
+}
+
+// timeoutError is a net.Error whose Timeout reports true.
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "i/o timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
+
+var _ net.Error = timeoutError{}
+
+func TestRetryableErrorClassification(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"context canceled", context.Canceled, false},
+		{"deadline exceeded", context.DeadlineExceeded, false},
+		{"wrapped cancel", &net.OpError{Op: "dial", Err: context.Canceled}, false},
+		{"eof", io.EOF, true},
+		{"net timeout", timeoutError{}, true},
+		{"connection refused", errors.New("connection refused"), true},
+	}
+	for _, tt := range tests {
+		if got := retryableError(tt.err); got != tt.want {
+			t.Errorf("retryableError(%s) = %v, want %v", tt.name, got, tt.want)
+		}
 	}
 }
 

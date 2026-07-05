@@ -2,8 +2,9 @@ package main
 
 import (
 	"path/filepath"
-	"strconv"
 	"strings"
+
+	"github.com/picatz/taint/internal/analyzercmd"
 )
 
 // AnalyzerJSON mirrors the structure produced by analysis singlechecker
@@ -69,7 +70,7 @@ func MergeAnalyzerJSON(doc AnalyzerJSON) map[string][]AnalyzerDiagnosticJSON {
 // rebases the file path relative to root. The boolean return is false when the
 // finding refers to a file outside the target tree.
 func normalizeFinding(d AnalyzerDiagnosticJSON, root string) (Finding, bool) {
-	path, line, col := splitPosn(d.Posn)
+	path, line, col := analyzercmd.SplitPosition(d.Posn)
 	if path == "" {
 		return Finding{}, false
 	}
@@ -83,35 +84,6 @@ func normalizeFinding(d AnalyzerDiagnosticJSON, root string) (Finding, bool) {
 		Column:  col,
 		Message: d.Message,
 	}, true
-}
-
-// splitPosn parses a "file:line:col" position string. Missing line or column
-// values default to 0. An empty input returns ("", 0, 0).
-func splitPosn(posn string) (path string, line, col int) {
-	if posn == "" {
-		return "", 0, 0
-	}
-	parts := strings.Split(posn, ":")
-	// On Windows the path may itself contain ":", so peel components off the
-	// right rather than splitting from the left.
-	if len(parts) >= 3 {
-		col = atoiSafe(parts[len(parts)-1])
-		line = atoiSafe(parts[len(parts)-2])
-		path = strings.Join(parts[:len(parts)-2], ":")
-	} else if len(parts) == 2 {
-		line = atoiSafe(parts[1])
-		path = parts[0]
-	} else {
-		path = parts[0]
-	}
-	return path, line, col
-}
-
-func atoiSafe(s string) int {
-	if n, err := strconv.Atoi(s); err == nil {
-		return n
-	}
-	return 0
 }
 
 // relativeToRoot returns p expressed as a forward-slash path relative to

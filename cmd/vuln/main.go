@@ -24,7 +24,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/picatz/taint/internal/analyzercmd"
@@ -128,6 +127,14 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	if err := fs.Parse(args); err != nil {
 		return opts, err
 	}
+	if _, ok := parseTier(opts.minTier); !ok {
+		return opts, fmt.Errorf("invalid -min tier %q (want module, package, symbol, or taint)", opts.minTier)
+	}
+	switch opts.format {
+	case "", "text", "json", "sarif":
+	default:
+		return opts, fmt.Errorf("unknown -format %q (want text, json, or sarif)", opts.format)
+	}
 	opts.patterns = fs.Args()
 	return opts, nil
 }
@@ -210,48 +217,15 @@ func sarifMessage(f vulncheck.Finding) string {
 }
 
 // findingLocation extracts a source location for SARIF from the deepest known
-// position in a finding's traces.
+// position in a finding's traces, parsed with the shared right-peeling
+// splitter so Windows drive letters survive.
 func findingLocation(f vulncheck.Finding) (uri string, line, col int) {
 	for i := len(f.Trace) - 1; i >= 0; i-- {
 		if f.Trace[i].Position != "" {
-			return splitPosition(f.Trace[i].Position)
+			return analyzercmd.SplitPosition(f.Trace[i].Position)
 		}
 	}
 	return "", 0, 0
-}
-
-// splitPosition parses a token.Position string ("file:line:col", "file:line",
-// or "file") into its parts. It scans from the right so a Windows drive letter
-// ("C:\path\file.go:12:5") is not mistaken for a field separator: the trailing
-// numeric fields are peeled off first, and whatever remains is the path.
-func splitPosition(pos string) (path string, line, col int) {
-	path = pos
-	if rest, n, ok := trimTrailingNumber(path); ok {
-		col = n
-		path = rest
-		if rest, n, ok := trimTrailingNumber(path); ok {
-			line = col
-			col = n
-			path = rest
-		} else {
-			line, col = col, 0
-		}
-	}
-	return path, line, col
-}
-
-// trimTrailingNumber splits a trailing ":<number>" off s, returning the
-// remainder and the parsed number. It reports false when s has no such suffix.
-func trimTrailingNumber(s string) (rest string, n int, ok bool) {
-	i := strings.LastIndexByte(s, ':')
-	if i < 0 || i == len(s)-1 {
-		return s, 0, false
-	}
-	num, err := strconv.Atoi(s[i+1:])
-	if err != nil {
-		return s, 0, false
-	}
-	return s[:i], num, true
 }
 
 func filterByTier(res *vulncheck.Result, min string) *vulncheck.Result {

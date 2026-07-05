@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/picatz/taint/callgraphutil"
@@ -64,8 +65,8 @@ func Load(ctx context.Context, cfg LoadConfig) (*Target, error) {
 	if err != nil {
 		return nil, fmt.Errorf("vulncheck: loading packages: %w", err)
 	}
-	if n := packages.PrintErrors(pkgs); n > 0 {
-		return nil, fmt.Errorf("vulncheck: %d package load error(s); see stderr", n)
+	if errs := loadErrors(pkgs); len(errs) > 0 {
+		return nil, fmt.Errorf("vulncheck: %d package load error(s): %s", len(errs), summarizeErrors(errs))
 	}
 	if len(pkgs) == 0 {
 		return nil, fmt.Errorf("vulncheck: no packages matched %v", patterns)
@@ -102,6 +103,35 @@ func Load(ctx context.Context, cfg LoadConfig) (*Target, error) {
 		Modules:          buildList(pkgs, goVersion),
 		ImportedPackages: importedPackages(pkgs),
 	}, nil
+}
+
+// loadErrors collects every package and module error from the loaded packages,
+// so a caller receives them in the returned error rather than on stderr
+// (library code must not write to the process's streams). Module errors are
+// reported once per module, matching packages.PrintErrors.
+func loadErrors(pkgs []*packages.Package) []string {
+	var errs []string
+	seenModule := make(map[string]bool)
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		for _, e := range p.Errors {
+			errs = append(errs, e.Error())
+		}
+		if mod := p.Module; mod != nil && mod.Error != nil && !seenModule[mod.Path] {
+			seenModule[mod.Path] = true
+			errs = append(errs, fmt.Sprintf("module %s: %s", mod.Path, mod.Error.Err))
+		}
+	})
+	return errs
+}
+
+// summarizeErrors joins error strings for a single returned error, keeping the
+// first few so a badly broken tree does not produce an unreadable wall.
+func summarizeErrors(errs []string) string {
+	const maxShown = 10
+	if len(errs) <= maxShown {
+		return strings.Join(errs, "; ")
+	}
+	return fmt.Sprintf("%s; and %d more", strings.Join(errs[:maxShown], "; "), len(errs)-maxShown)
 }
 
 // normalizeGoVersion reduces a runtime.Version() string to a matchable
@@ -168,6 +198,11 @@ func buildList(pkgs []*packages.Package, goVersion string) []vulndb.Module {
 			vulndb.Module{Path: vulndb.ToolchainModule, Version: goVersion},
 		)
 	}
+	// Deterministic order: seen is a map, and the build list's order flows
+	// through to database queries and finding order.
+	slices.SortFunc(modules, func(a, b vulndb.Module) int {
+		return strings.Compare(a.Path, b.Path)
+	})
 	return modules
 }
 

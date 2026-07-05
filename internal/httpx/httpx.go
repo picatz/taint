@@ -12,9 +12,11 @@
 package httpx
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"io"
+	"math"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -73,6 +75,10 @@ func WithTransport(rt http.RoundTripper) Option {
 
 // WithRetry sets the maximum number of retries and the backoff bounds for
 // idempotent requests. maxRetries of 0 disables retrying.
+//
+// Note the client-level timeout (WithTimeout) spans all attempts and the
+// backoff between them; when raising maxRetries or the delays, raise the
+// overall timeout to match or later attempts will have little budget left.
 func WithRetry(maxRetries int, baseDelay, maxDelay time.Duration) Option {
 	return func(c *config) {
 		c.maxRetries = maxRetries
@@ -163,14 +169,51 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			return resp, err
 		}
 
+		delay, ok := t.backoff(attempt, resp)
+		if !ok {
+			// The server asked us to wait longer than the backoff budget
+			// allows; hammering it sooner would be impolite, so surface the
+			// response and let the caller decide.
+			return resp, err
+		}
+
+		// Rebuild the next attempt before discarding this response, so a
+		// failed rebuild can still surface the outcome we already have.
+		next, rerr := nextAttempt(req)
+		if rerr != nil {
+			return resp, err
+		}
+
 		// Discard the failed response so its connection is reused.
-		delay := t.backoff(attempt, resp)
 		drain(resp)
 		if serr := t.sleep(req, delay); serr != nil {
+			// The rebuilt attempt will never be sent; close the fresh body
+			// opened for it (a custom GetBody may hold a file open).
+			if next != req && next.Body != nil {
+				_ = next.Body.Close()
+			}
 			return nil, serr
 		}
+		req = next
 	}
 	return resp, err
+}
+
+// nextAttempt returns the request to send on the next attempt. A bodyless
+// request is reused as-is. A request with a body is cloned with a fresh body
+// from GetBody: the previous attempt consumed (and the transport closed) the
+// old one, so replaying the same Request would send an empty body.
+func nextAttempt(req *http.Request) (*http.Request, error) {
+	if req.Body == nil || req.Body == http.NoBody || req.GetBody == nil {
+		return req, nil
+	}
+	body, err := req.GetBody()
+	if err != nil {
+		return nil, err
+	}
+	clone := req.Clone(req.Context())
+	clone.Body = body
+	return clone, nil
 }
 
 // shouldRetry reports whether a failed attempt is worth replaying: a transient
@@ -196,18 +239,22 @@ func (t *retryTransport) shouldRetry(req *http.Request, resp *http.Response, err
 
 // backoff returns the delay before the next attempt: a server Retry-After when
 // present and sane, otherwise exponential backoff with full jitter capped at
-// maxDelay.
-func (t *retryTransport) backoff(attempt int, resp *http.Response) time.Duration {
+// maxDelay. It reports false when the server asked for a wait beyond maxDelay,
+// meaning the attempt should not be retried at all rather than retried early.
+func (t *retryTransport) backoff(attempt int, resp *http.Response) (time.Duration, bool) {
 	if ra, ok := retryAfter(resp); ok {
-		return min(ra, t.maxDelay)
+		if ra > t.maxDelay {
+			return 0, false
+		}
+		return ra, true
 	}
 	// Exponential: base * 2^attempt, capped, then full jitter in [0, cap].
-	backoff := float64(t.baseDelay) * math2pow(attempt)
+	backoff := float64(t.baseDelay) * math.Ldexp(1, attempt)
 	capped := min(time.Duration(backoff), t.maxDelay)
 	if capped <= 0 {
-		return 0
+		return 0, true
 	}
-	return time.Duration(rand.Int64N(int64(capped)))
+	return time.Duration(rand.Int64N(int64(capped))), true
 }
 
 // replayable reports whether a request can be safely retried: an idempotent
@@ -228,6 +275,13 @@ func replayable(req *http.Request) bool {
 // cancellation and deadline are not retryable; timeouts and temporary network
 // errors are.
 func retryableError(err error) bool {
+	// A dead context can never succeed on retry, and checking it here keeps
+	// the transport's descriptive error instead of a bare ctx.Err() from the
+	// sleep between attempts. Note net.Error's Timeout is true for
+	// context.DeadlineExceeded, so this must come first.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
 	if errors.Is(err, io.EOF) {
 		return true
 	}
@@ -287,13 +341,4 @@ func sleepContext(req *http.Request, d time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
-}
-
-// math2pow returns 2^n as a float64 without importing math for one call.
-func math2pow(n int) float64 {
-	p := 1.0
-	for range n {
-		p *= 2
-	}
-	return p
 }

@@ -1,6 +1,11 @@
 package vulncheck
 
-import "github.com/picatz/taint/vulndb"
+import (
+	"maps"
+	"slices"
+
+	"github.com/picatz/taint/vulndb"
+)
 
 // symbolCatalog indexes the affecting advisories by the questions the tiers
 // ask: which symbols to look for in the call graph, which symbol belongs to
@@ -93,31 +98,50 @@ func (c *symbolCatalog) findings(target *Target, reached map[string][]Frame, tai
 	reachedAdvisory := make(map[string]bool)
 
 	// De-duplicate (advisory, symbol) pairs: the two receiver spellings of one
-	// method map to the same advisory symbol.
+	// method map to the same advisory symbol. When both spellings are reached,
+	// prefer a tainted one, so the finding's tier does not depend on which
+	// spelling happens to be considered first; iterate in sorted id order so
+	// the surviving trace and package are deterministic too.
 	type symKey struct{ osv, symbol string }
-	seen := make(map[symKey]bool)
+	type chosenRef struct {
+		id      string
+		ref     symbolRef
+		tainted bool
+	}
+	best := make(map[symKey]chosenRef)
+	var order []symKey
 
-	for id, trace := range reached {
+	for _, id := range slices.Sorted(maps.Keys(reached)) {
+		_, idTainted := tainted[id]
 		for _, ref := range c.symbolOwner[id] {
 			key := symKey{ref.osv, ref.symbol}
-			if seen[key] {
+			cur, ok := best[key]
+			if !ok {
+				best[key] = chosenRef{id: id, ref: ref, tainted: idTainted}
+				order = append(order, key)
 				continue
 			}
-			seen[key] = true
-			reachedAdvisory[ref.osv] = true
-
-			f := c.baseFinding(ref.osv, ref.module, target)
-			f.Package = ref.pkg
-			f.Symbol = ref.symbol
-			f.Trace = trace
-			if steps, ok := tainted[id]; ok {
-				f.Tier = TierTaint
-				f.TaintTrace = steps
-			} else {
-				f.Tier = TierSymbol
+			if idTainted && !cur.tainted {
+				best[key] = chosenRef{id: id, ref: ref, tainted: idTainted}
 			}
-			findings = append(findings, f)
 		}
+	}
+
+	for _, key := range order {
+		ch := best[key]
+		reachedAdvisory[key.osv] = true
+
+		f := c.baseFinding(key.osv, ch.ref.module, target)
+		f.Package = ch.ref.pkg
+		f.Symbol = ch.ref.symbol
+		f.Trace = reached[ch.id]
+		if steps, ok := tainted[ch.id]; ok {
+			f.Tier = TierTaint
+			f.TaintTrace = steps
+		} else {
+			f.Tier = TierSymbol
+		}
+		findings = append(findings, f)
 	}
 
 	// Package-tier and module-tier fallbacks for advisories with no reached

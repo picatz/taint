@@ -647,7 +647,13 @@ func memoryDefsForLoadWithLimit(load *ssa.UnOp, includeSynthetic bool, maxDepth 
 	for _, store := range storesForAddress(load.X) {
 		defs = append(defs, memoryDef{instr: store, value: store.Val, definite: true})
 	}
-	if !includeSynthetic || load == nil || load.Parent() == nil || maxDepth <= 0 {
+	// Sibling stores are visible but never definite: across a loop back edge
+	// the shared loop-carried base or index names a different element, so a
+	// sibling "clean" store must not kill an earlier tainted def on the path.
+	for _, store := range siblingStoresForAddress(load.X) {
+		defs = append(defs, memoryDef{instr: store, value: store.Val, definite: false})
+	}
+	if !includeSynthetic || load.Parent() == nil || maxDepth <= 0 {
 		return defs
 	}
 	base := memoryBase(load.X)
@@ -795,6 +801,7 @@ func dedupeMemoryDefs(defs []memoryDef) []memoryDef {
 	return out
 }
 
+// storesForAddress returns the stores whose address is exactly this SSA value.
 func storesForAddress(addr ssa.Value) []*ssa.Store {
 	if addr == nil {
 		return nil
@@ -807,6 +814,41 @@ func storesForAddress(addr ssa.Value) []*ssa.Store {
 				continue
 			}
 			out = append(out, store)
+		}
+	}
+	return out
+}
+
+// siblingStoresForAddress returns stores through sibling address values naming
+// the same memory as addr: a second &x.F (or &x[i] with the same index value)
+// is a distinct SSA value but the identical address within one execution, and
+// a store through it must be visible to a load through addr, or the
+// reaching-defs answer hides that store (a false negative when it was the
+// tainted one). Callers must treat these defs as possible rather than definite:
+// across a loop back edge the shared loop-carried base or index names a
+// different element, so a sibling store has no kill power.
+func siblingStoresForAddress(addr ssa.Value) []*ssa.Store {
+	var out []*ssa.Store
+	switch a := addr.(type) {
+	case *ssa.FieldAddr:
+		if refs := a.X.Referrers(); refs != nil {
+			for _, ref := range *refs {
+				sib, ok := ref.(*ssa.FieldAddr)
+				if !ok || sib == a || sib.X != a.X || sib.Field != a.Field {
+					continue
+				}
+				out = append(out, storesForAddress(sib)...)
+			}
+		}
+	case *ssa.IndexAddr:
+		if refs := a.X.Referrers(); refs != nil {
+			for _, ref := range *refs {
+				sib, ok := ref.(*ssa.IndexAddr)
+				if !ok || sib == a || sib.X != a.X || sib.Index != a.Index {
+					continue
+				}
+				out = append(out, storesForAddress(sib)...)
+			}
 		}
 	}
 	return out

@@ -105,6 +105,17 @@ func TestDecodeJSON(t *testing.T) {
 		}
 	})
 
+	t.Run("document one byte over the limit", func(t *testing.T) {
+		// The cap is exact: a valid document of limit+1 bytes is rejected,
+		// not silently allowed through the read-one-past probe.
+		payload := `{"a":1}` // 7 bytes
+		var d doc
+		err := decodeJSON(strings.NewReader(payload), int64(len(payload))-1, &d)
+		if !errors.Is(err, ErrResponseTooLarge) {
+			t.Fatalf("err = %v, want ErrResponseTooLarge", err)
+		}
+	})
+
 	t.Run("oversized by trailing garbage", func(t *testing.T) {
 		// The value is small but the input as a whole blows the limit.
 		input := `{"a":1}` + strings.Repeat(" x", 500)

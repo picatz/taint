@@ -121,6 +121,78 @@ func TestAffectsVersion(t *testing.T) {
 			version: "1.2.3",
 			want:    false,
 		},
+		{
+			name:    "no ranges at all conservatively affected",
+			ranges:  nil,
+			version: "1.0.0",
+			want:    true,
+		},
+		{
+			name:    "semver range with no events conservatively affected",
+			ranges:  []Range{semverRange()},
+			version: "1.0.0",
+			want:    true,
+		},
+		{
+			name:    "unparseable fixed boundary does not rule out",
+			ranges:  []Range{semverRange(RangeEvent{Introduced: "0"}, RangeEvent{Fixed: "garbage"})},
+			version: "1.0.0",
+			want:    true,
+		},
+		{
+			name:    "unparseable introduced widens to zero",
+			ranges:  []Range{semverRange(RangeEvent{Introduced: "garbage"}, RangeEvent{Fixed: "1.2.0"})},
+			version: "1.0.0",
+			want:    true,
+		},
+		{
+			name:    "unparseable introduced still honors the fix",
+			ranges:  []Range{semverRange(RangeEvent{Introduced: "garbage"}, RangeEvent{Fixed: "1.2.0"})},
+			version: "1.3.0",
+			want:    false,
+		},
+		{
+			name:    "unsorted events are sorted before evaluation (inside)",
+			ranges:  []Range{semverRange(RangeEvent{Fixed: "1.7.6"}, RangeEvent{Introduced: "1.6.0"})},
+			version: "1.7.0",
+			want:    true,
+		},
+		{
+			name:    "unsorted events are sorted before evaluation (below)",
+			ranges:  []Range{semverRange(RangeEvent{Fixed: "1.7.6"}, RangeEvent{Introduced: "1.6.0"})},
+			version: "1.5.0",
+			want:    false,
+		},
+		{
+			name:    "unsorted events are sorted before evaluation (above)",
+			ranges:  []Range{semverRange(RangeEvent{Fixed: "1.7.6"}, RangeEvent{Introduced: "1.6.0"})},
+			version: "1.8.0",
+			want:    false,
+		},
+		{
+			name:    "last_affected boundary is inclusive",
+			ranges:  []Range{semverRange(RangeEvent{Introduced: "1.0.0"}, RangeEvent{LastAffected: "1.4.0"})},
+			version: "1.4.0",
+			want:    true,
+		},
+		{
+			name:    "above last_affected is not affected",
+			ranges:  []Range{semverRange(RangeEvent{Introduced: "1.0.0"}, RangeEvent{LastAffected: "1.4.0"})},
+			version: "1.5.0",
+			want:    false,
+		},
+		{
+			name:    "below introduced with last_affected is not affected",
+			ranges:  []Range{semverRange(RangeEvent{Introduced: "1.0.0"}, RangeEvent{LastAffected: "1.4.0"})},
+			version: "0.9.0",
+			want:    false,
+		},
+		{
+			name:    "introduced zero covers pseudo-versions below v0.0.0",
+			ranges:  []Range{semverRange(RangeEvent{Introduced: "0"}, RangeEvent{Fixed: "1.0.0"})},
+			version: "0.0.0-20200101000000-abcdef123456",
+			want:    true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -164,6 +236,30 @@ func TestFixedVersion(t *testing.T) {
 			name:    "open ended range has no fix",
 			ranges:  []Range{semverRange(RangeEvent{Introduced: "0"})},
 			version: "1.0.0",
+			want:    "",
+		},
+		{
+			name:    "unsorted events report the right fix",
+			ranges:  []Range{semverRange(RangeEvent{Fixed: "1.7.6"}, RangeEvent{Introduced: "1.6.0"})},
+			version: "1.7.0",
+			want:    "1.7.6",
+		},
+		{
+			name:    "fixed-first range reports the fix",
+			ranges:  []Range{semverRange(RangeEvent{Fixed: "1.2.3"})},
+			version: "1.0.0",
+			want:    "1.2.3",
+		},
+		{
+			name:    "unparseable fixed boundary yields no fix",
+			ranges:  []Range{semverRange(RangeEvent{Introduced: "0"}, RangeEvent{Fixed: "garbage"})},
+			version: "1.0.0",
+			want:    "",
+		},
+		{
+			name:    "last_affected range has no fix",
+			ranges:  []Range{semverRange(RangeEvent{Introduced: "1.0.0"}, RangeEvent{LastAffected: "1.4.0"})},
+			version: "1.2.0",
 			want:    "",
 		},
 	}

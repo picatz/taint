@@ -5,7 +5,6 @@ import (
 	"embed"
 	"flag"
 	"fmt"
-	"go/token"
 	"go/types"
 	"io/fs"
 	"slices"
@@ -64,25 +63,6 @@ func init() {
 	Analyzer.Flags = *fs
 }
 
-// imports returns true if the package imports any of the given packages.
-func imports(pass *analysis.Pass, pkgs ...string) bool {
-	visited := make(map[*types.Package]bool)
-	var walk func(*types.Package) bool
-	walk = func(p *types.Package) bool {
-		if visited[p] {
-			return false
-		}
-		visited[p] = true
-		for _, pkg := range pkgs {
-			if strings.HasSuffix(p.Path(), pkg) {
-				return true
-			}
-		}
-		return slices.ContainsFunc(p.Imports(), walk)
-	}
-	return walk(pass.Pkg)
-}
-
 var supportedSQLPackages = []string{
 	"database/sql",
 	"github.com/mattn/go-sqlite3",
@@ -115,7 +95,7 @@ func run(pass *analysis.Pass) (any, error) {
 	// The gate stays an explicit list: it includes driver packages such as
 	// go-sqlite3 that host no sinks but signal SQL usage.
 	gate := append(slices.Clone(supportedSQLPackages), taint.ModelPackages(userModels)...)
-	if !imports(pass, gate...) {
+	if !taint.ImportsAny(pass.Pkg, gate...) {
 		return nil, nil
 	}
 	allModels := append(slices.Clone(builtinModels), userModels...)
@@ -232,18 +212,41 @@ func run(pass *analysis.Pass) (any, error) {
 		// Get the query function parameter.
 		query := queryArgs[0]
 
-		// Ensure it is a constant (prepared statement), otherwise report
-		// potential SQL injection.
-		if _, isConst := query.(*ssa.Const); !isConst {
-			reportPos := resultPosition(result)
-			if !reportPos.IsValid() {
-				continue
-			}
-			pass.Reportf(reportPos, "potential sql injection")
+		// A constant query text (prepared statement) with only bound
+		// parameters after it is safe. But suppress on that basis only when
+		// no later string-typed argument could be the real SQL channel: a
+		// Prepare-style (ctx, name, sql) signature has a constant name first
+		// and the tainted SQL after it, and must still be reported.
+		if _, isConst := query.(*ssa.Const); isConst && !hasNonConstantStringArg(queryArgs[1:]) {
+			continue
 		}
+		reportPos := result.ReportPos()
+		if !reportPos.IsValid() {
+			continue
+		}
+		pass.Reportf(reportPos, "potential sql injection")
 	}
 
 	return nil, nil
+}
+
+// hasNonConstantStringArg reports whether any argument is string-typed and not
+// a constant: a candidate SQL text channel that the constant-query suppression
+// must not clear. Bound parameters are variadic ...any and never trip this.
+func hasNonConstantStringArg(args []ssa.Value) bool {
+	for _, arg := range args {
+		if arg == nil {
+			continue
+		}
+		basic, ok := arg.Type().Underlying().(*types.Basic)
+		if !ok || basic.Info()&types.IsString == 0 {
+			continue
+		}
+		if _, isConst := arg.(*ssa.Const); !isConst {
+			return true
+		}
+	}
+	return false
 }
 
 func edgeCalleeName(edge *callgraph.Edge) string {
@@ -259,16 +262,4 @@ func edgeCalleeName(edge *callgraph.Edge) string {
 		}
 	}
 	return ""
-}
-
-func resultPosition(result taint.Result) token.Pos {
-	if len(result.Path) > 0 {
-		if last := result.Path.Last(); last != nil && last.Site != nil {
-			return last.Site.Pos()
-		}
-	}
-	if result.SinkValue != nil {
-		return result.SinkValue.Pos()
-	}
-	return token.NoPos
 }

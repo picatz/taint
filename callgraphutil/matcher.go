@@ -245,24 +245,25 @@ func PathsSearchCallToAdvancedAllNodes(graph *callgraph.Graph, pattern string) (
 		}
 	}
 
-	// Phase 2: Always include direct callers from disconnected components
-	for _, node := range graph.Nodes {
-		if node == nil || node.Func == nil {
+	// Phase 2: Always include direct callers from disconnected components.
+	// Iterate in sorted order so the numbered path list a caller prints is
+	// stable across runs (map iteration order is not).
+	for _, node := range SortedNodes(graph) {
+		if node.Func == nil {
 			continue
 		}
 		if matcher.Match(node.Func.String()) {
-			// Collect all direct callers
+			// Collect all direct callers, excluding self-calls, in a
+			// deterministic edge order.
 			foundAny := false
-			for _, potentialCaller := range graph.Nodes {
-				if potentialCaller == nil || potentialCaller == node {
+			inEdges := append([]*callgraph.Edge(nil), node.In...)
+			sortEdges(inEdges)
+			for _, edge := range inEdges {
+				if edge.Caller == nil || edge.Caller == node {
 					continue
 				}
-				for _, edge := range potentialCaller.Out {
-					if edge.Callee == node {
-						addPath(Path{edge})
-						foundAny = true
-					}
-				}
+				addPath(Path{edge})
+				foundAny = true
 			}
 			// If no callers, include standalone match
 			if !foundAny {

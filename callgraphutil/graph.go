@@ -138,7 +138,10 @@ func NewGraphWithContext(ctx context.Context, root *ssa.Function, srcFns ...*ssa
 
 	// We'll create the progress tracker after determining functionsToProcess
 
-	const maxRecursionDepth = 6 // limit recursion for performance, enough for common paths
+	// Bounds the summary-based recursion of the main walk. Direct call edges
+	// are not at risk: the prepass below adds them for every function in the
+	// program before this cap can apply.
+	const maxRecursionDepth = 6
 
 	functionsToProcess := srcFns
 
@@ -188,7 +191,7 @@ func NewGraphWithContext(ctx context.Context, root *ssa.Function, srcFns ...*ssa
 	logger.Step(fmt.Sprintf("Processing source functions: %d functions to process", len(functionsToProcess)))
 	var walkFnWithDepth func(fn *ssa.Function, depth int) error
 	walkFnWithDepth = func(fn *ssa.Function, depth int) error {
-		// Optional recursion depth limit (disabled by default)
+		// Recursion depth cap; see maxRecursionDepth above.
 		if maxRecursionDepth >= 0 && depth > maxRecursionDepth {
 			return nil
 		}

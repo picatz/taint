@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"os"
 	"slices"
-	"strings"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
@@ -75,23 +74,6 @@ func dbg(format string, args ...any) {
 	}
 }
 
-// imports returns true if the package imports any of the given packages.
-func imports(pass *analysis.Pass, pkgs ...string) bool {
-	var imported bool
-	for _, imp := range pass.Pkg.Imports() {
-		for _, pkg := range pkgs {
-			if strings.HasSuffix(imp.Path(), pkg) {
-				imported = true
-				break
-			}
-		}
-		if imported {
-			break
-		}
-	}
-	return imported
-}
-
 func run(pass *analysis.Pass) (any, error) {
 	// Require the log package is imported in the
 	// program being analyzed before running the analysis.
@@ -105,7 +87,7 @@ func run(pass *analysis.Pass) (any, error) {
 	// sinks also live in fmt and io, but gating on those common packages
 	// would run this analysis on nearly every program.
 	gate := append([]string{"net/http"}, taint.ModelPackages(userModels)...)
-	if !imports(pass, gate...) {
+	if !taint.ImportsAny(pass.Pkg, gate...) {
 		return nil, nil
 	}
 	allModels := append(slices.Clone(builtinModels), userModels...)

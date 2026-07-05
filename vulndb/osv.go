@@ -90,10 +90,13 @@ type Range struct {
 // RangeEvent is one boundary in a version range. Exactly one field is set.
 // Go versions are bare SemVer without the "v" prefix (e.g. "1.7.6"); the
 // standard library uses an "N.M.0-0" prerelease sentinel as the introduced
-// boundary so pre-release toolchains sort as affected.
+// boundary so pre-release toolchains sort as affected. The Go database emits
+// only introduced and fixed; last_affected appears in custom OSV mirrors and
+// closes its interval inclusively.
 type RangeEvent struct {
-	Introduced string `json:"introduced,omitempty"`
-	Fixed      string `json:"fixed,omitempty"`
+	Introduced   string `json:"introduced,omitempty"`
+	Fixed        string `json:"fixed,omitempty"`
+	LastAffected string `json:"last_affected,omitempty"`
 }
 
 // EcosystemSpecific carries the Go-specific package and symbol data, decoded

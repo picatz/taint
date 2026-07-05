@@ -190,6 +190,12 @@ func NewProgressTracker(ctx context.Context, name string, total int) *ProgressTr
 func (pt *ProgressTracker) Update(message string) {
 	pt.current++
 
+	// A zero-item operation has no meaningful percentages (division by zero
+	// renders as NaN/Inf); nothing to report.
+	if pt.total <= 0 {
+		return
+	}
+
 	now := time.Now()
 	shouldLog := false
 

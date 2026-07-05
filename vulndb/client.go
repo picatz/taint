@@ -3,7 +3,8 @@ package vulndb
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
+	"strings"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -84,7 +85,7 @@ func (c *Client) AffectingEntries(ctx context.Context, modules []Module) ([]*Ent
 			affecting = append(affecting, e)
 		}
 	}
-	sort.Slice(affecting, func(i, j int) bool { return affecting[i].ID < affecting[j].ID })
+	slices.SortFunc(affecting, func(a, b *Entry) int { return strings.Compare(a.ID, b.ID) })
 	return affecting, nil
 }
 

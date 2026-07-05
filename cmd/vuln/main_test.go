@@ -95,7 +95,15 @@ func TestRunSARIFFormat(t *testing.T) {
 		Version string `json:"version"`
 		Runs    []struct {
 			Results []struct {
-				RuleID string `json:"ruleId"`
+				RuleID    string `json:"ruleId"`
+				Locations []struct {
+					PhysicalLocation struct {
+						Region struct {
+							StartLine   int `json:"startLine"`
+							StartColumn int `json:"startColumn"`
+						} `json:"region"`
+					} `json:"physicalLocation"`
+				} `json:"locations"`
 			} `json:"results"`
 		} `json:"runs"`
 	}
@@ -110,6 +118,17 @@ func TestRunSARIFFormat(t *testing.T) {
 	}
 	if got := log.Runs[0].Results[0].RuleID; got != "GO-2099-0001" {
 		t.Errorf("SARIF ruleId = %q, want GO-2099-0001", got)
+	}
+	// The deepest trace position in the fixture is the risky() call on line 9
+	// of main.go; a transposed line/column would report line 3 instead.
+	if locs := log.Runs[0].Results[0].Locations; len(locs) > 0 {
+		region := locs[0].PhysicalLocation.Region
+		if region.StartLine != 9 {
+			t.Errorf("SARIF startLine = %d, want 9 (column transposed?) startColumn = %d",
+				region.StartLine, region.StartColumn)
+		}
+	} else {
+		t.Error("SARIF result has no locations")
 	}
 }
 
@@ -146,6 +165,28 @@ func TestRunMinTierFiltersOut(t *testing.T) {
 	code := run([]string{"-C", app, "-db", db, "-min", "symbol", "./..."}, &stdout, &stderr)
 	if code != exitNoFindings {
 		t.Fatalf("exit code = %d, want %d (module finding filtered out)", code, exitNoFindings)
+	}
+}
+
+func TestRunInvalidMinTierErrors(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-min", "symbl", "./..."}, &stdout, &stderr)
+	if code != exitError {
+		t.Fatalf("exit code = %d, want %d", code, exitError)
+	}
+	if !strings.Contains(stderr.String(), "invalid -min") {
+		t.Errorf("stderr missing -min diagnostic:\n%s", stderr.String())
+	}
+}
+
+func TestRunInvalidFormatErrors(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-format", "xml", "./..."}, &stdout, &stderr)
+	if code != exitError {
+		t.Fatalf("exit code = %d, want %d", code, exitError)
+	}
+	if !strings.Contains(stderr.String(), "unknown -format") {
+		t.Errorf("stderr missing -format diagnostic:\n%s", stderr.String())
 	}
 }
 

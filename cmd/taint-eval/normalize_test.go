@@ -7,27 +7,6 @@ import (
 	"testing"
 )
 
-func TestSplitPosn(t *testing.T) {
-	cases := []struct {
-		in     string
-		path   string
-		line   int
-		column int
-	}{
-		{"/abs/foo/main.go:12:17", "/abs/foo/main.go", 12, 17},
-		{"main.go:5", "main.go", 5, 0},
-		{"only/path", "only/path", 0, 0},
-		{"", "", 0, 0},
-	}
-	for _, tc := range cases {
-		path, line, col := splitPosn(tc.in)
-		if path != tc.path || line != tc.line || col != tc.column {
-			t.Errorf("splitPosn(%q) = (%q, %d, %d), want (%q, %d, %d)",
-				tc.in, path, line, col, tc.path, tc.line, tc.column)
-		}
-	}
-}
-
 func TestNormalize_RelativeToRoot(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("path layout differs on windows")
