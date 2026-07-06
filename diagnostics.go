@@ -1,6 +1,8 @@
 package taint
 
 import (
+	"go/token"
+
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/ssa"
 )
@@ -44,6 +46,27 @@ type Diagnostic struct {
 
 // Diagnostics is a collection of detailed taint findings.
 type Diagnostics []Diagnostic
+
+// Finding is a located detector result: a source position and a message. It is
+// the unit a detector reports, whether from a per-package go/analysis pass or a
+// whole-program driver, so both surface identical findings.
+type Finding struct {
+	Pos     token.Pos
+	Message string
+}
+
+// Findings turns diagnostics into located findings at each result's report
+// position, dropping any without a valid position, all carrying message.
+// Detectors with no result-specific suppression build their findings with it.
+func (d Diagnostics) Findings(message string) []Finding {
+	var out []Finding
+	for _, diagnostic := range d {
+		if pos := diagnostic.Result.ReportPos(); pos.IsValid() {
+			out = append(out, Finding{Pos: pos, Message: message})
+		}
+	}
+	return out
+}
 
 // Results returns the compatibility Result values from the diagnostics.
 func (d Diagnostics) Results() Results {

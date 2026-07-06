@@ -207,13 +207,24 @@ func CheckDetailed(cg *callgraph.Graph, sources Sources, sinks Sinks, opts ...Op
 	// For each sink given, identify the individual paths from
 	// within the callgraph that those sinks can end up as
 	// the final node path (the "sink path").
+sinks:
 	for _, sink := range rules.sinkRules {
+		// Stop between sinks when the caller cancels: the per-sink path
+		// enumeration is the expensive step, so this bounds a runaway check
+		// while still returning the diagnostics gathered so far.
+		if cfg.ctx.Err() != nil {
+			break
+		}
+
 		// Find all call edges that call the sink function
 		sinkPaths := findAllSinkCallSitePaths(cg, sink)
 
 		for _, sinkPath := range sinkPaths {
 			if sinkPath.Empty() {
 				continue
+			}
+			if cfg.ctx.Err() != nil {
+				break sinks
 			}
 
 			// Check if the last edge (e.g. a SQL query) used any of the given

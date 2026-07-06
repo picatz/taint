@@ -2,6 +2,7 @@ package taint
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"fmt"
 	"go/constant"
@@ -27,10 +28,25 @@ type checkConfig struct {
 	sanitizers      []string
 	models          []Model
 	maxSummaryDepth int
+	ctx             context.Context
 }
 
 func defaultCheckConfig() checkConfig {
-	return checkConfig{maxSummaryDepth: defaultMaxSummaryDepth}
+	return checkConfig{maxSummaryDepth: defaultMaxSummaryDepth, ctx: context.Background()}
+}
+
+// WithContext supplies a context whose cancelation stops the check. The
+// all-simple-paths enumeration a check runs per sink can be expensive on a
+// large program, so a caller with a deadline or an interrupted CLI can bound
+// it. On cancelation the check returns the diagnostics found so far; the
+// caller inspects ctx.Err() to learn the run was cut short. A nil context is
+// ignored, leaving the default non-cancelable context.
+func WithContext(ctx context.Context) Option {
+	return func(cfg *checkConfig) {
+		if ctx != nil {
+			cfg.ctx = ctx
+		}
+	}
 }
 
 // WithExtraSources adds source matchers for this check without modifying the

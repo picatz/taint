@@ -115,24 +115,45 @@ func run(pass *analysis.Pass) (any, error) {
 	// fmt.Println(cg)
 
 	// Run taint check for user controlled values (sources) ending
-	// up in injectable log functions (sinks).
-	diagnostics := taint.CheckDetailed(cg, taint.NewSources(), taint.NewSinks(), taint.WithModels(allModels...))
-
+	// up in injectable log functions (sinks). A go/analysis pass carries no
+	// context; whole-program callers pass a real one through Check.
+	diagnostics := taint.CheckDetailed(cg, taint.NewSources(), taint.NewSinks(), taint.WithModels(allModels...), taint.WithContext(context.Background()))
 	dbg("results: %d", len(diagnostics))
 
-	// Dedupe report positions: two taint flows that converge on the same
-	// user callsite (e.g. both reach the same logging helper) produce
-	// identical findings from the user's perspective, and reporting them
-	// twice is noise.
+	// Report at the outermost call site on the taint path that lives inside
+	// the user's package, so the finding surfaces where the user passed
+	// tainted data in rather than deep in a shared helper.
+	for _, f := range collectXSSFindings(diagnostics, userCallsiteReportPos(cg, pass.Pkg.Path())) {
+		pass.Reportf(f.Pos, "%s", f.Message)
+	}
+
+	return nil, nil
+}
+
+// Check runs the XSS detector over an already-built call graph and returns the
+// located findings, reported at the response-writing sink site. The
+// per-package Analyzer refines that to the user-package callsite for trace
+// stability, which needs a single user package; a whole-program driver has no
+// single user package, so it reports at the sink. Canceling ctx stops the
+// check early, bounding the per-sink path enumeration.
+func Check(ctx context.Context, cg *callgraph.Graph) []taint.Finding {
+	userModels, err := models.Load()
+	if err != nil {
+		return nil
+	}
+	allModels := append(slices.Clone(builtinModels), userModels...)
+	diagnostics := taint.CheckDetailed(cg, taint.NewSources(), taint.NewSinks(), taint.WithModels(allModels...), taint.WithContext(ctx))
+	return collectXSSFindings(diagnostics, sinkSiteReportPos)
+}
+
+// collectXSSFindings applies the response-destination provenance filter to the
+// diagnostics and locates each surviving finding with reportPos, deduping by
+// position so two flows converging on the same site report once.
+func collectXSSFindings(diagnostics taint.Diagnostics, reportPos func(result taint.Result, sinkEdge *callgraph.Edge) token.Pos) []taint.Finding {
 	reported := map[token.Pos]struct{}{}
+	var findings []taint.Finding
 	for _, diagnostic := range diagnostics {
 		result := diagnostic.Result
-		dbg("path: %s", result.Path.String())
-		if debugXSS {
-			for _, evidence := range diagnostic.Evidence {
-				dbg("evidence: %s rule=%s msg=%s", evidence.Kind, evidence.Rule, evidence.Message)
-			}
-		}
 
 		sinkEdge := findResponseWriterSinkEdge(result.Path)
 		if sinkEdge == nil || sinkEdge.Site == nil {
@@ -150,37 +171,46 @@ func run(pass *analysis.Pass) (any, error) {
 		// filter, not a binary one — we never drop detection on unclear
 		// provenance.
 		if destinationProvenance(sinkDestination(sinkEdge), result.Path) == provNotResponseWriter {
-			dbg("filtered: sink destination provably not a ResponseWriter")
 			continue
 		}
 
-		// Pick the outermost call site on this specific taint path that lives
-		// inside the user's package. Walking the path itself (rather than the
-		// whole call graph) keeps the report stable: the same logical taint
-		// flow always surfaces at the same source line, even when the
-		// container helper is invoked from many places in the codebase.
-		reportEdge := userCallsiteOnPath(result.Path, pass.Pkg.Path(), sinkEdge)
+		pos := reportPos(result, sinkEdge)
+		if !pos.IsValid() {
+			continue
+		}
+		if _, ok := reported[pos]; ok {
+			continue
+		}
+		reported[pos] = struct{}{}
+		findings = append(findings, taint.Finding{Pos: pos, Message: "potential XSS"})
+	}
+	return findings
+}
+
+// userCallsiteReportPos locates a finding at the outermost call site on its
+// taint path inside pkgPath, falling back to the container callsite and then
+// the sink site. It is the per-package strategy, where pkgPath is the single
+// package under analysis.
+func userCallsiteReportPos(cg *callgraph.Graph, pkgPath string) func(taint.Result, *callgraph.Edge) token.Pos {
+	return func(result taint.Result, sinkEdge *callgraph.Edge) token.Pos {
+		reportEdge := userCallsiteOnPath(result.Path, pkgPath, sinkEdge)
 		if reportEdge == nil {
-			reportEdge = userCallsiteForContainer(cg, pass.Pkg.Path(), sinkEdge)
+			reportEdge = userCallsiteForContainer(cg, pkgPath, sinkEdge)
 		}
 		if reportEdge == nil {
 			reportEdge = sinkEdge
 		}
 		if reportEdge == nil || reportEdge.Site == nil {
-			continue
+			return token.NoPos
 		}
-
-		pos := reportEdge.Site.Pos()
-		if _, ok := reported[pos]; ok {
-			continue
-		}
-		reported[pos] = struct{}{}
-
-		dbg("reporting at site")
-		pass.Reportf(pos, "potential XSS")
+		return reportEdge.Site.Pos()
 	}
+}
 
-	return nil, nil
+// sinkSiteReportPos locates a finding at the response-writing sink call itself,
+// the strategy used when there is no single user package to attribute it to.
+func sinkSiteReportPos(_ taint.Result, sinkEdge *callgraph.Edge) token.Pos {
+	return sinkEdge.Site.Pos()
 }
 
 // userCallsiteOnPath inspects the edge immediately preceding the sink on

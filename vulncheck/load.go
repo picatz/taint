@@ -7,11 +7,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/picatz/taint/callgraphutil"
+	"github.com/picatz/taint/internal/wholeprogram"
 	"github.com/picatz/taint/vulndb"
 	"golang.org/x/tools/go/packages"
-	"golang.org/x/tools/go/ssa"
-	"golang.org/x/tools/go/ssa/ssautil"
 )
 
 // LoadConfig configures how Load discovers and builds the program to scan.
@@ -33,62 +31,20 @@ type LoadConfig struct {
 	GoVersion string
 }
 
-// loadMode is the package information the scanner needs: names, files, types,
-// imports, and the module of each package for the build list.
-const loadMode = packages.NeedName |
-	packages.NeedFiles |
-	packages.NeedCompiledGoFiles |
-	packages.NeedImports |
-	packages.NeedDeps |
-	packages.NeedTypes |
-	packages.NeedSyntax |
-	packages.NeedTypesInfo |
-	packages.NeedModule
-
 // Load discovers, type-checks, and builds the program under cfg into a Target
 // ready to Scan: SSA, a CHA+VTA call graph scoped to the entry points, the
 // module build list, and the imported package set. It returns an error when no
 // package could be built, and reports type-checking errors from the loaded
 // packages so a caller can surface them.
 func Load(ctx context.Context, cfg LoadConfig) (*Target, error) {
-	patterns := cfg.Patterns
-	if len(patterns) == 0 {
-		patterns = []string{"./..."}
-	}
-	pkgs, err := packages.Load(&packages.Config{
-		Mode:       loadMode,
-		Context:    ctx,
+	prog, err := wholeprogram.Load(ctx, wholeprogram.Config{
 		Dir:        cfg.Dir,
+		Patterns:   cfg.Patterns,
 		Tests:      cfg.Tests,
 		BuildFlags: cfg.BuildFlags,
-	}, patterns...)
+	})
 	if err != nil {
-		return nil, fmt.Errorf("vulncheck: loading packages: %w", err)
-	}
-	if errs := loadErrors(pkgs); len(errs) > 0 {
-		return nil, fmt.Errorf("vulncheck: %d package load error(s): %s", len(errs), summarizeErrors(errs))
-	}
-	if len(pkgs) == 0 {
-		return nil, fmt.Errorf("vulncheck: no packages matched %v", patterns)
-	}
-
-	prog, _ := ssautil.Packages(pkgs, ssa.InstantiateGenerics)
-	prog.Build()
-
-	built := builtPackages(prog)
-	entries := entryPoints(built)
-	if len(entries) == 0 {
-		return nil, fmt.Errorf("vulncheck: no entry points found in %v", patterns)
-	}
-
-	// Build the taint engine's own call graph, rooted at the program entry
-	// points. Unlike a pure forward slice it connects framework-dispatched
-	// closures (an HTTP handler registered as a value, then invoked by the
-	// server), which is what lets the taint tier follow real request flows, and
-	// it carries the single root the reachability and taint passes both walk.
-	cg, _, err := callgraphutil.BuildCallGraph(ctx, callgraphutil.CallGraphAlgorithmTaint, prog, mainRoot(built), entries)
-	if err != nil {
-		return nil, fmt.Errorf("vulncheck: building call graph: %w", err)
+		return nil, fmt.Errorf("vulncheck: %w", err)
 	}
 
 	goVersion := cfg.GoVersion
@@ -97,41 +53,12 @@ func Load(ctx context.Context, cfg LoadConfig) (*Target, error) {
 	}
 
 	return &Target{
-		Program:          prog,
-		CallGraph:        cg,
-		Entries:          entries,
-		Modules:          buildList(pkgs, goVersion),
-		ImportedPackages: importedPackages(pkgs),
+		Program:          prog.SSA,
+		CallGraph:        prog.CallGraph,
+		Entries:          prog.Entries,
+		Modules:          buildList(prog.Packages, goVersion),
+		ImportedPackages: importedPackages(prog.Packages),
 	}, nil
-}
-
-// loadErrors collects every package and module error from the loaded packages,
-// so a caller receives them in the returned error rather than on stderr
-// (library code must not write to the process's streams). Module errors are
-// reported once per module, matching packages.PrintErrors.
-func loadErrors(pkgs []*packages.Package) []string {
-	var errs []string
-	seenModule := make(map[string]bool)
-	packages.Visit(pkgs, nil, func(p *packages.Package) {
-		for _, e := range p.Errors {
-			errs = append(errs, e.Error())
-		}
-		if mod := p.Module; mod != nil && mod.Error != nil && !seenModule[mod.Path] {
-			seenModule[mod.Path] = true
-			errs = append(errs, fmt.Sprintf("module %s: %s", mod.Path, mod.Error.Err))
-		}
-	})
-	return errs
-}
-
-// summarizeErrors joins error strings for a single returned error, keeping the
-// first few so a badly broken tree does not produce an unreadable wall.
-func summarizeErrors(errs []string) string {
-	const maxShown = 10
-	if len(errs) <= maxShown {
-		return strings.Join(errs, "; ")
-	}
-	return fmt.Sprintf("%s; and %d more", strings.Join(errs[:maxShown], "; "), len(errs)-maxShown)
 }
 
 // normalizeGoVersion reduces a runtime.Version() string to a matchable
@@ -150,18 +77,6 @@ func normalizeGoVersion(v string) string {
 		}
 	}
 	return v
-}
-
-// builtPackages returns the SSA packages the program built, skipping nils.
-func builtPackages(prog *ssa.Program) []*ssa.Package {
-	all := prog.AllPackages()
-	built := make([]*ssa.Package, 0, len(all))
-	for _, p := range all {
-		if p != nil {
-			built = append(built, p)
-		}
-	}
-	return built
 }
 
 // buildList extracts the module build list from the loaded packages: every

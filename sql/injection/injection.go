@@ -151,19 +151,40 @@ func run(pass *analysis.Pass) (any, error) {
 
 	// fmt.Println(callgraphutil.CallGraphString(cg))
 
+	// A go/analysis pass carries no context; whole-program callers pass a
+	// real one through Check for cancelation.
+	for _, f := range checkGraph(context.Background(), cg, allModels) {
+		pass.Reportf(f.Pos, "%s", f.Message)
+	}
+
+	return nil, nil
+}
+
+// Check runs the SQL-injection detector over an already-built call graph and
+// returns the located findings. The per-package Analyzer and a whole-program
+// driver share it, so a cross-package flow (a request handler in one package
+// reaching a query in another), invisible to the per-package pass, is reported
+// identically when the driver supplies a whole-program graph. Canceling ctx
+// stops the check early, bounding the per-sink path enumeration.
+func Check(ctx context.Context, cg *callgraph.Graph) []taint.Finding {
+	userModels, err := models.Load()
+	if err != nil {
+		return nil
+	}
+	allModels := append(slices.Clone(builtinModels), userModels...)
+	return checkGraph(ctx, cg, allModels)
+}
+
+// checkGraph runs the taint check with the given models and applies the
+// constant-query suppression, returning the findings to report.
+func checkGraph(ctx context.Context, cg *callgraph.Graph, allModels []taint.Model) []taint.Finding {
 	// Run taint check for user controlled values (sources) ending
 	// up in injectable SQL methods (sinks).
-	diagnostics := taint.CheckDetailed(cg, taint.NewSources(), taint.NewSinks(), taint.WithModels(allModels...))
-
-	// fmt.Printf("DEBUG: Found %d taint results\n", len(results))
-	// for i, result := range results {
-	// 	fmt.Printf("DEBUG: Result %d: %s -> %s\n", i, result.SourceType, result.SinkType)
-	// }
+	diagnostics := taint.CheckDetailed(cg, taint.NewSources(), taint.NewSinks(), taint.WithModels(allModels...), taint.WithContext(ctx))
 
 	// For each result, check if a prepared statement is providing
 	// a mitigation for the user controlled value.
-	//
-	// TODO: ensure this makes sense for all the GORM usage?
+	var findings []taint.Finding
 	for _, diagnostic := range diagnostics {
 		result := diagnostic.Result
 		// We found a query edge that is tainted by user input, is it
@@ -224,10 +245,10 @@ func run(pass *analysis.Pass) (any, error) {
 		if !reportPos.IsValid() {
 			continue
 		}
-		pass.Reportf(reportPos, "potential sql injection")
+		findings = append(findings, taint.Finding{Pos: reportPos, Message: "potential sql injection"})
 	}
 
-	return nil, nil
+	return findings
 }
 
 // hasNonConstantStringArg reports whether any argument is string-typed and not

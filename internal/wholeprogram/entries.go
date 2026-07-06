@@ -1,4 +1,4 @@
-package vulncheck
+package wholeprogram
 
 import (
 	"go/types"
@@ -7,13 +7,13 @@ import (
 	"golang.org/x/tools/go/ssa/ssautil"
 )
 
-// entryPoints selects the functions a scan treats as reachable roots, mirroring
-// govulncheck: for a main package, only main and the package initializers (the
-// program's real entry); for a library with no main, every exported function
-// and method plus package initializers, since any of them may be called by a
-// consumer. Restricting main packages to main/init avoids reporting dead
-// exported code, while libraries must over-approximate because their callers
-// are out of scope.
+// entryPoints selects the functions the analysis treats as reachable roots,
+// mirroring govulncheck: for a main package, only main and the package
+// initializers (the program's real entry); for a library with no main, every
+// exported function and method plus package initializers, since any of them
+// may be called by a consumer. Restricting main packages to main/init avoids
+// walking dead exported code, while libraries must over-approximate because
+// their callers are out of scope.
 func entryPoints(pkgs []*ssa.Package) []*ssa.Function {
 	var entries []*ssa.Function
 	mains := ssautil.MainPackages(pkgs)
@@ -51,7 +51,7 @@ func entryPoints(pkgs []*ssa.Package) []*ssa.Function {
 // mainRoot returns the single main function to root the call graph at when the
 // build has exactly one main package, or nil to root at a synthetic node over
 // all entries (a library, or several commands). A single concrete root gives
-// the taint tier the most precise reachability.
+// the most precise reachability.
 func mainRoot(pkgs []*ssa.Package) *ssa.Function {
 	mains := ssautil.MainPackages(pkgs)
 	if len(mains) != 1 {

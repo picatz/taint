@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
+	"golang.org/x/tools/go/callgraph"
 )
 
 // builtinModelsFS holds the detector's built-in rules as data: the sources,
@@ -91,23 +92,32 @@ func run(pass *analysis.Pass) (any, error) {
 		return nil, fmt.Errorf("failed to create callgraph: %w", err)
 	}
 
-	diagnostics := taint.CheckDetailed(cg, taint.NewSources(), taint.NewSinks(), taint.WithModels(allModels...))
-	dbg("results=%d", len(diagnostics))
-
-	for _, diagnostic := range diagnostics {
-		result := diagnostic.Result
-		if debugCmdI {
-			dbg("path=%s", callgraphutil.Path(result.Path).String())
-			for _, evidence := range diagnostic.Evidence {
-				dbg("evidence=%s rule=%s msg=%s", evidence.Kind, evidence.Rule, evidence.Message)
-			}
-		}
-		reportPos := result.ReportPos()
-		if !reportPos.IsValid() {
-			continue
-		}
-		pass.Reportf(reportPos, "potential command injection")
+	// A go/analysis pass carries no context; whole-program callers pass a
+	// real one through Check for cancelation.
+	for _, f := range checkGraph(context.Background(), cg, allModels) {
+		pass.Reportf(f.Pos, "%s", f.Message)
 	}
 
 	return nil, nil
+}
+
+// Check runs the command-injection detector over an already-built call graph
+// and returns the located findings. The per-package Analyzer and a
+// whole-program driver share it, so a flow that crosses a package boundary,
+// invisible to the per-package pass, is reported identically when the driver
+// supplies a whole-program graph. Canceling ctx stops the check early,
+// bounding the per-sink path enumeration.
+func Check(ctx context.Context, cg *callgraph.Graph) []taint.Finding {
+	userModels, err := models.Load()
+	if err != nil {
+		return nil
+	}
+	allModels := append(slices.Clone(builtinModels), userModels...)
+	return checkGraph(ctx, cg, allModels)
+}
+
+func checkGraph(ctx context.Context, cg *callgraph.Graph, allModels []taint.Model) []taint.Finding {
+	diagnostics := taint.CheckDetailed(cg, taint.NewSources(), taint.NewSinks(), taint.WithModels(allModels...), taint.WithContext(ctx))
+	dbg("results=%d", len(diagnostics))
+	return diagnostics.Findings("potential command injection")
 }
