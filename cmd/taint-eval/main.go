@@ -98,8 +98,8 @@ func run(parent context.Context, args []string, stdout, stderr io.Writer) error 
 		return fmt.Errorf("resolve snapshots dir: %w", err)
 	}
 
-	ctx, cancel := signal.NotifyContext(parent, os.Interrupt)
-	defer cancel()
+	// main already arms interrupt cancellation on the parent context.
+	ctx := parent
 
 	switch sub {
 	case "list":

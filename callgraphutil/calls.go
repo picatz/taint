@@ -1,6 +1,7 @@
 package callgraphutil
 
 import (
+	"maps"
 	"slices"
 
 	"golang.org/x/tools/go/callgraph"
@@ -14,14 +15,10 @@ func CalleesOf(caller *callgraph.Node) Nodes {
 		calleesMap[e.Callee] = true
 	}
 
-	// Convert map to slice.
-	calleesSlice := make([]*callgraph.Node, 0, len(calleesMap))
-	for callee := range calleesMap {
-		calleesSlice = append(calleesSlice, callee)
-	}
-	slices.SortStableFunc(calleesSlice, nodeCompare)
+	callees := Nodes(slices.Collect(maps.Keys(calleesMap)))
+	slices.SortFunc(callees, nodeCompare)
 
-	return calleesSlice
+	return callees
 }
 
 // CallersOf returns the distinct nodes that call the callee node, in a
@@ -32,12 +29,8 @@ func CallersOf(callee *callgraph.Node) Nodes {
 		uniqCallers[e.Caller] = true
 	}
 
-	// Convert map to slice.
-	callersSlice := make(Nodes, 0, len(uniqCallers))
-	for caller := range uniqCallers {
-		callersSlice = append(callersSlice, caller)
-	}
-	slices.SortStableFunc(callersSlice, nodeCompare)
+	callers := Nodes(slices.Collect(maps.Keys(uniqCallers)))
+	slices.SortFunc(callers, nodeCompare)
 
-	return callersSlice
+	return callers
 }

@@ -135,8 +135,9 @@ type Result struct {
 // last call site on the path with a valid position, scanning backwards
 // because synthetic thunks and bound-method wrappers can leave the final
 // call site without one. It falls back to the sink value's position, and
-// returns token.NoPos only when nothing on the path carries a position; a
-// confirmed tainted flow should not be dropped over a missing position.
+// returns token.NoPos only when nothing on the path carries a position; the
+// fallback chain exists to make that rare, since callers cannot report a
+// finding without a position.
 func (r Result) ReportPos() token.Pos {
 	for i := len(r.Path) - 1; i >= 0; i-- {
 		edge := r.Path[i]

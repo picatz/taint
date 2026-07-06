@@ -249,8 +249,13 @@ func (t *retryTransport) backoff(attempt int, resp *http.Response) (time.Duratio
 		return ra, true
 	}
 	// Exponential: base * 2^attempt, capped, then full jitter in [0, cap].
+	// Compare in float space before converting: a float64 beyond the int64
+	// range converts to an implementation-defined Duration per the Go spec.
 	backoff := float64(t.baseDelay) * math.Ldexp(1, attempt)
-	capped := min(time.Duration(backoff), t.maxDelay)
+	capped := t.maxDelay
+	if backoff < float64(t.maxDelay) {
+		capped = time.Duration(backoff)
+	}
 	if capped <= 0 {
 		return 0, true
 	}

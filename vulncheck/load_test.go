@@ -1,7 +1,6 @@
 package vulncheck
 
 import (
-	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -36,6 +35,9 @@ func TestLoadBrokenPackageErrorSurfacedNotPrinted(t *testing.T) {
 
 	// The load errors must arrive in the returned error, not on stderr:
 	// capture the process stderr for the duration and require it stays empty.
+	// Swapping os.Stderr means this test (and any sibling in this package)
+	// must not run in parallel. The pipe is read concurrently so an
+	// unexpectedly chatty Load fills no OS buffer and cannot deadlock us.
 	old := os.Stderr
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -43,10 +45,15 @@ func TestLoadBrokenPackageErrorSurfacedNotPrinted(t *testing.T) {
 	}
 	os.Stderr = w
 	t.Cleanup(func() { os.Stderr = old }) // survive a panic inside Load
-	_, loadErr := Load(context.Background(), LoadConfig{Dir: dir})
+	capturedCh := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		capturedCh <- b
+	}()
+	_, loadErr := Load(t.Context(), LoadConfig{Dir: dir})
 	w.Close()
 	os.Stderr = old
-	captured, _ := io.ReadAll(r)
+	captured := <-capturedCh
 
 	if loadErr == nil {
 		t.Fatal("Load succeeded on a package that does not type-check")

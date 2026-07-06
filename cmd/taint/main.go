@@ -433,15 +433,18 @@ func (c commands) eval(ctx context.Context, bt *bufio.Writer, input string) erro
 // registered non-boolean flags) precedes the positional arguments. Unknown
 // dash tokens are lifted too, so Parse reports them instead of the command
 // silently ignoring them. A "--" terminator is honored: everything after it
-// stays positional (Parse still sees and consumes the "--" itself). A
-// registered non-boolean flag with no value left on the line is an error,
-// matching the flag package, rather than eating a preceding positional.
+// stays positional. The "--" itself is lifted to sit right after the flags,
+// where Parse consumes it; left in place after a positional, Parse would stop
+// early and hand the command a spurious "--" argument. A registered
+// non-boolean flag with no value left on the line is an error, matching the
+// flag package, rather than eating a preceding positional.
 func liftFlags(fs *flag.FlagSet, tokens []string) ([]string, error) {
 	var flagTokens, positional []string
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
 		if tok == "--" {
-			positional = append(positional, tokens[i:]...)
+			flagTokens = append(flagTokens, tok)
+			positional = append(positional, tokens[i+1:]...)
 			break
 		}
 		if len(tok) < 2 || tok[0] != '-' {
@@ -522,18 +525,7 @@ var builtinCommandLoad = &command{
 			forceFull           bool   // --full flag
 		)
 
-		// The registered flags carry --full / --all; the args scan stays as a
-		// safety net for tokens the flag parser passed through.
 		forceFull = flags["full"] == "true" || flags["all"] == "true"
-		var cleanedArgs []string
-		for _, a := range args {
-			if a == "--full" || a == "-full" || a == "--all" {
-				forceFull = true
-				continue
-			}
-			cleanedArgs = append(cleanedArgs, a)
-		}
-		args = cleanedArgs
 
 		if len(args) > 1 {
 			pattern = args[1]

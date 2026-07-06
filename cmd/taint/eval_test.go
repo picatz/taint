@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -55,7 +56,7 @@ func TestEvalRegistersDeclaredFlags(t *testing.T) {
 		var out bytes.Buffer
 		bt := bufio.NewWriter(&out)
 
-		if err := cmds.eval(context.Background(), bt, tt.input); err != nil {
+		if err := cmds.eval(t.Context(), bt, tt.input); err != nil {
 			t.Errorf("eval(%q) returned error: %v", tt.input, err)
 			continue
 		}
@@ -75,28 +76,44 @@ func TestEvalRegistersDeclaredFlags(t *testing.T) {
 	}
 }
 
-// TestEvalDashDashTerminator pins that tokens after "--" stay positional.
+// TestEvalDashDashTerminator pins that tokens after "--" stay positional and
+// that the "--" itself never reaches the command, even when a positional or a
+// flag precedes it.
 func TestEvalDashDashTerminator(t *testing.T) {
-	var (
-		invoked  bool
-		gotArgs  []string
-		gotFlags map[string]string
-	)
-	cmds := fakeEvalCommand(&invoked, &gotArgs, &gotFlags)
-	var out bytes.Buffer
-	bt := bufio.NewWriter(&out)
+	tests := []struct {
+		input    string
+		wantArgs []string
+		wantMin  string
+	}{
+		{"fake -- --full ./x", []string{"--full", "./x"}, ""},
+		{"fake ./x -- --full", []string{"./x", "--full"}, ""},
+		{"fake --min taint ./x -- --full", []string{"./x", "--full"}, "taint"},
+	}
+	for _, tt := range tests {
+		var (
+			invoked  bool
+			gotArgs  []string
+			gotFlags map[string]string
+		)
+		cmds := fakeEvalCommand(&invoked, &gotArgs, &gotFlags)
+		var out bytes.Buffer
+		bt := bufio.NewWriter(&out)
 
-	if err := cmds.eval(context.Background(), bt, "fake -- --full ./x"); err != nil {
-		t.Fatalf("eval returned error: %v", err)
-	}
-	if !invoked {
-		t.Fatalf("command not invoked; output: %s", out.String())
-	}
-	if len(gotArgs) != 2 || gotArgs[0] != "--full" || gotArgs[1] != "./x" {
-		t.Errorf("args = %v, want [--full ./x] (everything after -- is positional)", gotArgs)
-	}
-	if gotFlags["full"] != "" {
-		t.Errorf("flags[full] = %q, want unset", gotFlags["full"])
+		if err := cmds.eval(t.Context(), bt, tt.input); err != nil {
+			t.Fatalf("eval(%q) returned error: %v", tt.input, err)
+		}
+		if !invoked {
+			t.Fatalf("eval(%q) did not invoke the command; output: %s", tt.input, out.String())
+		}
+		if !slices.Equal(gotArgs, tt.wantArgs) {
+			t.Errorf("eval(%q) args = %v, want %v", tt.input, gotArgs, tt.wantArgs)
+		}
+		if gotFlags["min"] != tt.wantMin {
+			t.Errorf("eval(%q) flags[min] = %q, want %q", tt.input, gotFlags["min"], tt.wantMin)
+		}
+		if gotFlags["full"] != "" {
+			t.Errorf("eval(%q) flags[full] = %q, want unset", tt.input, gotFlags["full"])
+		}
 	}
 }
 
@@ -112,7 +129,7 @@ func TestEvalTrailingValuelessFlag(t *testing.T) {
 	var out bytes.Buffer
 	bt := bufio.NewWriter(&out)
 
-	if err := cmds.eval(context.Background(), bt, "fake ./x --min"); err != nil {
+	if err := cmds.eval(t.Context(), bt, "fake ./x --min"); err != nil {
 		t.Fatalf("eval returned error (shell-fatal): %v", err)
 	}
 	if invoked {
@@ -140,7 +157,7 @@ func TestEvalBadFlagDoesNotKillShell(t *testing.T) {
 		var out bytes.Buffer
 		bt := bufio.NewWriter(&out)
 
-		if err := cmds.eval(context.Background(), bt, input); err != nil {
+		if err := cmds.eval(t.Context(), bt, input); err != nil {
 			t.Errorf("eval(%q) returned error (shell-fatal): %v", input, err)
 		}
 		if invoked {
@@ -162,7 +179,7 @@ func TestEvalUnknownCommand(t *testing.T) {
 	var out bytes.Buffer
 	bt := bufio.NewWriter(&out)
 
-	if err := cmds.eval(context.Background(), bt, "nope"); err != nil {
+	if err := cmds.eval(t.Context(), bt, "nope"); err != nil {
 		t.Errorf("eval returned error for unknown command: %v", err)
 	}
 	if !strings.Contains(out.String(), "unknown command") {
@@ -180,7 +197,7 @@ func TestEvalMissingArgsShowsUsage(t *testing.T) {
 	var out bytes.Buffer
 	bt := bufio.NewWriter(&out)
 
-	if err := cmds.eval(context.Background(), bt, "fake --min taint"); err != nil {
+	if err := cmds.eval(t.Context(), bt, "fake --min taint"); err != nil {
 		t.Errorf("eval returned error: %v", err)
 	}
 	if invoked {
