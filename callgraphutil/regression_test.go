@@ -128,6 +128,41 @@ func main() {
 	}
 }
 
+// TestRouterHandlerRegistrationConnectsBody pins that a handler registered
+// through a router that stashes it in a field and dispatches it later (the
+// gorilla/mux and go-chi shape) is still connected to the graph. The router's
+// Handle method never calls the handler, so only recognizing the argument as
+// an HTTP handler by its type wires the body in; without that, the flow from
+// the request into the sink inside the handler is invisible.
+func TestRouterHandlerRegistrationConnectsBody(t *testing.T) {
+	cg, pkgPath := graphForSource(t, `package main
+
+import "net/http"
+
+// router mimics a third-party mux: it stores the handler for later dispatch
+// through ServeHTTP and never invokes it from Handle itself.
+type router struct{ h http.HandlerFunc }
+
+func (rt *router) Handle(pattern string, h func(http.ResponseWriter, *http.Request)) {
+	rt.h = h
+}
+
+func sink(query string) {}
+
+func main() {
+	rt := &router{}
+	rt.Handle("/", func(w http.ResponseWriter, r *http.Request) {
+		sink(r.URL.Query().Get("q"))
+	})
+	_ = rt
+}
+`)
+
+	if paths := PathsSearchCallTo(cg.Root, pkgPath+".sink"); len(paths) == 0 {
+		t.Fatal("expected a path to the sink inside a router-registered handler")
+	}
+}
+
 func TestInstructionsForSearchesMatchedNode(t *testing.T) {
 	cg, pkgPath := graphForSource(t, `package main
 

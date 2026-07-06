@@ -1381,11 +1381,61 @@ func callbackArgumentDispatches(site ssa.CallInstruction, callee *ssa.Function, 
 	if knownCallbackRegistrationArg(site, argIndex) {
 		return []callbackDispatch{{caller: callee, site: site}}
 	}
-	param := parameterForCallArg(site.Common(), callee, argIndex)
-	if param == nil {
-		return nil
+	// Prefer a precise dispatch: trace where inside the callee the passed
+	// function is actually invoked, and connect the closure there.
+	if param := parameterForCallArg(site.Common(), callee, argIndex); param != nil {
+		if traced := dedupeCallbackDispatches(functionParameterDispatches(callee, param, map[callbackParamKey]struct{}{})); len(traced) > 0 {
+			return traced
+		}
 	}
-	return dedupeCallbackDispatches(functionParameterDispatches(callee, param, map[callbackParamKey]struct{}{}))
+	// No traceable invocation. A router library (gorilla/mux, go-chi, and the
+	// like) stores the handler in a route table and dispatches it later
+	// through ServeHTTP, which the walk cannot follow. If the argument is an
+	// HTTP handler, connect it at the registration site so the handler body
+	// stays reachable from root rather than dropping out of the graph.
+	if httpHandlerArg(site, argIndex) {
+		return []callbackDispatch{{caller: callee, site: site}}
+	}
+	return nil
+}
+
+// httpHandlerArg reports whether the argument at argIndex is an HTTP handler
+// value being registered. Recognizing this by type, rather than by a fixed set
+// of registrar names, connects handlers registered through any router whose
+// registration method takes the canonical handler shape.
+func httpHandlerArg(site ssa.CallInstruction, argIndex int) bool {
+	common := site.Common()
+	if common == nil || argIndex < 0 || argIndex >= len(common.Args) {
+		return false
+	}
+	return isHTTPHandlerType(common.Args[argIndex].Type())
+}
+
+// isHTTPHandlerType reports whether t is an HTTP handler: the named
+// net/http.HandlerFunc or net/http.Handler, or any func type with the
+// canonical func(http.ResponseWriter, *http.Request) signature that routers
+// accept for handler registration.
+func isHTTPHandlerType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	if named, ok := t.(*types.Named); ok {
+		obj := named.Obj()
+		if obj != nil && obj.Pkg() != nil && obj.Pkg().Path() == "net/http" &&
+			(obj.Name() == "HandlerFunc" || obj.Name() == "Handler") {
+			return true
+		}
+	}
+	sig, ok := t.Underlying().(*types.Signature)
+	if !ok {
+		return false
+	}
+	params := sig.Params()
+	if params.Len() != 2 || sig.Results().Len() != 0 {
+		return false
+	}
+	return types.TypeString(params.At(0).Type(), nil) == "net/http.ResponseWriter" &&
+		types.TypeString(params.At(1).Type(), nil) == "*net/http.Request"
 }
 
 type callbackParamKey struct {
