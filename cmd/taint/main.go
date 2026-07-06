@@ -1599,6 +1599,14 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
+	// A subcommand runs headless; a bare invocation launches the interactive
+	// shell. "scan" is the whole-program scanner (the analog of cmd/vuln for
+	// the taint detectors); the six per-package analyzers stay separate,
+	// vet-native binaries.
+	if len(os.Args) > 1 && os.Args[1] == "scan" {
+		os.Exit(runScan(ctx, os.Args[2:], os.Stdout, os.Stderr))
+	}
+
 	if err := startShell(ctx); err != nil {
 		if err == io.EOF {
 			os.Exit(0)
