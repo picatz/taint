@@ -247,7 +247,7 @@ func formatRatio(v float64, ok bool) string {
 // infrastructure problems (clone, build, load failures) produce a non-zero
 // exit.
 func runReport(ctx context.Context, stdout, stderr io.Writer, repoRoot, cacheOverride, manifestDir, snapshotsDir, sarifDir string, targets []Target, jobs int) error {
-	cacheDir, cmdFor, err := prepareRun(ctx, repoRoot, cacheOverride, targets)
+	cacheDir, bins, err := prepareRun(ctx, repoRoot, cacheOverride, targets)
 	if err != nil {
 		return err
 	}
@@ -256,7 +256,7 @@ func runReport(ctx context.Context, stdout, stderr io.Writer, repoRoot, cacheOve
 		if err != nil {
 			return nil, err
 		}
-		return RunTarget(c, t, root, cmdFor)
+		return RunTarget(c, t, root, bins)
 	})
 	var firstErr error
 	reports := make([]TargetReport, 0, len(runs))

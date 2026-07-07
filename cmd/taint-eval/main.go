@@ -228,7 +228,7 @@ func runTargets(ctx context.Context, targets []Target, jobs int, fn func(context
 }
 
 func runCheck(ctx context.Context, stdout, stderr io.Writer, repoRoot, cacheOverride, manifestDir, snapshotsDir, sarifDir string, targets []Target, jobs int) error {
-	cacheDir, cmdFor, err := prepareRun(ctx, repoRoot, cacheOverride, targets)
+	cacheDir, bins, err := prepareRun(ctx, repoRoot, cacheOverride, targets)
 	if err != nil {
 		return err
 	}
@@ -237,7 +237,7 @@ func runCheck(ctx context.Context, stdout, stderr io.Writer, repoRoot, cacheOver
 		if err != nil {
 			return nil, err
 		}
-		return RunTarget(c, t, root, cmdFor)
+		return RunTarget(c, t, root, bins)
 	})
 	driftFound := false
 	missingSnapshots := 0
@@ -287,7 +287,7 @@ func runCheck(ctx context.Context, stdout, stderr io.Writer, repoRoot, cacheOver
 }
 
 func runUpdate(ctx context.Context, stdout, stderr io.Writer, repoRoot, cacheOverride, manifestDir, snapshotsDir, sarifDir string, targets []Target, jobs int) error {
-	cacheDir, cmdFor, err := prepareRun(ctx, repoRoot, cacheOverride, targets)
+	cacheDir, bins, err := prepareRun(ctx, repoRoot, cacheOverride, targets)
 	if err != nil {
 		return err
 	}
@@ -296,7 +296,7 @@ func runUpdate(ctx context.Context, stdout, stderr io.Writer, repoRoot, cacheOve
 		if err != nil {
 			return nil, err
 		}
-		return RunTarget(c, t, root, cmdFor)
+		return RunTarget(c, t, root, bins)
 	})
 	for _, r := range runs {
 		if r.err != nil {
@@ -328,16 +328,16 @@ func defaultJobs() int {
 	return n
 }
 
-func prepareRun(ctx context.Context, repoRoot, cacheOverride string, targets []Target) (CacheDir, analyzerCommand, error) {
+func prepareRun(ctx context.Context, repoRoot, cacheOverride string, targets []Target) (CacheDir, binaries, error) {
 	cacheDir, err := ResolveCacheDir(cacheOverride)
 	if err != nil {
-		return "", nil, err
+		return "", binaries{}, err
 	}
-	cmdFor, err := buildAnalyzerBinaries(ctx, cacheDir, repoRoot)
+	bins, err := buildBinaries(ctx, cacheDir, repoRoot)
 	if err != nil {
-		return "", nil, err
+		return "", binaries{}, err
 	}
-	return cacheDir, cmdFor, nil
+	return cacheDir, bins, nil
 }
 
 func resolveTargetRoot(ctx context.Context, t Target, cacheDir CacheDir, manifestDir string) (string, error) {

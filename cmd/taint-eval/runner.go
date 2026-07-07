@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // analyzerCommand resolves an analyzer name to a built binary path.
@@ -103,7 +104,7 @@ func parseAnalyzerJSON(out []byte) (AnalyzerJSON, []string, error) {
 
 // RunTarget invokes every analyzer configured on a target and returns a
 // freshly-computed Snapshot.
-func RunTarget(ctx context.Context, t Target, root string, cmdFor analyzerCommand) (*Snapshot, error) {
+func RunTarget(ctx context.Context, t Target, root string, bins binaries) (*Snapshot, error) {
 	snap := &Snapshot{
 		Target:    t.Name,
 		Kind:      t.Kind,
@@ -111,8 +112,15 @@ func RunTarget(ctx context.Context, t Target, root string, cmdFor analyzerComman
 		Commit:    t.Commit,
 		Analyzers: map[string]AnalyzerResult{},
 	}
+	if t.WholeProgram {
+		if err := runWholeProgramTarget(ctx, t, root, bins.taint, snap); err != nil {
+			return nil, err
+		}
+		snap.normalize()
+		return snap, nil
+	}
 	for _, name := range t.Analyzers {
-		bin, err := cmdFor(name)
+		bin, err := bins.analyzer(name)
 		if err != nil {
 			return nil, err
 		}
@@ -133,6 +141,86 @@ func RunTarget(ctx context.Context, t Target, root string, cmdFor analyzerComman
 	}
 	snap.normalize()
 	return snap, nil
+}
+
+// runWholeProgramTarget runs "taint scan" once over the target with its
+// configured analyzers and buckets the findings into the snapshot by analyzer.
+// A single scan loads the whole program once, and the subprocess reclaims its
+// memory on exit, so a heavy program does not accumulate in the harness.
+func runWholeProgramTarget(ctx context.Context, t Target, root, taintBin string, snap *Snapshot) error {
+	// Seed every configured analyzer so one with no findings still records a
+	// zero result, matching the per-package path.
+	for _, name := range t.Analyzers {
+		snap.Analyzers[name] = AnalyzerResult{}
+	}
+	findings, err := runTaintScan(ctx, taintBin, t.Analyzers, root, t.Packages)
+	if err != nil {
+		return fmt.Errorf("target %q whole-program scan: %w", t.Name, err)
+	}
+	seen := map[string]map[string]struct{}{}
+	for _, f := range findings {
+		res, ok := snap.Analyzers[f.Analyzer]
+		if !ok {
+			// A finding for an analyzer the target did not request should not
+			// happen (scan is told exactly which to run), but ignore it rather
+			// than record an unconfigured analyzer.
+			continue
+		}
+		if seen[f.Analyzer] == nil {
+			seen[f.Analyzer] = map[string]struct{}{}
+		}
+		finding := Finding{File: f.File, Line: f.Line, Column: f.Column, Message: f.Message}
+		key := findingKey(finding)
+		if _, dup := seen[f.Analyzer][key]; dup {
+			continue
+		}
+		seen[f.Analyzer][key] = struct{}{}
+		res.Findings = append(res.Findings, finding)
+		res.Count = len(res.Findings)
+		snap.Analyzers[f.Analyzer] = res
+	}
+	return nil
+}
+
+// scanFinding is one finding from "taint scan -format json". Paths are already
+// relative to the scan root, so they map straight onto a snapshot Finding.
+type scanFinding struct {
+	Analyzer string `json:"analyzer"`
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Column   int    `json:"column"`
+	Message  string `json:"message"`
+}
+
+// runTaintScan invokes "taint scan" over root with the given analyzers and
+// returns its findings. Running in root (cmd.Dir) means scan reports paths
+// relative to it, which is the snapshot's path convention.
+func runTaintScan(ctx context.Context, taintBin string, analyzers []string, root string, pkgs []string) ([]scanFinding, error) {
+	if taintBin == "" {
+		return nil, fmt.Errorf("taint binary not built")
+	}
+	args := []string{"scan", "-analyzers", strings.Join(analyzers, ","), "-format", "json"}
+	args = append(args, pkgs...)
+	cmd := exec.CommandContext(ctx, taintBin, args...)
+	cmd.Dir = root
+	cmd.Env = os.Environ()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	// scan exits 3 when it reports findings; that is success, not failure.
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 3 {
+			return nil, fmt.Errorf("%w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+		}
+	}
+	var doc struct {
+		Findings []scanFinding `json:"findings"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		return nil, fmt.Errorf("parse scan json: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+	}
+	return doc.Findings, nil
 }
 
 func targetSource(t Target) string {

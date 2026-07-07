@@ -106,6 +106,10 @@ targets:
     commit: 822f4bf8d04972fc7af221e713726174a4ef10f4
     packages: ["./..."]
     analyzers: [sqli, logi, cmdi, xss, ptrv, ssrf]
+    # Both demo flows cross a package boundary (a gorilla/mux handler in the
+    # server package into the vulnerable package), which a per-package pass
+    # cannot follow. Measure this one whole-program.
+    whole-program: true
     expect:
       - analyzer: sqli
         file: vulnerable/sql.go
@@ -185,6 +189,14 @@ targets:
         line: 93
         note: GHSA-r5ph-4jxm-6j9p SQLi; rule id reaches db.QueryRow via fmt.Sprintf in sqlKvStore.Get
 
+  # --- Clean router libraries, measured whole-program. These are real
+  # --- repositories, so the whole-program scanner (taint scan) is the right
+  # --- tool: it is what scans a whole application, and its complete call
+  # --- graph is more precise than per-package analysis, whose incomplete
+  # --- graph can produce spurious paths (e.g. a false XSS on a handler that
+  # --- writes a constant, which whole-program correctly rejects). The
+  # --- per-package analyzers are validated separately by their analysistest
+  # --- suites.
   - name: gorilla-mux
     kind: git
     repo: https://github.com/gorilla/mux.git
@@ -192,6 +204,7 @@ targets:
     commit: b4617d0b9670ad14039b2739167fd35a60f557c5
     packages: ["./..."]
     analyzers: [sqli, logi, cmdi, xss, ptrv, ssrf]
+    whole-program: true
 
   - name: julienschmidt-httprouter
     kind: git
@@ -200,6 +213,7 @@ targets:
     commit: 4eec211fa4e8df74ed978dc5681612131854144f
     packages: ["./..."]
     analyzers: [sqli, logi, cmdi, xss, ptrv, ssrf]
+    whole-program: true
 
   - name: go-chi-chi
     kind: git
@@ -208,3 +222,4 @@ targets:
     commit: 71307f9b7e4e9527638bc951c42b782cd1560331
     packages: ["./..."]
     analyzers: [sqli, logi, cmdi, xss, ptrv, ssrf]
+    whole-program: true

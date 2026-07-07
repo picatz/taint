@@ -34,6 +34,11 @@ type Target struct {
 	Packages  []string          `yaml:"packages,omitempty"`
 	Analyzers []string          `yaml:"analyzers"`
 	Expect    []ExpectedFinding `yaml:"expect,omitempty"`
+	// WholeProgram runs the target through "taint scan" (one call graph over
+	// the whole program) instead of the per-package analyzer binaries, so a
+	// flow that crosses a package boundary is measured. It is the honest unit
+	// for a real application whose source and sink live in different packages.
+	WholeProgram bool `yaml:"whole-program,omitempty"`
 }
 
 // ExpectedFinding is one ground-truth entry for a target: a known-vulnerable

@@ -39,6 +39,17 @@ results/
 # Agent worktrees (transient)
 .claude/worktrees/
 
-# stray build artifacts (cmd/vuln, cmd/taint)
-/vuln
+# Stray command binaries built at the repo root, e.g. by `go build ./cmd/x/`.
+# Each is a main package under cmd/; the leading slash confines the match to
+# the root so it never hides a package directory (sql/, network/, cmd/sqli).
+# cmd/xss needs no entry: the xss/ source directory occupies that name at the
+# root, so its binary cannot land there.
+/cmdi
+/logi
+/ptrv
+/sqli
+/ssadump
+/ssrf
 /taint
+/taint-eval
+/vuln

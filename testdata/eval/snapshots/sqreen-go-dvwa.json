@@ -5,8 +5,15 @@
   "commit": "822f4bf8d04972fc7af221e713726174a4ef10f4",
   "analyzers": {
     "cmdi": {
-      "count": 0,
-      "findings": []
+      "count": 1,
+      "findings": [
+        {
+          "file": "vulnerable/system.go",
+          "line": 9,
+          "column": 28,
+          "message": "potential command injection"
+        }
+      ]
     },
     "logi": {
       "count": 0,
@@ -17,8 +24,15 @@
       "findings": []
     },
     "sqli": {
-      "count": 0,
-      "findings": []
+      "count": 1,
+      "findings": [
+        {
+          "file": "vulnerable/sql.go",
+          "line": 69,
+          "column": 30,
+          "message": "potential sql injection"
+        }
+      ]
     },
     "ssrf": {
       "count": 0,
