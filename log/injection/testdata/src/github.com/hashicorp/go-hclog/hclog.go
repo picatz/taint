@@ -1,14 +1,16 @@
 package hclog
 
-type Logger struct{}
+// Logger mirrors the real go-hclog Logger, which is an interface. Modeling it
+// as a struct would make real interface-dispatched calls miss the sink model.
+type Logger interface {
+	Trace(msg string, args ...interface{})
+	Debug(msg string, args ...interface{})
+	Info(msg string, args ...interface{})
+	Warn(msg string, args ...interface{})
+	Error(msg string, args ...interface{})
+	Named(name string) Logger
+}
 
 type LoggerOptions struct{}
 
-func New(opts *LoggerOptions) *Logger { return &Logger{} }
-
-func (l *Logger) Trace(msg string, args ...interface{}) {}
-func (l *Logger) Debug(msg string, args ...interface{}) {}
-func (l *Logger) Info(msg string, args ...interface{})  {}
-func (l *Logger) Warn(msg string, args ...interface{})  {}
-func (l *Logger) Error(msg string, args ...interface{}) {}
-func (l *Logger) Named(name string) *Logger             { return l }
+func New(opts *LoggerOptions) Logger { return nil }

@@ -6,20 +6,23 @@ type Tx struct{}
 
 type Result struct{}
 
-func (db *DB) Query(dest interface{}, query string, params ...interface{}) (Result, error) {
+// The real go-pg query/exec channel is interface{}, not string, so a constant
+// query boxes to a MakeInterface. Mirror that so the tests exercise the real
+// SSA shape.
+func (db *DB) Query(model, query interface{}, params ...interface{}) (Result, error) {
 	return Result{}, nil
 }
-func (db *DB) QueryOne(dest interface{}, query string, params ...interface{}) (Result, error) {
+func (db *DB) QueryOne(model, query interface{}, params ...interface{}) (Result, error) {
 	return Result{}, nil
 }
-func (db *DB) Exec(query string, params ...interface{}) (Result, error)    { return Result{}, nil }
-func (db *DB) ExecOne(query string, params ...interface{}) (Result, error) { return Result{}, nil }
+func (db *DB) Exec(query interface{}, params ...interface{}) (Result, error)    { return Result{}, nil }
+func (db *DB) ExecOne(query interface{}, params ...interface{}) (Result, error) { return Result{}, nil }
 
-func (tx *Tx) Query(dest interface{}, query string, params ...interface{}) (Result, error) {
+func (tx *Tx) Query(model, query interface{}, params ...interface{}) (Result, error) {
 	return Result{}, nil
 }
-func (tx *Tx) QueryOne(dest interface{}, query string, params ...interface{}) (Result, error) {
+func (tx *Tx) QueryOne(model, query interface{}, params ...interface{}) (Result, error) {
 	return Result{}, nil
 }
-func (tx *Tx) Exec(query string, params ...interface{}) (Result, error)    { return Result{}, nil }
-func (tx *Tx) ExecOne(query string, params ...interface{}) (Result, error) { return Result{}, nil }
+func (tx *Tx) Exec(query interface{}, params ...interface{}) (Result, error)    { return Result{}, nil }
+func (tx *Tx) ExecOne(query interface{}, params ...interface{}) (Result, error) { return Result{}, nil }

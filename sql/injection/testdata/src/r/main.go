@@ -7,7 +7,8 @@ import (
 )
 
 func business(conn *gorqlite.Connection, q string) {
-	conn.Write(q) // want "potential sql injection"
+	// WriteOne takes a single statement string: the tainted query is reported.
+	conn.WriteOne(q) // want "potential sql injection"
 }
 
 func main() {

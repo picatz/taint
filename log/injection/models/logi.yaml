@@ -72,12 +72,12 @@ sinks:
 ---
 package: github.com/hashicorp/go-hclog
 sinks:
-  - { method: "(*github.com/hashicorp/go-hclog.Logger).Debug", kind: log-injection }
-  - { method: "(*github.com/hashicorp/go-hclog.Logger).Error", kind: log-injection }
-  - { method: "(*github.com/hashicorp/go-hclog.Logger).Info", kind: log-injection }
-  - { method: "(*github.com/hashicorp/go-hclog.Logger).Named", kind: log-injection }
-  - { method: "(*github.com/hashicorp/go-hclog.Logger).Trace", kind: log-injection }
-  - { method: "(*github.com/hashicorp/go-hclog.Logger).Warn", kind: log-injection }
+  - { method: "(github.com/hashicorp/go-hclog.Logger).Debug", kind: log-injection }
+  - { method: "(github.com/hashicorp/go-hclog.Logger).Error", kind: log-injection }
+  - { method: "(github.com/hashicorp/go-hclog.Logger).Info", kind: log-injection }
+  - { method: "(github.com/hashicorp/go-hclog.Logger).Named", kind: log-injection }
+  - { method: "(github.com/hashicorp/go-hclog.Logger).Trace", kind: log-injection }
+  - { method: "(github.com/hashicorp/go-hclog.Logger).Warn", kind: log-injection }
 ---
 package: github.com/rs/zerolog
 sinks:

@@ -583,7 +583,8 @@ func sqlQueryTextArguments(edge *callgraph.Edge) []ssa.Value {
 func isSQLQuerySink(id string) bool {
 	return strings.Contains(id, "database/sql.") ||
 		strings.Contains(id, "xorm.io/xorm.") ||
-		strings.Contains(id, "go-xorm/xorm.")
+		strings.Contains(id, "go-xorm/xorm.") ||
+		strings.Contains(id, "go-pg/pg.")
 }
 
 // isContextType reports whether t is context.Context.
