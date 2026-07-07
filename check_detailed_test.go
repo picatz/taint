@@ -180,12 +180,13 @@ func main() {
 }
 
 func TestCheckDetailedSanitizerEvidenceIsScopedToTaintedArgument(t *testing.T) {
+	// The sink is a package-local function rather than a SQL query method
+	// because SQL sinks track only the query text: a tainted variadic bound
+	// parameter is intentionally not reported (see sqlQueryTextArguments),
+	// so db.Query cannot exercise a tainted sibling argument.
 	cg, pkgPath := detailedGraphForSource(t, `package main
 
-import (
-	"database/sql"
-	"html"
-)
+import "html"
 
 func source() string { return "user" }
 
@@ -193,16 +194,17 @@ func clean(q string) string {
 	return html.EscapeString(q)
 }
 
+func sink(a, b string) {}
+
 func main() {
-	db := &sql.DB{}
-	db.Query(clean(source()), source())
+	sink(clean(source()), source())
 }
 `)
 
 	diagnostics := CheckDetailed(
 		cg,
 		NewSources(pkgPath+".source"),
-		NewSinks("(*database/sql.DB).Query"),
+		NewSinks(pkgPath+".sink"),
 		WithSanitizers("html.EscapeString"),
 	)
 	if len(diagnostics) != 1 {
