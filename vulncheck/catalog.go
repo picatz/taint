@@ -29,12 +29,10 @@ type symbolCatalog struct {
 
 // symbolRef ties a symbol id back to the advisory and package that named it.
 type symbolRef struct {
-	osv     string
-	pkg     string
-	module  string
-	symbol  string // the advisory's own symbol spelling, for reporting
-	fixedAt string
-	found   string
+	osv    string
+	pkg    string
+	module string
+	symbol string // the advisory's own symbol spelling, for reporting
 }
 
 // buildSymbolCatalog indexes advisories against the set of imported packages.

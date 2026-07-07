@@ -7,5 +7,5 @@ import "net/url"
 type Controller struct{}
 
 func (c *Controller) Input() url.Values                               { return nil }
-func (c *Controller) GetString(key string, def ...string) string     { return "" }
+func (c *Controller) GetString(key string, def ...string) string      { return "" }
 func (c *Controller) GetStrings(key string, def ...[]string) []string { return nil }
