@@ -150,6 +150,10 @@ func TestBeegoORM(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "beegoorm")
 }
 
+func TestBeegoController(t *testing.T) {
+	analysistest.Run(t, testdata, Analyzer, "beegoctl")
+}
+
 func TestGoFrameGDB(t *testing.T) {
 	analysistest.Run(t, testdata, Analyzer, "gogfgdb")
 }

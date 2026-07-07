@@ -230,3 +230,15 @@ sinks:
   - { method: "(*xorm.io/xorm.Session).Select", kind: sql-injection }
   - { method: "(*xorm.io/xorm.Session).SetExpr", kind: sql-injection }
   - { method: "(*xorm.io/xorm.Session).Where", kind: sql-injection }
+
+---
+# beego (astaxie v1) request input. The controller's Input() returns the parsed
+# request form (url.Values) and GetString/GetStrings return request values
+# directly; all are attacker-controlled, so their results are sources. This is
+# what lets a beego handler's field parameter reach a query builder across the
+# controller/model package boundary (e.g. casdoor CVE-2022-24124).
+package: github.com/astaxie/beego
+sources:
+  - call: "(*github.com/astaxie/beego.Controller).Input"
+  - call: "(*github.com/astaxie/beego.Controller).GetString"
+  - call: "(*github.com/astaxie/beego.Controller).GetStrings"
