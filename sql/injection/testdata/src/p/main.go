@@ -26,6 +26,14 @@ func parameterized(db *xorm.Engine, userInput string) {
 	db.Where(fmt.Sprintf("%s = 'x'", userInput)) // want "potential sql injection"
 }
 
+// fieldConstValueBound interpolates a CONSTANT column name and passes the user
+// value as a bound parameter. fmt.Sprintf makes the query text a non-constant
+// SSA value, but no user data reaches the query structure, so this is safe and
+// must not be reported.
+func fieldConstValueBound(db *xorm.Engine, userValue string) {
+	db.Where(fmt.Sprintf("%s = ?", "name"), userValue)
+}
+
 func main() {
 	var db *xorm.Engine
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -33,6 +41,9 @@ func main() {
 	})
 	http.HandleFunc("/p", func(w http.ResponseWriter, r *http.Request) {
 		parameterized(db, r.URL.Query().Get("q"))
+	})
+	http.HandleFunc("/fcb", func(w http.ResponseWriter, r *http.Request) {
+		fieldConstValueBound(db, r.URL.Query().Get("v"))
 	})
 	http.ListenAndServe(":8080", nil)
 }

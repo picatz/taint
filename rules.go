@@ -420,6 +420,13 @@ func exactSourceRule(id string) sourceRule {
 
 func exactSinkRule(id string) sinkRule {
 	selectArgs := defaultSinkArguments
+	// database/sql and xorm query methods take the query text as a fixed
+	// parameter and bound values as variadic arguments; track only the query
+	// text so a tainted bound parameter is not misreported as an injection.
+	// The explicit cases below (pgx, gogf, beego) already select the SQL text.
+	if isSQLQuerySink(id) {
+		selectArgs = sqlQueryTextArguments
+	}
 	switch id {
 	case "os/exec.Command", "os/exec.CommandContext":
 		selectArgs = execCommandSinkArguments
@@ -529,6 +536,54 @@ func sqlContextQueryArgument(extra int) func(*callgraph.Edge) []ssa.Value {
 		}
 		return []ssa.Value{args[target]}
 	}
+}
+
+// sqlQueryTextArguments selects the query-text arguments of a SQL method and
+// excludes the variadic bound parameters that follow. A query method has the
+// shape (query, ...args) or (ctx, query, ...args): the query text is a fixed
+// parameter and the bound values are variadic. Bound parameters are escaped by
+// the driver and are never an injection channel, so a user value passed as one
+// must not be reported; only taint reaching the query text is. Returning the
+// leading fixed parameters (which may include a context or a prepared-statement
+// name, neither an injection risk in practice) keeps this correct for every
+// query method without per-method configuration.
+func sqlQueryTextArguments(edge *callgraph.Edge) []ssa.Value {
+	if edge == nil || edge.Site == nil || edge.Site.Common() == nil {
+		return nil
+	}
+	common := edge.Site.Common()
+	sig := common.Signature()
+	if sig == nil {
+		return defaultSinkArguments(edge)
+	}
+	args := common.Args
+	if !common.IsInvoke() && sig.Recv() != nil && len(args) > 0 {
+		args = args[1:]
+	}
+	fixed := sig.Params().Len()
+	if sig.Variadic() && fixed > 0 {
+		fixed-- // drop the variadic bound-parameters slice
+	}
+	if fixed == 0 {
+		// Every argument is variadic (xorm's Exec(sqlOrArgs ...interface{}),
+		// for example): the query text is the first variadic element, not a
+		// fixed parameter. Tracking nothing would miss real injections, so
+		// fall back to every argument here.
+		return defaultSinkArguments(edge)
+	}
+	if fixed > len(args) {
+		fixed = len(args)
+	}
+	return args[:fixed]
+}
+
+// isSQLQuerySink reports whether a sink id is a database/sql or xorm query
+// method, whose bound parameters (the variadic arguments after the query text)
+// must be excluded from the injectable channel.
+func isSQLQuerySink(id string) bool {
+	return strings.Contains(id, "database/sql.") ||
+		strings.Contains(id, "xorm.io/xorm.") ||
+		strings.Contains(id, "go-xorm/xorm.")
 }
 
 // isContextType reports whether t is context.Context.

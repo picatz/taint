@@ -4,10 +4,10 @@ type Engine struct{}
 
 type Session struct{}
 
-func (e *Engine) Query(string, ...interface{})                              {}
-func (e *Engine) Exec(string, ...interface{})                               {}
-func (e *Engine) QueryString(string, ...interface{})                        {}
-func (e *Engine) QueryInterface(string, ...interface{})                     {}
+func (e *Engine) Query(...interface{})                                      {}
+func (e *Engine) Exec(...interface{})                                       {}
+func (e *Engine) QueryString(...interface{})                                {}
+func (e *Engine) QueryInterface(...interface{})                             {}
 func (e *Engine) SQL(interface{}, ...interface{}) *Session                  { return nil }
 func (e *Engine) Where(interface{}, ...interface{}) *Session                { return nil }
 func (e *Engine) And(interface{}, ...interface{}) *Session                  { return nil }
@@ -22,10 +22,10 @@ func (e *Engine) Having(string) *Session                                    { re
 func (e *Engine) GroupBy(string) *Session                                   { return nil }
 func (e *Engine) Join(string, interface{}, string, ...interface{}) *Session { return nil }
 
-func (s *Session) Query(string, ...interface{})                              {}
-func (s *Session) Exec(string, ...interface{})                               {}
-func (s *Session) QueryString(string, ...interface{})                        {}
-func (s *Session) QueryInterface(string, ...interface{})                     {}
+func (s *Session) Query(...interface{})                                      {}
+func (s *Session) Exec(...interface{})                                       {}
+func (s *Session) QueryString(...interface{})                                {}
+func (s *Session) QueryInterface(...interface{})                             {}
 func (s *Session) SQL(interface{}, ...interface{}) *Session                  { return nil }
 func (s *Session) Where(interface{}, ...interface{}) *Session                { return nil }
 func (s *Session) And(interface{}, ...interface{}) *Session                  { return nil }
