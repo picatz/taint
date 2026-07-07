@@ -238,7 +238,12 @@ func checkGraph(ctx context.Context, cg *callgraph.Graph, allModels []taint.Mode
 		// no later string-typed argument could be the real SQL channel: a
 		// Prepare-style (ctx, name, sql) signature has a constant name first
 		// and the tainted SQL after it, and must still be reported.
-		if _, isConst := query.(*ssa.Const); isConst && !hasNonConstantStringArg(queryArgs[1:]) {
+		//
+		// The query is matched through interface boxing: a sink whose query
+		// parameter is interface{} (xorm's Where/And, for example) passes a
+		// constant as a MakeInterface, not a bare Const, so an unwrapped check
+		// would miss it and report every parameterized query as an injection.
+		if _, isConst := underlyingConst(query); isConst && !hasNonConstantStringArg(queryArgs[1:]) {
 			continue
 		}
 		reportPos := result.ReportPos()
@@ -249,6 +254,27 @@ func checkGraph(ctx context.Context, cg *callgraph.Graph, allModels []taint.Mode
 	}
 
 	return findings
+}
+
+// underlyingConst unwraps interface boxing and conversions to reach the
+// constant a value ultimately holds, if any. A query passed to an interface{}
+// parameter is a MakeInterface around the constant, not a bare Const, so a
+// direct type assertion would not see it.
+func underlyingConst(v ssa.Value) (*ssa.Const, bool) {
+	for {
+		switch t := v.(type) {
+		case *ssa.Const:
+			return t, true
+		case *ssa.MakeInterface:
+			v = t.X
+		case *ssa.ChangeType:
+			v = t.X
+		case *ssa.Convert:
+			v = t.X
+		default:
+			return nil, false
+		}
+	}
 }
 
 // hasNonConstantStringArg reports whether any argument is string-typed and not
