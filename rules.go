@@ -35,10 +35,11 @@ func defaultCheckConfig() checkConfig {
 	return checkConfig{maxSummaryDepth: defaultMaxSummaryDepth, ctx: context.Background()}
 }
 
-// WithContext supplies a context whose cancelation stops the check. The
-// all-simple-paths enumeration a check runs per sink can be expensive on a
-// large program, so a caller with a deadline or an interrupted CLI can bound
-// it. On cancelation the check returns the diagnostics found so far; the
+// WithContext supplies a context checked during sink discovery and each
+// step of callgraph path enumeration, as well as between sink-path checks.
+// This lets a deadline or an interrupted CLI stop expensive graph traversal.
+// A single backward SSA check is not interrupted midway. On cancellation
+// the check returns the diagnostics found so far; the
 // caller inspects ctx.Err() to learn the run was cut short. A nil context is
 // ignored, leaving the default non-cancelable context.
 func WithContext(ctx context.Context) Option {

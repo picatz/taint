@@ -103,16 +103,17 @@ func buildBenchCallGraph(b *testing.B, src string) (*callgraph.Graph, string) {
 	return cg, mainFn.Pkg.Pkg.Path()
 }
 
-// countSinkPaths runs the same enumeration CheckDetailed performs
-// (findAllSinkCallSitePaths, once per sink rule) and returns the total number
+// countSinkPaths runs the same indexed enumeration CheckDetailed performs
+// and returns the total number
 // of root-to-sink-callsite simple paths across every rule. It exists purely
 // to attach an informational b.ReportMetric to a benchmark and must only be
 // called outside the timed loop.
 func countSinkPaths(cg *callgraph.Graph, sources Sources, sinks Sinks) int {
 	rules := newRuleRegistry(sources, sinks, defaultCheckConfig())
 	total := 0
-	for _, sink := range rules.sinkRules {
-		total += len(findAllSinkCallSitePaths(cg, sink))
+	sites := indexSinkCallSites(context.Background(), cg, rules.sinkRules)
+	for _, matches := range sites {
+		total += len(findAllSinkCallSitePaths(context.Background(), cg, matches))
 	}
 	return total
 }
@@ -185,8 +186,7 @@ func genDiamondSource(width, layers int) string {
 // genManySinksProgram generates a single fixed program with exactly one real
 // source-to-sink flow. It is reused, unchanged, across BenchmarkCheckDetailedManySinks
 // sub-benchmarks; only the Sinks set passed to CheckDetailed varies, isolating
-// the cost of the per-sink-rule full-graph re-enumeration that
-// findAllSinkCallSitePaths performs once per rule in rules.sinkRules.
+// rule matching and sink indexing without changing the program.
 func genManySinksProgram() string {
 	return `package main
 
@@ -207,9 +207,8 @@ func main() {
 
 // manySinksSet returns a Sinks set with n total entries: the one sink rule
 // that actually matches the program built by genManySinksProgram, plus n-1
-// distinct, never-matching filler rules. Every rule, matching or not, forces
-// its own full findAllSinkCallSitePaths traversal of the graph, so growing n
-// measures pure per-rule re-enumeration overhead.
+// distinct, never-matching filler rules. Growing n measures rule-indexing
+// overhead; unmatched rules must no longer enumerate paths.
 func manySinksSet(n int) Sinks {
 	ids := make([]string, 0, n)
 	ids = append(ids, "(*database/sql.DB).Query")
@@ -288,8 +287,8 @@ func BenchmarkCheckDetailedDiamond(b *testing.B) {
 
 // BenchmarkCheckDetailedManySinks measures the cost of growing the Sinks set
 // while only one rule actually matches, isolating the per-sink-rule
-// full-graph re-enumeration findAllSinkCallSitePaths performs (once per rule
-// in rules.sinkRules, per docs/design/scalable-checking.md).
+// matching and indexing overhead. It also guards against bringing back
+// path enumeration for unmatched rules.
 func BenchmarkCheckDetailedManySinks(b *testing.B) {
 	cg, pkgPath := buildBenchCallGraph(b, genManySinksProgram())
 	sources := NewSources(pkgPath + ".source")
