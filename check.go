@@ -1456,6 +1456,15 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 			return true, src, tv
 		}
 	case *ssa.Extract:
+		// A string iterator yields (ok, byte offset, rune). Only the rune
+		// carries the string's contents; propagating the whole tuple would
+		// also taint iteration status and offsets. Map iterators use the same
+		// SSA instructions, so keep their key/value flow separate.
+		if next, ok := value.Tuple.(*ssa.Next); ok && next.IsString && value.Index == 2 {
+			if iter, ok := next.Iter.(*ssa.Range); ok {
+				return checkSSAValueWithContext(path, ctx, iter.X, visited)
+			}
+		}
 		if call, ok := value.Tuple.(*ssa.Call); ok {
 			tainted, src, tv := checkCallReturnValues(path, ctx, call, value.Index, visited.clone())
 			if tainted {

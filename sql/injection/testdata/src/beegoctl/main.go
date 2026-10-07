@@ -58,6 +58,30 @@ func (c *ApiController) reconstructedConstant() {
 	db.Where(fmt.Sprintf("%s like ?", rebuild("name")), "value")
 }
 
+// Decoding and reassembling runes preserves ASCII SQL syntax in request data.
+func rebuildRunes(field string) string {
+	var out []rune
+	for _, r := range field {
+		out = append(out, r)
+	}
+	return string(out)
+}
+
+func (c *ApiController) reconstructedRuneField() {
+	field := rebuildRunes(c.GetString("field"))
+	db.Where(fmt.Sprintf("%s like ?", field), "value") // want "potential sql injection"
+}
+
+func (c *ApiController) reconstructedRuneBound() {
+	value := rebuildRunes(c.GetString("value"))
+	db.Where("name like ?", value)
+}
+
+func (c *ApiController) reconstructedRuneConstant() {
+	_ = c.GetString("unrelated")
+	db.Where(fmt.Sprintf("%s like ?", rebuildRunes("name")), "value")
+}
+
 func main() {
 	c := &ApiController{}
 	c.getViaInput()
@@ -66,4 +90,7 @@ func main() {
 	c.reconstructedField()
 	c.reconstructedBound()
 	c.reconstructedConstant()
+	c.reconstructedRuneField()
+	c.reconstructedRuneBound()
+	c.reconstructedRuneConstant()
 }
