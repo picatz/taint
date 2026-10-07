@@ -1192,6 +1192,15 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 				}
 			}
 		}
+	case *ssa.Index:
+		// A string's selected byte carries its content taint. Follow only
+		// the string operand, not the index: choosing a byte of a clean
+		// string with a tainted index does not introduce source content.
+		// Array values also use Index, but need element-sensitive handling
+		// rather than this whole-string propagation rule.
+		if basic, ok := value.X.Type().Underlying().(*types.Basic); ok && basic.Info()&types.IsString != 0 {
+			return checkSSAValueWithContext(path, ctx, value.X, visited)
+		}
 	case *ssa.IndexAddr:
 		refs := value.Referrers()
 		if refs != nil {

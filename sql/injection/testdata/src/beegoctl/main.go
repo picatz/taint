@@ -34,9 +34,36 @@ func (c *ApiController) safeBound() {
 	db.Where("name like ?", value)
 }
 
+// Rebuilding a request string byte by byte does not sanitize its contents.
+func rebuild(field string) string {
+	var out []byte
+	for i := 0; i < len(field); i++ {
+		out = append(out, field[i])
+	}
+	return string(out)
+}
+
+func (c *ApiController) reconstructedField() {
+	field := rebuild(c.GetString("field"))
+	db.Where(fmt.Sprintf("%s like ?", field), "value") // want "potential sql injection"
+}
+
+func (c *ApiController) reconstructedBound() {
+	value := rebuild(c.GetString("value"))
+	db.Where("name like ?", value)
+}
+
+func (c *ApiController) reconstructedConstant() {
+	_ = c.GetString("unrelated")
+	db.Where(fmt.Sprintf("%s like ?", rebuild("name")), "value")
+}
+
 func main() {
 	c := &ApiController{}
 	c.getViaInput()
 	c.getViaGetString()
 	c.safeBound()
+	c.reconstructedField()
+	c.reconstructedBound()
+	c.reconstructedConstant()
 }
