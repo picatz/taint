@@ -22,6 +22,20 @@ sinks. The bounded `BenchmarkSinkDiscoveryNoMatches` compares the historical
 checker with the new path on a 4096-path graph and 16 unmatched rules; the existing
 diamond and many-sink benchmarks retain their path-count and allocation metrics.
 
+## String-content precision
+
+String indexing propagates content from the string operand, never from the
+index expression. This includes uninstantiated generic bodies when the type
+parameter's full constraint is a subset of `~string`. The check uses `go/types`
+constraint satisfaction, so embedded constraints, named string terms, and
+intersections are handled without treating mixed string/slice unions as
+string-only. Array and slice elements retain their existing analysis.
+
+This does not make generic analysis complete: callgraph reachability, parameter
+mapping, memory modeling, and summary-depth limits still apply. A generic body
+must be present in the analyzed graph; this rule does not create missing edges
+or infer runtime instantiations.
+
 ## Problem
 
 `CheckDetailed` today:
