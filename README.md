@@ -12,6 +12,17 @@ input, such as data entered into a form on a web page, or data loaded from an ex
 A "**sink**" is a point in the program where sensitive data is used or transmitted to exploit 
 the program.
 
+## Go support
+
+Building from source requires Go 1.26 or newer. The preferred toolchain is
+Go 1.27.1, and CI builds and runs the test suite on the latest Go 1.26 and
+1.27 patch releases. Use a current patch release for security fixes. The
+minimum version increased from Go 1.25 with the go-git v5.19.3 security update.
+
+Go 1.27 regression tests exercise generic methods, promoted fields in struct
+literals, and expanded generic function inference in the programs being
+analyzed, with both tainted and clean inputs.
+
 ## Example
 
 This code generates a function call graph rooted at a program's `main` function and 
