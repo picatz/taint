@@ -1,7 +1,26 @@
 # Design: scalable checking (P3)
 
-Status: proposed. Gate: land after the P1 benchmarks exist so every step is
-measured.
+Status: the sink-discovery foundation is implemented; the per-callsite verdict
+and summary redesign below remains proposed. Keep every subsequent step measured.
+
+## Implemented foundation
+
+Sink matching now uses one traversal of reachable nodes, retaining the existing
+edge matcher for interface calls, aliases, bound methods, and generic instances.
+Unmatched rules skip path enumeration. Matching rules still use the historical
+sink-first DFS order and retain paths one rule at a time, preserving witness-path
+ties, ordered evidence, and argument selectors for duplicate model IDs.
+
+Cancellation is checked during discovery and inside DFS. Callers must still
+inspect their context error before treating a partial result as a clean scan;
+a single backward SSA check is not interrupted midway. No path-count cap silently
+drops findings.
+
+This trades a small per-check indexing cost for avoiding repeated edge matching
+and no-match traversals. It does not remove exponential enumeration for matching
+sinks. The bounded `BenchmarkSinkDiscoveryNoMatches` compares the historical
+checker with the new path on a 4096-path graph and 16 unmatched rules; the existing
+diamond and many-sink benchmarks retain their path-count and allocation metrics.
 
 ## Problem
 
@@ -11,7 +30,8 @@ measured.
    call site (`findAllSinkCallSitePaths`): the DFS removes nodes from the
    visited set on unwind, so diamond-shaped callgraphs (N handlers → shared
    helpers → sink) produce path counts exponential in depth.
-2. Re-runs that full-graph enumeration **once per sink rule**.
+2. Re-runs that full-graph enumeration **once per matching sink rule**.
+   Sink matching itself is indexed once per reachable edge/rule pair.
 3. Runs an independent backward SSA walk per enumerated path, cloning the
    visited set per branch, then dedupes nearly all of that work away to one
    diagnostic per (sink position, source).
@@ -26,9 +46,9 @@ intersected with the forward-reachable set.
 
 ## Proposed architecture
 
-**One traversal, all rules.** Scan callgraph edges once, collecting sink
-call sites for every sink rule simultaneously (edge → matching rules map).
-This removes the per-rule multiplier.
+**One traversal, all rules.** The discovery pass now indexes matching sink
+call sites for all rules. The remaining step is to eliminate separate path
+enumeration for matching rules, without changing parameter mapping or witnesses.
 
 **Per-callsite verdicts, not per-path.** For each sink call site, answer
 "does any selected argument derive from a source?" once. The backward walk

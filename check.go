@@ -15,43 +15,6 @@ import (
 	"github.com/picatz/taint/callgraphutil"
 )
 
-func findAllSinkCallSitePaths(cg *callgraph.Graph, sink sinkRule) callgraphutil.Paths {
-	if cg == nil || cg.Root == nil {
-		return nil
-	}
-
-	var paths callgraphutil.Paths
-	var stack callgraphutil.Path
-	seen := make(map[*callgraph.Node]bool)
-
-	var search func(*callgraph.Node)
-	search = func(node *callgraph.Node) {
-		if node == nil || seen[node] {
-			return
-		}
-		seen[node] = true
-		defer delete(seen, node)
-
-		for _, edge := range node.Out {
-			if edge == nil || edge.Callee == nil {
-				continue
-			}
-			if sink.matchEdge != nil && sink.matchEdge(edge) {
-				pathCopy := make(callgraphutil.Path, len(stack), len(stack)+1)
-				copy(pathCopy, stack)
-				pathCopy = append(pathCopy, edge)
-				paths = append(paths, pathCopy)
-			}
-			stack = append(stack, edge)
-			search(edge.Callee)
-			stack = stack[:len(stack)-1]
-		}
-	}
-	search(cg.Root)
-
-	return paths
-}
-
 func edgeCallsSink(edge *callgraph.Edge, sinkFunc string) bool {
 	if edge == nil {
 		return false
@@ -204,20 +167,20 @@ func CheckDetailed(cg *callgraph.Graph, sources Sources, sinks Sinks, opts ...Op
 	// Select the richest path per (sink callsite position, source type).
 	bestByKey := make(map[string]Diagnostic)
 
-	// For each sink given, identify the individual paths from
-	// within the callgraph that those sinks can end up as
-	// the final node path (the "sink path").
+	// Match each reachable callsite once per rule, rather than matching it
+	// again for every root-to-sink path. Keep rule order and per-rule path
+	// enumeration unchanged so equal-length witness ties remain stable.
+	sinkCallSites := indexSinkCallSites(cfg.ctx, cg, rules.sinkRules)
 sinks:
-	for _, sink := range rules.sinkRules {
-		// Stop between sinks when the caller cancels: the per-sink path
-		// enumeration is the expensive step, so this bounds a runaway check
-		// while still returning the diagnostics gathered so far.
+	for i, sink := range rules.sinkRules {
+		// Discovery and DFS also honor cancellation. Preserve diagnostics
+		// already collected if cancellation occurs between sinks or paths.
 		if cfg.ctx.Err() != nil {
 			break
 		}
 
 		// Find all call edges that call the sink function
-		sinkPaths := findAllSinkCallSitePaths(cg, sink)
+		sinkPaths := findAllSinkCallSitePaths(cfg.ctx, cg, sinkCallSites[i])
 
 		for _, sinkPath := range sinkPaths {
 			if sinkPath.Empty() {
