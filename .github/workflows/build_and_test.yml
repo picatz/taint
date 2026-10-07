@@ -14,20 +14,33 @@ permissions:
 jobs:
 
   build:
+    name: build (Go ${{ matrix.go }})
     runs-on: ubuntu-latest
+    # SSA-heavy detector suites run serially below to bound peak memory.
+    # Leave room for their package-loading work on standard hosted runners.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.26.x", "1.27.x"]
+    env:
+      # Verify the selected version, without auto-switching to go.mod's
+      # preferred toolchain and accidentally testing it twice.
+      GOTOOLCHAIN: local
     steps:
     - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
     - name: Setup Go
       uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
       with:
-        go-version-file: go.mod
+        go-version: ${{ matrix.go }}
+        check-latest: true
 
     - name: Build
       run: go build -v ./...
 
     - name: Test
-      run: go test -v ./...
+      run: go test -p 1 -v ./...
 
   vet:
     runs-on: ubuntu-latest
@@ -94,17 +107,10 @@ jobs:
       with:
         go-version-file: go.mod
 
-    # NOTE: as of adding this job, govulncheck reports real, currently
-    # reachable vulnerabilities: several golang.org/x/crypto/ssh and
-    # golang.org/x/net advisories, one github.com/go-git/go-git/v5 advisory
-    # (all fixed by bumping those modules), plus stdlib advisories fixed in
-    # newer Go point releases. Fixing those is a dependency/toolchain bump
-    # outside this CI-hardening workstream's scope (go.mod isn't owned
-    # here), so this job is intentionally left failing until that follow-up
-    # lands rather than suppressed — unlike the gofmt/staticcheck exclusions
-    # above, these are real vulnerabilities, not pre-existing style debt.
+    # Keep reachable vulnerability findings blocking. The vulnerability
+    # database is refreshed at run time; the scanner version is reproducible.
     - name: govulncheck
-      run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
   staticcheck:
     runs-on: ubuntu-latest
@@ -117,4 +123,4 @@ jobs:
         go-version-file: go.mod
 
     - name: staticcheck
-      run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+      run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
