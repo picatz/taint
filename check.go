@@ -15,6 +15,24 @@ import (
 	"github.com/picatz/taint/callgraphutil"
 )
 
+// stringContentConstraint proves that a type parameter's entire type set has
+// string content. Let go/types handle embedded constraints and intersections;
+// accepting just one string term in a mixed union would be too broad.
+var stringContentConstraint = types.NewInterfaceType(nil, []types.Type{
+	types.NewUnion([]*types.Term{types.NewTerm(true, types.Typ[types.String])}),
+}).Complete()
+
+func isStringContentType(t types.Type) bool {
+	t = types.Unalias(t)
+	if basic, ok := t.Underlying().(*types.Basic); ok {
+		return basic.Info()&types.IsString != 0
+	}
+	if _, ok := t.(*types.TypeParam); ok {
+		return types.Satisfies(t, stringContentConstraint)
+	}
+	return false
+}
+
 func edgeCallsSink(edge *callgraph.Edge, sinkFunc string) bool {
 	if edge == nil {
 		return false
@@ -1198,7 +1216,7 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 		// string with a tainted index does not introduce source content.
 		// Array values also use Index, but need element-sensitive handling
 		// rather than this whole-string propagation rule.
-		if basic, ok := value.X.Type().Underlying().(*types.Basic); ok && basic.Info()&types.IsString != 0 {
+		if isStringContentType(value.X.Type()) {
 			return checkSSAValueWithContext(path, ctx, value.X, visited)
 		}
 	case *ssa.IndexAddr:
