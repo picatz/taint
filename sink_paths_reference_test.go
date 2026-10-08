@@ -5,7 +5,6 @@ package taint
 // can compare complete diagnostics, including evidence and witness-path ties.
 
 import (
-	"cmp"
 	"fmt"
 	"slices"
 
@@ -127,15 +126,6 @@ sinks:
 	for _, key := range sortedDiagnosticKeys(bestByKey) {
 		out = append(out, bestByKey[key])
 	}
-	slices.SortStableFunc(out, func(a, b Diagnostic) int {
-		left, right := a.Result, b.Result
-		if c := cmp.Compare(sinkValuePos(left), sinkValuePos(right)); c != 0 {
-			return c
-		}
-		if c := cmp.Compare(left.SourceType, right.SourceType); c != 0 {
-			return c
-		}
-		return cmp.Compare(left.SinkType, right.SinkType)
-	})
+	slices.SortStableFunc(out, compareDiagnostics)
 	return out
 }

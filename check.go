@@ -1,7 +1,6 @@
 package taint
 
 import (
-	"cmp"
 	"fmt"
 	"go/token"
 	"go/types"
@@ -172,7 +171,9 @@ func Check(cg *callgraph.Graph, sources Sources, sinks Sinks) Results {
 
 // CheckDetailed runs taint analysis and returns diagnostics with ordered
 // evidence traces. It is additive to Check; callers that only need the legacy
-// result shape can continue to use Check.
+// result shape can continue to use Check. Diagnostics are ordered by physical
+// source filename and byte offset, then by source and sink type. Positions
+// without file metadata and otherwise equal sites use raw token positions.
 func CheckDetailed(cg *callgraph.Graph, sources Sources, sinks Sinks, opts ...Option) Diagnostics {
 	cfg := defaultCheckConfig()
 	for _, opt := range opts {
@@ -250,16 +251,7 @@ sinks:
 	for _, key := range sortedDiagnosticKeys(bestByKey) {
 		out = append(out, bestByKey[key])
 	}
-	slices.SortStableFunc(out, func(a, b Diagnostic) int {
-		left, right := a.Result, b.Result
-		if c := cmp.Compare(sinkValuePos(left), sinkValuePos(right)); c != 0 {
-			return c
-		}
-		if c := cmp.Compare(left.SourceType, right.SourceType); c != 0 {
-			return c
-		}
-		return cmp.Compare(left.SinkType, right.SinkType)
-	})
+	slices.SortStableFunc(out, compareDiagnostics)
 	return out
 }
 

@@ -1,7 +1,9 @@
 package taint
 
 import (
+	"cmp"
 	"go/token"
+	"slices"
 
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/ssa"
@@ -46,6 +48,55 @@ type Diagnostic struct {
 
 // Diagnostics is a collection of detailed taint findings.
 type Diagnostics []Diagnostic
+
+// Raw token positions include file-set bases, which can change when go/packages
+// parses files concurrently. Sort by physical source locations instead. Do not
+// use //line-adjusted locations: distinct source files may name the same virtual
+// location. The deduplication keys and witness selection remain unchanged.
+func compareDiagnostics(a, b Diagnostic) int {
+	left, right := a.Result, b.Result
+	leftFile, leftOffset := diagnosticLocation(left)
+	rightFile, rightOffset := diagnosticLocation(right)
+	if c := cmp.Compare(leftFile, rightFile); c != 0 {
+		return c
+	}
+	if c := cmp.Compare(leftOffset, rightOffset); c != 0 {
+		return c
+	}
+	if c := cmp.Compare(left.SourceType, right.SourceType); c != 0 {
+		return c
+	}
+	if c := cmp.Compare(left.SinkType, right.SinkType); c != 0 {
+		return c
+	}
+	// Different loaded variants may have the same physical source location.
+	// Retain a stable within-program fallback without conflating identities.
+	return cmp.Compare(sinkValuePos(left), sinkValuePos(right))
+}
+
+func diagnosticLocation(r Result) (string, int) {
+	pos := sinkValuePos(r)
+	var fn *ssa.Function
+	hasSite := false
+	for _, edge := range slices.Backward(r.Path) {
+		if edge != nil && edge.Site != nil && edge.Site.Pos().IsValid() {
+			fn = edge.Site.Parent()
+			hasSite = true
+			break
+		}
+	}
+	if !hasSite && r.SinkValue != nil {
+		fn = r.SinkValue.Parent()
+	}
+	if fn != nil && fn.Prog != nil && fn.Prog.Fset != nil {
+		if file := fn.Prog.Fset.File(pos); file != nil {
+			return file.Name(), file.Offset(pos)
+		}
+	}
+	// Keep missing metadata ordered, including the zero-value Result, without
+	// mistaking an unresolved token.Pos for a physical offset in another file.
+	return "", int(pos)
+}
 
 // Finding is a located detector result: a source position and a message. It is
 // the unit a detector reports, whether from a per-package go/analysis pass or a
