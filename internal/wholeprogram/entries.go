@@ -2,6 +2,7 @@ package wholeprogram
 
 import (
 	"go/types"
+	"sort"
 
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
@@ -101,4 +102,29 @@ func exportedMethods(pkg *ssa.Package) []*ssa.Function {
 		}
 	}
 	return methods
+}
+
+// selectedEntryPoints retains the API-root policy of entryPoints, but applies
+// it only to the original selected packages and deduplicates adapters by SSA
+// identity. Any selected main takes precedence over library API roots. Package
+// initializers are explicit roots, including with a single selected main.
+// Promoted exported methods remain API roots; their declaration and synthetic
+// adapter occurrence ownership is not rewritten to the exposing package.
+func selectedEntryPoints(pkgs []*ssa.Package) []*ssa.Function {
+	entries := entryPoints(pkgs)
+	seen := make(map[*ssa.Function]bool, len(entries))
+	out := make([]*ssa.Function, 0, len(entries))
+	for _, fn := range entries {
+		if fn != nil && !seen[fn] {
+			seen[fn] = true
+			out = append(out, fn)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].String() != out[j].String() {
+			return out[i].String() < out[j].String()
+		}
+		return out[i].Pos() < out[j].Pos()
+	})
+	return out
 }

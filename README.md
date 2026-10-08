@@ -466,3 +466,13 @@ $ ssrf main.go
 `taint scan -coverage [packages]` explains which imported same-module package
 bodies are omitted, on stderr, without changing finding output or scan scope.
 See [body coverage](docs/body-coverage.md) for dependency and workspace limits.
+
+### Selected-package analysis
+
+`taint scan -scope=selected [packages]` opts into exact selected-package roots
+and selected source/sink occurrences while retaining selected-package-only SSA
+bodies. `-scope=legacy` is the unchanged default. External modeled APIs called
+from selected code remain eligible; dependencies do not acquire source bodies.
+See [analysis scope](docs/analysis-scope.md) for initializer, method, mixed
+command/library, and propagation semantics. Add `-coverage` for stderr-only
+profile and body-coverage diagnostics.
