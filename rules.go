@@ -18,11 +18,12 @@ import (
 
 const defaultMaxSummaryDepth = 8
 
-// Option configures CheckDetailed. Options are additive and never mutate the
-// Sources or Sinks values passed by the caller.
+// Option configures CheckDetailed. Options never mutate the Sources or Sinks
+// values passed by the caller. See each option for its composition behavior.
 type Option func(*checkConfig)
 
 type checkConfig struct {
+	matchPackages   map[*types.Package]struct{}
 	extraSources    []string
 	extraSinks      []string
 	sanitizers      []string
@@ -138,6 +139,7 @@ type propagatorRule struct {
 }
 
 type ruleRegistry struct {
+	matchPackages   map[*types.Package]struct{}
 	sources         Sources
 	sinks           Sinks
 	sourceRules     []sourceRule
@@ -185,6 +187,7 @@ func newRuleRegistry(sources Sources, sinks Sinks, cfg checkConfig) *ruleRegistr
 	}
 
 	registry := &ruleRegistry{
+		matchPackages:   cfg.matchPackages,
 		sources:         Sources(mergedSources),
 		sinks:           Sinks(mergedSinks),
 		maxSummaryDepth: maxSummaryDepth,
