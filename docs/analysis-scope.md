@@ -70,3 +70,9 @@ This flag applies only to `taint scan`. Per-package analyzers, interactive mode,
 advisory/vulncheck, and existing evaluation manifests keep their legacy profile.
 Selected-profile evaluations must be recorded separately from default precision
 snapshots. Same-module dependency body expansion is outside this profile.
+
+With `-test`, original and test-augmented packages can share import paths while
+having distinct type identities; each original loaded identity is retained.
+Generated test mains follow the same main-precedence rule. The existing call
+resolver may not connect a test callback from that generated main, so selecting
+tests does not guarantee callback coverage in either profile.
