@@ -64,6 +64,14 @@ Flags:
 - `-sarif-dir` optional directory for per target/analyzer SARIF reports
 - `-jobs` max concurrent target evaluations
 
+Each `check`, `report`, and `update` invocation builds its analyzer binaries
+from `-repo` into a private temporary directory under the cache root, then
+removes them when the run finishes. Existing `cache/bin` executables are ignored;
+there is no need to clear them after editing source. Pinned target repositories
+remain cached. Repeated runs pay the cost of invoking `go build` for each tool,
+while Go's build cache reuses unchanged compilation work. Do not edit the
+analyzer source while an invocation is building its tools.
+
 ## Layout
 
 ```
