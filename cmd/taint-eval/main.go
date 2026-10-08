@@ -232,6 +232,7 @@ func runCheck(ctx context.Context, stdout, stderr io.Writer, repoRoot, cacheOver
 	if err != nil {
 		return err
 	}
+	defer bins.cleanup()
 	runs := runTargets(ctx, targets, jobs, func(c context.Context, t Target) (*Snapshot, error) {
 		root, err := resolveTargetRoot(c, t, cacheDir, manifestDir)
 		if err != nil {
@@ -291,6 +292,7 @@ func runUpdate(ctx context.Context, stdout, stderr io.Writer, repoRoot, cacheOve
 	if err != nil {
 		return err
 	}
+	defer bins.cleanup()
 	runs := runTargets(ctx, targets, jobs, func(c context.Context, t Target) (*Snapshot, error) {
 		root, err := resolveTargetRoot(c, t, cacheDir, manifestDir)
 		if err != nil {

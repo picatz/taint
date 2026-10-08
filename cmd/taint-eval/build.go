@@ -15,18 +15,26 @@ import (
 type binaries struct {
 	analyzer analyzerCommand
 	taint    string
+	cleanup  func()
 }
 
-// buildBinaries compiles the six per-package analyzer binaries and the taint
-// binary into a directory inside the cache and returns lookups for RunTarget.
-// Building once per harness invocation avoids re-compiling for each target;
-// an already-built binary is reused, so clear the cache bin directory to pick
-// up source changes.
+// buildBinaries compiles all tools from repoRoot once per invocation. Go's
+// build cache reuses unchanged compilation work; executables must not be
+// reused across invocations because the source or build environment can change.
+// Each invocation owns its directory, so overlapping runs cannot replace one
+// another's binaries. The caller must defer cleanup after a successful build.
 func buildBinaries(ctx context.Context, cacheDir CacheDir, repoRoot string) (binaries, error) {
-	binDir := filepath.Join(string(cacheDir), "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
+	binDir, err := os.MkdirTemp(string(cacheDir), "bin-")
+	if err != nil {
 		return binaries{}, err
 	}
+	cleanup := func() { _ = os.RemoveAll(binDir) }
+	built := false
+	defer func() {
+		if !built {
+			cleanup()
+		}
+	}()
 	pkgs := map[string]string{
 		"sqli":  "github.com/picatz/taint/cmd/sqli",
 		"logi":  "github.com/picatz/taint/cmd/logi",
@@ -40,9 +48,6 @@ func buildBinaries(ctx context.Context, cacheDir CacheDir, repoRoot string) (bin
 	for name, pkg := range pkgs {
 		bin := filepath.Join(binDir, name+exeSuffix())
 		paths[name] = bin
-		if _, err := os.Stat(bin); err == nil {
-			continue
-		}
 		cmd := exec.CommandContext(ctx, "go", "build", "-o", bin, pkg)
 		cmd.Dir = repoRoot
 		cmd.Env = os.Environ()
@@ -52,7 +57,9 @@ func buildBinaries(ctx context.Context, cacheDir CacheDir, repoRoot string) (bin
 			return binaries{}, fmt.Errorf("go build %s: %w", pkg, err)
 		}
 	}
+	built = true
 	return binaries{
+		cleanup: cleanup,
 		analyzer: func(name string) (string, error) {
 			if bin, ok := paths[name]; ok && name != "taint" {
 				return bin, nil
