@@ -201,7 +201,7 @@ sinks:
 		sinkPaths := findAllSinkCallSitePaths(cfg.ctx, cg, sinkCallSites[i])
 
 		for _, sinkPath := range sinkPaths {
-			if sinkPath.Empty() {
+			if sinkPath.Empty() || !sinkPathInPackages(sinkPath, cfg.matchPackages) {
 				continue
 			}
 			if cfg.ctx.Err() != nil {
@@ -408,7 +408,7 @@ func checkFieldOfValueTainted(path callgraphutil.Path, ctx taintContext, v ssa.V
 	switch val := inner.(type) {
 	case *ssa.Call:
 		// A call that is itself a source taints every field of its result.
-		if src, ok := ctx.matchSourceCall(&val.Call); ok {
+		if src, ok := ctx.matchSourceCall(path, val); ok {
 			return true, src, val.Call.Value
 		}
 		if handled, tainted, src, tv := checkFieldOfCallReturnValues(path, ctx, val, field, -1, visited); handled {
@@ -418,7 +418,7 @@ func checkFieldOfValueTainted(path callgraphutil.Path, ctx taintContext, v ssa.V
 		// A multi-result call (e.g. `x, _ := f()`) yields the struct through an
 		// Extract of one tuple element; follow into that specific return slot.
 		if c, ok := val.Tuple.(*ssa.Call); ok {
-			if src, ok := ctx.matchSourceCall(&c.Call); ok {
+			if src, ok := ctx.matchSourceCall(path, c); ok {
 				return true, src, c.Call.Value
 			}
 			if handled, tainted, src, tv := checkFieldOfCallReturnValues(path, ctx, c, field, val.Index, visited); handled {
@@ -821,6 +821,7 @@ func clonePath(path callgraphutil.Path) callgraphutil.Path {
 }
 
 type taintContext struct {
+	matchPackages   map[*types.Package]struct{}
 	sourceRules     []sourceRule
 	propagators     []propagatorRule
 	maxSummaryDepth int
@@ -851,12 +852,16 @@ func newTaintContextFromRegistry(rules *ruleRegistry) taintContext {
 	}
 	return taintContext{
 		sourceRules:     rules.sourceRules,
+		matchPackages:   rules.matchPackages,
 		propagators:     rules.propagators,
 		maxSummaryDepth: maxSummaryDepth,
 	}
 }
 
-func (ctx taintContext) matchSourceType(t types.Type) (string, bool) {
+func (ctx taintContext) matchSourceType(path callgraphutil.Path, t types.Type, occurrence ssa.Value) (string, bool) {
+	if !ctx.matchesOccurrence(path, occurrence) {
+		return "", false
+	}
 	for _, rule := range ctx.sourceRules {
 		if rule.matchType != nil && rule.matchType(t) {
 			return rule.id, true
@@ -912,7 +917,10 @@ func fieldName(f *ssa.Field) string {
 
 // matchSourceField reports whether accessing fieldName of a value of baseType
 // matches a field-sensitive source.
-func (ctx taintContext) matchSourceField(baseType types.Type, fieldName string) (string, bool) {
+func (ctx taintContext) matchSourceField(path callgraphutil.Path, baseType types.Type, fieldName string, occurrence ssa.Value) (string, bool) {
+	if !ctx.matchesOccurrence(path, occurrence) {
+		return "", false
+	}
 	if fieldName == "" {
 		return "", false
 	}
@@ -935,7 +943,11 @@ func (ctx taintContext) hasFieldSource(baseType types.Type) bool {
 	return false
 }
 
-func (ctx taintContext) matchSourceCall(call *ssa.CallCommon) (string, bool) {
+func (ctx taintContext) matchSourceCall(path callgraphutil.Path, occurrence *ssa.Call) (string, bool) {
+	if occurrence == nil || !ctx.matchesOccurrence(path, occurrence) {
+		return "", false
+	}
+	call := &occurrence.Call
 	for _, rule := range ctx.sourceRules {
 		if rule.matchCall != nil && rule.matchCall(call) {
 			return rule.id, true
@@ -944,11 +956,11 @@ func (ctx taintContext) matchSourceCall(call *ssa.CallCommon) (string, bool) {
 	return "", false
 }
 
-func (ctx taintContext) matchSourceValue(v ssa.Value) (string, bool) {
-	if v == nil || v.Type() == nil {
+func (ctx taintContext) matchSourceValue(path callgraphutil.Path, v ssa.Value) (string, bool) {
+	if v == nil || v.Type() == nil || !ctx.matchesOccurrence(path, v) {
 		return "", false
 	}
-	if src, ok := ctx.matchSourceType(v.Type()); ok {
+	if src, ok := ctx.matchSourceType(path, v.Type(), v); ok {
 		return src, true
 	}
 	for _, rule := range ctx.sourceRules {
@@ -1044,7 +1056,7 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 		// parameter, fall back to source-type matching. This keeps external
 		// entrypoints and framework-dispatched handler parameters useful as
 		// source roots without over-tainting ordinary helper parameters.
-		if src, ok := ctx.matchSourceType(value.Type()); ok {
+		if src, ok := ctx.matchSourceType(path, value.Type(), value); ok {
 			return true, src, value
 		}
 		// Function calls can be a little tricky. We need to check a few things.
@@ -1053,7 +1065,7 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 		// 3. See if the call value calls a source (anonymous functions).
 	case *ssa.Call:
 		// 1. Handle the case where we finally called a source.
-		if src, ok := ctx.matchSourceCall(&value.Call); ok {
+		if src, ok := ctx.matchSourceCall(path, value); ok {
 			return true, src, value.Call.Value
 		}
 		if tainted, src, tv := checkReceiverBufferedWrites(path, ctx, value, visited); tainted {
@@ -1096,16 +1108,16 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 			// where the bytes legitimately carry receiver data).
 			recv := callReceiver(&value.Call)
 			if recv != nil {
-				if src, ok := ctx.matchSourceType(recv.Type()); ok {
+				if src, ok := ctx.matchSourceType(path, recv.Type(), value); ok {
 					return true, src, recv
 				}
 				if tainted, src, tv := checkSSAValueWithContext(path, ctx, recv, visited); tainted {
 					return true, src, tv
 				}
-				if src, base := derivedFromSourceWithContext(recv, ctx); src != "" {
+				if src, base := derivedFromSourceWithContext(path, recv, ctx); src != "" {
 					return true, src, base
 				}
-				if src, base := isExpressionDerivedFromSourceWithContext(recv, ctx); src != "" {
+				if src, base := isExpressionDerivedFromSourceWithContext(path, recv, ctx); src != "" {
 					return true, src, base
 				}
 			}
@@ -1251,13 +1263,13 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 		// source taints only its named field, so this is where a by-value field
 		// read of a field-source is recognized (the address form is handled in
 		// the FieldAddr case).
-		if src, ok := ctx.matchSourceField(value.X.Type(), fieldName(value)); ok {
+		if src, ok := ctx.matchSourceField(path, value.X.Type(), fieldName(value), value); ok {
 			return true, src, value
 		}
-		if src, ok := ctx.matchSourceType(value.X.Type()); ok {
+		if src, ok := ctx.matchSourceType(path, value.X.Type(), value); ok {
 			return true, src, value
 		}
-		if src, base := isExpressionDerivedFromSourceWithContext(value.X, ctx); src != "" {
+		if src, base := isExpressionDerivedFromSourceWithContext(path, value.X, ctx); src != "" {
 			return true, src, base
 		}
 		// A field-sensitive source on the base type must not leak one field's
@@ -1283,16 +1295,16 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 			=? "*net/http.Request"
 		*/
 		// A field-sensitive source taints only accesses to its named field.
-		if src, ok := ctx.matchSourceField(value.X.Type(), fieldAddrName(value)); ok {
+		if src, ok := ctx.matchSourceField(path, value.X.Type(), fieldAddrName(value), value); ok {
 			return true, src, value
 		}
 		// If the base of the field address is a source (directly or via proto message),
 		// then any field access derived from it is also tainted.
-		if src, ok := ctx.matchSourceType(value.X.Type()); ok {
+		if src, ok := ctx.matchSourceType(path, value.X.Type(), value); ok {
 			return true, src, value
 		}
 		// Also check if the base expression derives from a source via operand chains.
-		if src, base := isExpressionDerivedFromSourceWithContext(value.X, ctx); src != "" {
+		if src, base := isExpressionDerivedFromSourceWithContext(path, value.X, ctx); src != "" {
 			return true, src, base
 		}
 
@@ -1413,7 +1425,7 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 					}
 				}
 				if len(effects) == 0 {
-					if src, base := isExpressionDerivedFromSourceWithContext(value.X, ctx); src != "" {
+					if src, base := isExpressionDerivedFromSourceWithContext(path, value.X, ctx); src != "" {
 						return true, src, base
 					}
 				}
@@ -1993,7 +2005,7 @@ func receiverTypeCandidatesForTaint(t types.Type) []types.Type {
 // derivedFromSourceWithContext attempts to walk backwards from v following common
 // address/field/index chains to find a base value whose static type matches a declared
 // source. Returns the source string and the base value if found.
-func derivedFromSourceWithContext(v ssa.Value, ctx taintContext) (string, ssa.Value) {
+func derivedFromSourceWithContext(path callgraphutil.Path, v ssa.Value, ctx taintContext) (string, ssa.Value) {
 	seen := map[ssa.Value]struct{}{}
 	var work []ssa.Value
 	work = append(work, v)
@@ -2004,7 +2016,17 @@ func derivedFromSourceWithContext(v ssa.Value, ctx taintContext) (string, ssa.Va
 			continue
 		}
 		seen[cur] = struct{}{}
-		if src, ok := ctx.matchSourceValue(cur); ok {
+		// Scoped derived-value seeding must follow the concrete caller binding
+		// before considering a helper parameter as a fresh source occurrence.
+		if ctx.matchPackages != nil {
+			if param, ok := cur.(*ssa.Parameter); ok {
+				if arg, _, bound := callArgForParameterOnPath(path, param); bound {
+					work = append(work, arg)
+					continue
+				}
+			}
+		}
+		if src, ok := ctx.matchSourceValue(path, cur); ok {
 			return src, cur
 		}
 		switch c := cur.(type) {
@@ -2043,7 +2065,7 @@ func derivedFromSourceWithContext(v ssa.Value, ctx taintContext) (string, ssa.Va
 // operand graph starting from the given SSA value to determine if any sub-expression
 // ultimately derives from a source type. Unlike derivedFromSourceWithContext which
 // follows referrer chains outward, this function follows operand chains inward.
-func isExpressionDerivedFromSourceWithContext(v ssa.Value, ctx taintContext) (string, ssa.Value) {
+func isExpressionDerivedFromSourceWithContext(path callgraphutil.Path, v ssa.Value, ctx taintContext) (string, ssa.Value) {
 	seen := map[ssa.Value]struct{}{}
 	var work []ssa.Value
 	work = append(work, v)
@@ -2056,9 +2078,19 @@ func isExpressionDerivedFromSourceWithContext(v ssa.Value, ctx taintContext) (st
 			continue
 		}
 		seen[cur] = struct{}{}
+		// Scoped derived-value seeding must follow the concrete caller binding
+		// before considering a helper parameter as a fresh source occurrence.
+		if ctx.matchPackages != nil {
+			if param, ok := cur.(*ssa.Parameter); ok {
+				if arg, _, bound := callArgForParameterOnPath(path, param); bound {
+					work = append(work, arg)
+					continue
+				}
+			}
+		}
 
 		// Check if this value's type is a source.
-		if src, ok := ctx.matchSourceValue(cur); ok {
+		if src, ok := ctx.matchSourceValue(path, cur); ok {
 			return src, cur
 		}
 
