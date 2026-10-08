@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"go/types"
 	"reflect"
+	"strings"
 	"testing"
 
 	"golang.org/x/tools/go/callgraph"
@@ -228,5 +229,39 @@ func TestExactEntriesLeavesLegacySelectionUnchanged(t *testing.T) {
 	}
 	if _, _, err := CreateMultiRootCallGraph(prog, []*ssa.Function{f["example/a.init"]}); err == nil {
 		t.Fatal("legacy initializer-only selection unexpectedly changed")
+	}
+}
+
+// Cancel from synchronous logging rather than timing a goroutine against a tiny
+// graph. The completion case exercises cancellation after a graph was built.
+type cancelExactEntryWriter struct {
+	trigger string
+	cancel  context.CancelFunc
+	fired   bool
+}
+
+func (w *cancelExactEntryWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), w.trigger) {
+		w.fired = true
+		w.cancel()
+	}
+	return len(p), nil
+}
+func TestCreateCallGraphFromEntriesCancellationDuringConstruction(t *testing.T) {
+	for _, trigger := range []string{"Prepass: scanning", "Call graph construction completed"} {
+		t.Run(trigger, func(t *testing.T) {
+			prog, f := exactEntryFixture(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			writer := &cancelExactEntryWriter{trigger: trigger, cancel: cancel}
+			ctx = WithLogger(ctx, NewLogger(LogLevelInfo, writer))
+			graph, root, err := CreateCallGraphFromEntries(ctx, prog, []*ssa.Function{f["example/a.init"]})
+			if !writer.fired {
+				t.Fatal("cancellation trigger was not reached")
+			}
+			if !errors.Is(err, context.Canceled) || graph != nil || root != nil {
+				t.Fatalf("got (%v, %v, %v), want nil graph/root and context.Canceled", graph, root, err)
+			}
+		})
 	}
 }
