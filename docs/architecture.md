@@ -46,7 +46,11 @@ keep siblings separate, while unknown indices may alias any element. A copied
 array is read at its original load, not at a later use of the copy. Explicit
 summary models still apply even when a callee body appears clean. Escaped memory
 falls back to the existing analysis; this is not a complete array-alias model,
-and generic pointer-write summaries remain a known limitation.
+including general nested helper effects. Void generic instantiation wrappers
+that only forward parameters positionally through type changes are summarized
+using their original bodies, preserving the selected pointer path. Dynamic
+helper indices remain possible writes rather than definite overwrites; constant
+paths into entry-block array allocations can prove direct local overwrites.
 
 ## Rule Registries
 

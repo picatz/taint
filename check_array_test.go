@@ -72,9 +72,6 @@ func TestCheckDetailedArrayElements(t *testing.T) {
 				{"loop_tainted", `var a T;for i:=0;i<2;i++ {a[i]=source()};sink(a[0])`, 1},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
-					if generic && tc.name == "escaped_pointer_write" {
-						t.Skip("existing generic pointer-write summary gap; not an array-value copy")
-					}
 					cg, pkg := detailedGraphForSourceRoot(t, `package main
 `+alias+`
 func source() string{return "user"}

@@ -23,6 +23,7 @@ package taint
 
 import (
 	"go/token"
+	"go/types"
 	"slices"
 
 	"golang.org/x/tools/go/callgraph"
@@ -222,6 +223,66 @@ func storeMatchesLoadPath(storeAddr ssa.Value, loadSteps []addrStep, paramArgs m
 	total = append(total, argSteps...)
 	total = append(total, storeSteps...)
 	return addrStepsMayAlias(loadSteps, total)
+}
+
+// storeDefinitelyMatchesLoadPath requires one exact, stable address path.
+// A dynamic index may alias the selected slot but cannot prove an overwrite.
+func storeDefinitelyMatchesLoadPath(storeAddr ssa.Value, loadSteps []addrStep, paramArgs map[ssa.Value]ssa.Value, loadBase ssa.Value) bool {
+	storeBase := memoryBase(storeAddr)
+	arg, ok := paramArgs[storeBase]
+	if !ok {
+		return false
+	}
+	storeSteps, ok := addressPathStepsFromBase(storeAddr, storeBase)
+	if !ok {
+		return false
+	}
+	argSteps, ok := addressPathStepsFromBase(arg, loadBase)
+	if !ok {
+		return false
+	}
+	return exactAddressSteps(loadSteps, append(argSteps, storeSteps...))
+}
+
+func exactAddressSteps(a, b []addrStep) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].kind != b[i].kind {
+			return false
+		}
+		switch a[i].kind {
+		case addrStepField:
+			if a[i].field != b[i].field {
+				return false
+			}
+		case addrStepIndex:
+			x, xok := intConstant(a[i].index)
+			y, yok := intConstant(b[i].index)
+			if !xok || !yok || x != y {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// stableLocalArrayAddress excludes loop-carried bases and indices. An entry
+// allocation and constant element path name the same slot across every use.
+func stableLocalArrayAddress(addr ssa.Value) bool {
+	base, ok := memoryBase(addr).(*ssa.Alloc)
+	if !ok || base.Block() == nil || len(base.Block().Preds) != 0 {
+		return false
+	}
+	ptr, ok := base.Type().Underlying().(*types.Pointer)
+	if !ok || !isArrayValueType(ptr.Elem()) {
+		return false
+	}
+	steps, ok := addressPathStepsFromBase(addr, base)
+	return ok && exactAddressSteps(steps, steps)
 }
 
 // addrStepsPrefixAlias reports whether two address paths may refer to
@@ -520,11 +581,54 @@ func calleeParamsAliasingBase(call *ssa.Call, targetBase ssa.Value) (*ssa.Functi
 	return callee, params
 }
 
+// pointerSummaryCallee removes only a proven generic instantiation forwarding
+// wrapper. Such wrappers change parameter types without changing the pointed-to
+// memory. Summarizing their original body preserves the selected address path;
+// the general nested-call fallback otherwise queries the whole parameter.
+func pointerSummaryCallee(fn *ssa.Function) *ssa.Function {
+	if fn == nil || fn.Origin() == nil || fn.Origin() == fn || len(fn.Blocks) != 1 {
+		return fn
+	}
+	origin := fn.Origin()
+	if len(origin.Params) != len(fn.Params) || fn.Signature.Results().Len() != 0 {
+		return fn
+	}
+	var forwarded *ssa.Call
+	for _, instr := range fn.Blocks[0].Instrs {
+		switch v := instr.(type) {
+		case *ssa.ChangeType:
+		case *ssa.Call:
+			if forwarded != nil || v.Call.StaticCallee() != origin || len(v.Call.Args) != len(fn.Params) {
+				return fn
+			}
+			for i, arg := range v.Call.Args {
+				if change, ok := arg.(*ssa.ChangeType); ok {
+					arg = change.X
+				}
+				if arg != fn.Params[i] {
+					return fn
+				}
+			}
+			forwarded = v
+		case *ssa.Return:
+			if len(v.Results) != 0 || forwarded == nil {
+				return fn
+			}
+		default:
+			return fn
+		}
+	}
+	if forwarded == nil {
+		return fn
+	}
+	return origin
+}
+
 func calleeParamArgsAliasingBase(call *ssa.Call, targetBase ssa.Value) (*ssa.Function, map[ssa.Value]ssa.Value) {
 	if call == nil || targetBase == nil {
 		return nil, nil
 	}
-	callee := staticCallee(&call.Call)
+	callee := pointerSummaryCallee(staticCallee(&call.Call))
 	if callee == nil || len(callee.Blocks) == 0 {
 		return nil, nil
 	}
@@ -647,11 +751,11 @@ func memoryDefsForLoadWithLimit(load *ssa.UnOp, includeSynthetic bool, maxDepth 
 	for _, store := range storesForAddress(load.X) {
 		defs = append(defs, memoryDef{instr: store, value: store.Val, definite: true})
 	}
-	// Sibling stores are visible but never definite: across a loop back edge
-	// the shared loop-carried base or index names a different element, so a
-	// sibling "clean" store must not kill an earlier tainted def on the path.
+	// Sibling stores are normally only possible: loop-carried bases or indices
+	// can name a different element. A constant path into a single entry-block
+	// array allocation is stable and can prove an overwrite.
 	for _, store := range siblingStoresForAddress(load.X) {
-		defs = append(defs, memoryDef{instr: store, value: store.Val, definite: false})
+		defs = append(defs, memoryDef{instr: store, value: store.Val, definite: stableLocalArrayAddress(load.X)})
 	}
 	if !includeSynthetic || load.Parent() == nil || maxDepth <= 0 {
 		return defs
@@ -819,14 +923,22 @@ func storesForAddress(addr ssa.Value) []*ssa.Store {
 	return out
 }
 
+func sameIndexValue(a, b ssa.Value) bool {
+	if a == b {
+		return true
+	}
+	x, xok := intConstant(a)
+	y, yok := intConstant(b)
+	return xok && yok && x == y
+}
+
 // siblingStoresForAddress returns stores through sibling address values naming
 // the same memory as addr: a second &x.F (or &x[i] with the same index value)
 // is a distinct SSA value but the identical address within one execution, and
 // a store through it must be visible to a load through addr, or the
 // reaching-defs answer hides that store (a false negative when it was the
-// tainted one). Callers must treat these defs as possible rather than definite:
-// across a loop back edge the shared loop-carried base or index names a
-// different element, so a sibling store has no kill power.
+// tainted one). Callers must prove address stability before treating these
+// defs as definite: loop-carried bases or indices can name different elements.
 func siblingStoresForAddress(addr ssa.Value) []*ssa.Store {
 	var out []*ssa.Store
 	switch a := addr.(type) {
@@ -844,7 +956,7 @@ func siblingStoresForAddress(addr ssa.Value) []*ssa.Store {
 		if refs := a.X.Referrers(); refs != nil {
 			for _, ref := range *refs {
 				sib, ok := ref.(*ssa.IndexAddr)
-				if !ok || sib == a || sib.X != a.X || sib.Index != a.Index {
+				if !ok || sib == a || sib.X != a.X || !sameIndexValue(sib.Index, a.Index) {
 					continue
 				}
 				out = append(out, storesForAddress(sib)...)
@@ -898,7 +1010,7 @@ func directCalleeStoresRecursive(call *ssa.Call, loadAddr ssa.Value, depth int, 
 				if loadPathOK && !storeMatchesLoadPath(store.Addr, loadSteps, paramArgs, targetBase) {
 					continue
 				}
-				defs = append(defs, memoryDef{instr: store, value: store.Val, definite: true})
+				defs = append(defs, memoryDef{instr: store, value: store.Val, definite: loadPathOK && storeDefinitelyMatchesLoadPath(store.Addr, loadSteps, paramArgs, targetBase)})
 				continue
 			}
 			if depth <= 1 {
