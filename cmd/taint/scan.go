@@ -71,7 +71,15 @@ Flags:
   -tags list        comma-separated build tags
   -test             include test files and packages
   -scope profile    analysis profile: legacy or selected (default legacy)
-  -coverage         explain selected-package SSA body coverage on stderr
+  -bodies mode      SSA body inputs: selected or same-module (default selected)
+  -max-body-packages N
+                    maximum additional dependency packages (same-module only)
+  -max-body-syntax-bytes N
+                    maximum additional parsed syntax bytes (same-module only)
+  -coverage         explain SSA body coverage on stderr
+
+Same-module bodies require -scope=selected and both limits explicitly positive.
+Limits bound additional parsed inputs, not RSS, execution time, or total SSA size.
 
 Exit status is 0 when nothing is found, 3 when findings are reported, and 1 on
 error.
@@ -86,14 +94,20 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() { fmt.Fprint(stderr, scanUsage) }
 
 	var (
-		dir      string
-		format   string
-		which    string
-		tags     string
-		tests    bool
-		coverage bool
-		scope    string
+		dir                string
+		format             string
+		which              string
+		tags               string
+		tests              bool
+		coverage           bool
+		scope              string
+		bodies             string
+		maxBodyPackages    int
+		maxBodySyntaxBytes int64
 	)
+	fs.StringVar(&bodies, "bodies", "selected", "SSA body inputs: selected or same-module")
+	fs.IntVar(&maxBodyPackages, "max-body-packages", 0, "maximum additional dependency packages (same-module only)")
+	fs.Int64Var(&maxBodySyntaxBytes, "max-body-syntax-bytes", 0, "maximum additional parsed syntax bytes (same-module only)")
 	fs.StringVar(&scope, "scope", "legacy", "analysis profile: legacy or selected")
 	fs.StringVar(&dir, "C", "", "change to `dir` before scanning")
 	fs.StringVar(&format, "format", "text", "output `format`: text, json, or sarif")
@@ -113,6 +127,25 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "taint scan: unknown -scope %q (want legacy or selected)\n", scope)
 		return scanExitError
 	}
+	switch wholeprogram.Bodies(bodies) {
+	case wholeprogram.BodiesSelected:
+		if maxBodyPackages != 0 || maxBodySyntaxBytes != 0 {
+			fmt.Fprintln(stderr, "taint scan: -bodies=selected requires zero -max-body-packages and -max-body-syntax-bytes")
+			return scanExitError
+		}
+	case wholeprogram.BodiesSameModule:
+		if scope != string(wholeprogram.ScopeSelected) {
+			fmt.Fprintln(stderr, "taint scan: -bodies=same-module requires -scope=selected")
+			return scanExitError
+		}
+		if maxBodyPackages <= 0 || maxBodySyntaxBytes <= 0 {
+			fmt.Fprintln(stderr, "taint scan: -bodies=same-module requires explicit positive -max-body-packages and -max-body-syntax-bytes")
+			return scanExitError
+		}
+	default:
+		fmt.Fprintf(stderr, "taint scan: unknown -bodies %q (want selected or same-module)\n", bodies)
+		return scanExitError
+	}
 	switch format {
 	case "text", "json", "sarif":
 	default:
@@ -128,6 +161,8 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stderr, "taint scan: loading packages...")
 	prog, err := wholeprogram.Load(ctx, wholeprogram.Config{
 		Scope:      wholeprogram.Scope(scope),
+		Bodies:     wholeprogram.Bodies(bodies),
+		BodyLimits: wholeprogram.BodyLimits{MaxAdditionalPackages: maxBodyPackages, MaxAdditionalSyntaxBytes: maxBodySyntaxBytes},
 		Dir:        dir,
 		Patterns:   fs.Args(),
 		Tests:      tests,
@@ -139,10 +174,14 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	if coverage {
-		if prog.Scope == wholeprogram.ScopeSelected {
-			fmt.Fprintln(stderr, "taint scan: scope=selected; exact selected roots, selected source/sink occurrences, selected bodies only")
+		if prog.Bodies == wholeprogram.BodiesSameModule {
+			writeSameModuleBodyCoverage(stderr, prog.BodyCoverage(), prog.BodyLimits)
+		} else {
+			if prog.Scope == wholeprogram.ScopeSelected {
+				fmt.Fprintln(stderr, "taint scan: scope=selected; exact selected roots, selected source/sink occurrences, selected bodies only")
+			}
+			writeBodyCoverage(stderr, prog.BodyCoverage())
 		}
-		writeBodyCoverage(stderr, prog.BodyCoverage())
 	}
 
 	var opts []taint.Option
@@ -347,4 +386,24 @@ func writeBodyCoverage(w io.Writer, c wholeprogram.BodyCoverage) {
 		fmt.Fprintf(w, "  unbuilt same-module dependency: %s\n", id)
 	}
 	fmt.Fprintf(w, "taint scan: %d other dependency package(s) (including standard library or unknown module identity); dependency bodies are not built. This is package coverage, not a completeness guarantee.\n", c.OtherDependencies)
+}
+
+// writeSameModuleBodyCoverage reports opt-in inputs without changing the legacy diagnostic.
+func writeSameModuleBodyCoverage(w io.Writer, c wholeprogram.BodyCoverage, limits wholeprogram.BodyLimits) {
+	fmt.Fprintln(w, "taint scan: scope=selected; bodies=same-module; exact selected roots and selected source/sink occurrences")
+	fmt.Fprintf(w, "taint scan: SSA body inputs: %d selected package(s), %d built same-module dependency package(s), %d omitted eligible same-module dependency package(s).\n", len(c.SelectedPackages), len(c.BuiltSameModuleDependencies), len(c.SameModuleDependencies)-len(c.BuiltSameModuleDependencies))
+	fmt.Fprintf(w, "taint scan: additional body budgets: packages=%d/%d; parsed syntax bytes=%d/%d (used/allowed).\n", len(c.BuiltSameModuleDependencies), limits.MaxAdditionalPackages, c.AdditionalSyntaxBytes, limits.MaxAdditionalSyntaxBytes)
+	for _, id := range c.SelectedPackages {
+		fmt.Fprintf(w, "  selected body input: %s\n", id)
+	}
+	for _, id := range c.BuiltSameModuleDependencies {
+		fmt.Fprintf(w, "  built same-module dependency: %s\n", id)
+	}
+	for _, id := range c.SameModuleDependencies {
+		if !slices.Contains(c.BuiltSameModuleDependencies, id) {
+			fmt.Fprintf(w, "  omitted same-module dependency: %s\n", id)
+		}
+	}
+	fmt.Fprintf(w, "taint scan: %d other dependency package(s) excluded (including standard library or unknown module identity); their source bodies are not built. This is package coverage, not a completeness guarantee.\n", c.OtherDependencies)
+	fmt.Fprintln(w, "taint scan: budgets bound additional parsed inputs, not RSS, execution time, or total SSA size; cancellation cannot promptly interrupt SSA construction or build.")
 }

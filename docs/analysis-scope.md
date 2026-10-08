@@ -14,8 +14,9 @@ separate controls:
   `net/http`, `database/sql`, framework, and other modeled APIs inside selected
   code remain eligible. Selecting packages does not make all their values tainted.
 - **Bodies:** only original selected packages are inputs to SSA source-body
-  construction. Imported dependency bodies are not added, even within the same
-  module. Select a helper package explicitly when its source body is needed.
+  construction by default (`-bodies=selected`). Opt-in `-bodies=same-module`
+  adds eligible imported bodies under explicit package and parsed-byte budgets,
+  without expanding roots or source/sink ownership. See [body coverage](body-coverage.md).
 
 The default is `-scope=legacy`, also used when the flag is absent. Default roots,
 matching, output formats, exit codes, and precision baselines are unchanged.
@@ -43,8 +44,8 @@ Closures and instantiated generic bodies use the existing package/origin
 ownership rules. Propagation and sanitizers are not restricted by occurrence
 scope: existing taint may pass through a helper with an available body without
 allowing that helper to introduce an out-of-scope source or sink. With this
-selected-body-only profile, an ordinary unselected imported helper has no source
-body to inspect. Opaque calls retain existing model and summary behavior; no
+default selected-body-only mode, an ordinary unselected imported helper has no
+source body to inspect. The bounded same-module mode can provide that body. Opaque calls retain existing model and summary behavior; no
 blanket propagation or taint rule is added.
 
 ## Diagnostics and APIs
@@ -69,7 +70,8 @@ context takes precedence over an options-supplied context.
 This flag applies only to `taint scan`. Per-package analyzers, interactive mode,
 advisory/vulncheck, and existing evaluation manifests keep their legacy profile.
 Selected-profile evaluations must be recorded separately from default precision
-snapshots. Same-module dependency body expansion is outside this profile.
+snapshots. Bounded same-module dependency bodies require this selected profile
+and both explicit positive additional-input budgets.
 
 With `-test`, original and test-augmented packages can share import paths while
 having distinct type identities; each original loaded identity is retained.

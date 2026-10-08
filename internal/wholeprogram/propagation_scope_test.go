@@ -73,6 +73,19 @@ func TestSelectedProfileHelperBodyAndOccurrenceBoundaries(t *testing.T) {
 	if got := check(omitted, omitted.MatchPackages); !reflect.DeepEqual(got, map[string]int{"Direct": 1}) {
 		t.Fatalf("unselected opaque helper: %v", got)
 	}
+	expanded, err := Load(context.Background(), Config{Dir: dir, Patterns: []string{"./caller"}, Scope: ScopeSelected, Bodies: BodiesSameModule, BodyLimits: BodyLimits{MaxAdditionalPackages: 2, MaxAdditionalSyntaxBytes: 10000}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := check(expanded, expanded.MatchPackages); !reflect.DeepEqual(got, map[string]int{"Direct": 1, "Propagate": 1}) {
+		t.Fatalf("same-module occurrence scope: %v", got)
+	}
+	if !reflect.DeepEqual(entryNames(omitted), entryNames(expanded)) {
+		t.Fatalf("body expansion changed roots: %v / %v", entryNames(omitted), entryNames(expanded))
+	}
+	if len(expanded.Packages) != 1 || len(expanded.MatchPackages) != 1 || expanded.MatchPackages[0] != expanded.Packages[0].Types {
+		t.Fatal("body expansion changed selected identities")
+	}
 	loaded, err := Load(context.Background(), Config{Dir: dir, Patterns: []string{"./caller", "./helper"}, Scope: ScopeSelected})
 	if err != nil {
 		t.Fatal(err)
