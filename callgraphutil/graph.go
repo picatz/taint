@@ -482,7 +482,7 @@ func checkBlockInstructionOptimized(root *ssa.Function, allFns map[*ssa.Function
 	}
 
 	cc := callSite.Common()
-	instrCalls := resolveCallTargets(root.Prog, allFns, cc)
+	instrCalls := resolveCallTargets(root.Prog, cc)
 
 	if len(instrCalls) == 0 {
 		switch callt := cc.Value.(type) {
@@ -553,7 +553,7 @@ func checkBlockInstructionOptimized(root *ssa.Function, allFns map[*ssa.Function
 	return nil
 }
 
-func resolveCallTargets(prog *ssa.Program, allFns map[*ssa.Function]bool, cc *ssa.CallCommon) []*ssa.Function {
+func resolveCallTargets(prog *ssa.Program, cc *ssa.CallCommon) []*ssa.Function {
 	if cc == nil {
 		return nil
 	}
@@ -566,7 +566,7 @@ func resolveCallTargets(prog *ssa.Program, allFns map[*ssa.Function]bool, cc *ss
 
 	var targets []*ssa.Function
 	for _, recvType := range concreteReceiverTypes(cc.Value) {
-		targets = append(targets, concreteMethodsForInvoke(prog, allFns, recvType, cc.Method)...)
+		targets = append(targets, concreteMethodsForInvoke(prog, recvType, cc.Method)...)
 	}
 	if len(targets) > 0 {
 		return dedupeFunctions(targets)
@@ -628,68 +628,26 @@ func concreteReceiverTypes(v ssa.Value) []types.Type {
 	return uniqueTypes(out)
 }
 
-func concreteMethodsForInvoke(prog *ssa.Program, allFns map[*ssa.Function]bool, recvType types.Type, method *types.Func) []*ssa.Function {
+// concreteMethodsForInvoke resolves the method selection for the actual dynamic
+// receiver type. A types.Func alone is insufficient: the declared method, bound
+// closure and method-expression thunk may all have the same Object(), but only
+// the method selection has the receiver convention required by an interface call.
+func concreteMethodsForInvoke(prog *ssa.Program, recvType types.Type, method *types.Func) []*ssa.Function {
 	if prog == nil || recvType == nil || method == nil {
 		return nil
 	}
-
-	var targets []*ssa.Function
-	for _, candidateType := range receiverTypeCandidates(recvType) {
-		methodSet := prog.MethodSets.MethodSet(candidateType)
-		if methodSet == nil {
-			continue
-		}
-		sel := methodSet.Lookup(method.Pkg(), method.Name())
-		if sel == nil {
-			continue
-		}
-		if fn := functionForMethodObject(allFns, sel.Obj()); fn != nil {
-			targets = append(targets, fn)
-			continue
-		}
-		targets = append(targets, functionsMatchingReceiver(allFns, candidateType, method.Name())...)
-	}
-	return dedupeFunctions(targets)
-}
-
-func functionForMethodObject(allFns map[*ssa.Function]bool, obj types.Object) *ssa.Function {
-	if obj == nil {
+	selection := prog.MethodSets.MethodSet(recvType).Lookup(method.Pkg(), method.Name())
+	if selection == nil {
 		return nil
 	}
-	for fn := range allFns {
-		if fn != nil && fn.Object() == obj {
-			return fn
-		}
+	// MethodValue supplies promotion/indirection wrappers and concrete generic
+	// instances when needed. Do not filter synthetic functions or absent bodies:
+	// wrappers are executable adapters, and declarations can still match rules.
+	// Interface and uninstantiated generic selections have no implementation.
+	if fn := prog.MethodValue(selection); fn != nil {
+		return []*ssa.Function{fn}
 	}
 	return nil
-}
-
-func functionsMatchingReceiver(allFns map[*ssa.Function]bool, recvType types.Type, methodName string) []*ssa.Function {
-	var out []*ssa.Function
-	for fn := range allFns {
-		if fn == nil || fn.Name() != methodName || fn.Signature == nil || fn.Signature.Recv() == nil {
-			continue
-		}
-		fnRecv := fn.Signature.Recv().Type()
-		if types.Identical(fnRecv, recvType) || types.AssignableTo(recvType, fnRecv) || types.AssignableTo(fnRecv, recvType) {
-			out = append(out, fn)
-		}
-	}
-	return out
-}
-
-func receiverTypeCandidates(t types.Type) []types.Type {
-	if t == nil {
-		return nil
-	}
-	candidates := []types.Type{t}
-	if _, ok := t.(*types.Pointer); !ok {
-		candidates = append(candidates, types.NewPointer(t))
-	}
-	if ptr, ok := t.(*types.Pointer); ok {
-		candidates = append(candidates, ptr.Elem())
-	}
-	return uniqueTypes(candidates)
 }
 
 func uniqueTypes(typesIn []types.Type) []types.Type {
