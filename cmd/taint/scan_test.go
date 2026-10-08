@@ -2,10 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"go/token"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/picatz/taint/internal/wholeprogram"
 )
 
 func TestSelectScanDetectors(t *testing.T) {
@@ -129,5 +134,53 @@ func TestWriteScanSARIFRuleID(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "sqli/potential-sql-injection") {
 		t.Errorf("SARIF missing detailed rule id:\n%s", buf.String())
+	}
+}
+
+func TestWriteBodyCoverage(t *testing.T) {
+	var out bytes.Buffer
+	writeBodyCoverage(&out, wholeprogram.BodyCoverage{
+		SelectedPackages:       []string{"example.com/a/caller"},
+		SameModuleDependencies: []string{"example.com/a/helper"},
+		OtherDependencies:      3,
+	})
+	for _, want := range []string{"1 selected package(s)", "1 same-module dependency", "unbuilt same-module dependency: example.com/a/helper", "3 other dependency", "not a completeness guarantee"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing %q: %s", want, out.String())
+		}
+	}
+}
+
+func TestScanCoverageDoesNotChangeFindings(t *testing.T) {
+	t.Setenv("GOWORK", "off")
+	dir, err := filepath.Abs("../../internal/wholeprogram/testdata/bodycoverage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range []string{"text", "json", "sarif"} {
+		for _, expanded := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/expanded=%v", format, expanded), func(t *testing.T) {
+				var plain, explained, plainErr, explainedErr bytes.Buffer
+				args := []string{"-C", dir, "-format", format, "-analyzers", "sqli"}
+				patterns := []string{"./caller"}
+				wantCode := scanExitClean
+				if expanded {
+					patterns = append(patterns, "./helper")
+					wantCode = scanExitFindings
+				}
+				plainCode := runScan(context.Background(), append(append([]string(nil), args...), patterns...), &plain, &plainErr)
+				flagged := append(append([]string(nil), args...), "-coverage")
+				coverageCode := runScan(context.Background(), append(flagged, patterns...), &explained, &explainedErr)
+				if plainCode != wantCode || coverageCode != plainCode || plain.String() != explained.String() {
+					t.Fatalf("changed result: %d/%d %s/%s", plainCode, coverageCode, plain.String(), explained.String())
+				}
+				if strings.Contains(plainErr.String(), "SSA bodies") || !strings.Contains(explainedErr.String(), "SSA bodies") {
+					t.Fatalf("diagnostic opt-in: %s / %s", plainErr.String(), explainedErr.String())
+				}
+				if !expanded && !strings.Contains(explainedErr.String(), "unbuilt same-module dependency: example.com/bodycoverage/helper") {
+					t.Fatal(explainedErr.String())
+				}
+			})
+		}
 	}
 }

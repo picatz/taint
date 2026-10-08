@@ -70,6 +70,7 @@ Flags:
   -format format    output format: text, json, or sarif (default text)
   -tags list        comma-separated build tags
   -test             include test files and packages
+  -coverage         explain selected-package SSA body coverage on stderr
 
 Exit status is 0 when nothing is found, 3 when findings are reported, and 1 on
 error.
@@ -84,17 +85,19 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() { fmt.Fprint(stderr, scanUsage) }
 
 	var (
-		dir    string
-		format string
-		which  string
-		tags   string
-		tests  bool
+		dir      string
+		format   string
+		which    string
+		tags     string
+		tests    bool
+		coverage bool
 	)
 	fs.StringVar(&dir, "C", "", "change to `dir` before scanning")
 	fs.StringVar(&format, "format", "text", "output `format`: text, json, or sarif")
 	fs.StringVar(&which, "analyzers", "", "comma-separated subset of analyzers to run (default: all)")
 	fs.StringVar(&tags, "tags", "", "comma-separated list of build tags")
 	fs.BoolVar(&tests, "test", false, "include test files and packages")
+	fs.BoolVar(&coverage, "coverage", false, "explain SSA body coverage on stderr")
 
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -125,6 +128,10 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, "taint scan:", err)
 		return scanExitError
+	}
+
+	if coverage {
+		writeBodyCoverage(stderr, prog.BodyCoverage())
 	}
 
 	var findings []scanFinding
@@ -313,4 +320,16 @@ func buildTagFlags(tags string) []string {
 		return nil
 	}
 	return []string{"-tags=" + tags}
+}
+
+// writeBodyCoverage keeps explanatory diagnostics separate from finding formats.
+func writeBodyCoverage(w io.Writer, c wholeprogram.BodyCoverage) {
+	fmt.Fprintf(w, "taint scan: SSA bodies are built only for %d selected package(s); %d same-module dependency package(s) have no source bodies built.\n", len(c.SelectedPackages), len(c.SameModuleDependencies))
+	if len(c.SelectedWithoutModuleIdentity) > 0 {
+		fmt.Fprintf(w, "taint scan: cannot classify same-module dependencies for %d selected package(s) without complete module identity.\n", len(c.SelectedWithoutModuleIdentity))
+	}
+	for _, id := range c.SameModuleDependencies {
+		fmt.Fprintf(w, "  unbuilt same-module dependency: %s\n", id)
+	}
+	fmt.Fprintf(w, "taint scan: %d other dependency package(s) (including standard library or unknown module identity); dependency bodies are not built. This is package coverage, not a completeness guarantee.\n", c.OtherDependencies)
 }

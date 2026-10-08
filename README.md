@@ -460,3 +460,9 @@ func main() {
 $ ssrf main.go
 ./network/ssrf/testdata/src/direct/main.go:9:18: potential server-side request forgery
 ```
+
+### Whole-program coverage
+
+`taint scan -coverage [packages]` explains which imported same-module package
+bodies are omitted, on stderr, without changing finding output or scan scope.
+See [body coverage](docs/body-coverage.md) for dependency and workspace limits.
