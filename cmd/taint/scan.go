@@ -28,7 +28,7 @@ import (
 // engine seam the six per-package analyzers and this whole-program scan share,
 // so a flow that crosses a package boundary, invisible to a per-package pass,
 // is found here.
-type detectorCheck func(ctx context.Context, cg *callgraph.Graph) []taint.Finding
+type detectorCheck func(ctx context.Context, cg *callgraph.Graph, opts ...taint.Option) []taint.Finding
 
 // scanDetector names an analyzer (matching its per-package binary and SARIF
 // rule id) and its whole-program check.
@@ -39,12 +39,12 @@ type scanDetector struct {
 
 // scanDetectors is the whole-program registry, ordered by name.
 var scanDetectors = []scanDetector{
-	{"cmdi", cmdi.Check},
-	{"logi", logi.Check},
-	{"ptrv", ptrv.Check},
-	{"sqli", sqli.Check},
-	{"ssrf", ssrf.Check},
-	{"xss", xss.Check},
+	{"cmdi", cmdi.CheckWithOptions},
+	{"logi", logi.CheckWithOptions},
+	{"ptrv", ptrv.CheckWithOptions},
+	{"sqli", sqli.CheckWithOptions},
+	{"ssrf", ssrf.CheckWithOptions},
+	{"xss", xss.CheckWithOptions},
 }
 
 // scan exit codes follow govulncheck (and cmd/vuln): 0 clean, 3 findings, 1
@@ -70,6 +70,7 @@ Flags:
   -format format    output format: text, json, or sarif (default text)
   -tags list        comma-separated build tags
   -test             include test files and packages
+  -scope profile    analysis profile: legacy or selected (default legacy)
   -coverage         explain selected-package SSA body coverage on stderr
 
 Exit status is 0 when nothing is found, 3 when findings are reported, and 1 on
@@ -91,7 +92,9 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		tags     string
 		tests    bool
 		coverage bool
+		scope    string
 	)
+	fs.StringVar(&scope, "scope", "legacy", "analysis profile: legacy or selected")
 	fs.StringVar(&dir, "C", "", "change to `dir` before scanning")
 	fs.StringVar(&format, "format", "text", "output `format`: text, json, or sarif")
 	fs.StringVar(&which, "analyzers", "", "comma-separated subset of analyzers to run (default: all)")
@@ -104,6 +107,10 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return scanExitClean
 		}
 		fmt.Fprintln(stderr, "taint scan:", err)
+		return scanExitError
+	}
+	if scope != string(wholeprogram.ScopeLegacy) && scope != string(wholeprogram.ScopeSelected) {
+		fmt.Fprintf(stderr, "taint scan: unknown -scope %q (want legacy or selected)\n", scope)
 		return scanExitError
 	}
 	switch format {
@@ -120,6 +127,7 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintln(stderr, "taint scan: loading packages...")
 	prog, err := wholeprogram.Load(ctx, wholeprogram.Config{
+		Scope:      wholeprogram.Scope(scope),
 		Dir:        dir,
 		Patterns:   fs.Args(),
 		Tests:      tests,
@@ -131,12 +139,19 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	if coverage {
+		if prog.Scope == wholeprogram.ScopeSelected {
+			fmt.Fprintln(stderr, "taint scan: scope=selected; exact selected roots, selected source/sink occurrences, selected bodies only")
+		}
 		writeBodyCoverage(stderr, prog.BodyCoverage())
 	}
 
+	var opts []taint.Option
+	if prog.Scope == wholeprogram.ScopeSelected {
+		opts = append(opts, taint.WithMatchPackages(prog.MatchPackages...))
+	}
 	var findings []scanFinding
 	for _, d := range selected {
-		for _, f := range d.check(ctx, prog.CallGraph) {
+		for _, f := range d.check(ctx, prog.CallGraph, opts...) {
 			findings = append(findings, scanFinding{
 				Analyzer: d.name,
 				Position: prog.SSA.Fset.Position(f.Pos),

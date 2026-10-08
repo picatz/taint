@@ -10,6 +10,7 @@ package wholeprogram
 import (
 	"context"
 	"fmt"
+	"go/types"
 	"strings"
 
 	"github.com/picatz/taint/callgraphutil"
@@ -19,8 +20,21 @@ import (
 	"golang.org/x/tools/go/ssa/ssautil"
 )
 
+// Scope selects the whole-program analysis profile. The empty value preserves
+// the legacy profile. Neither profile expands dependency source bodies.
+type Scope string
+
+const (
+	// ScopeLegacy preserves the original roots and unrestricted occurrence matching.
+	ScopeLegacy Scope = "legacy"
+	// ScopeSelected uses exact selected-package roots and occurrence identities.
+	ScopeSelected Scope = "selected"
+)
+
 // Config configures how Load discovers and builds the program.
 type Config struct {
+	// Scope selects the analysis profile; empty means ScopeLegacy.
+	Scope Scope
 	// Dir is the directory to load; the module rooted at or above it is
 	// analyzed. Empty means the current working directory.
 	Dir string
@@ -37,6 +51,12 @@ type Config struct {
 // graph rooted at the entry points, those entry points, and the loaded
 // packages the graph was built from.
 type Program struct {
+	// Scope is the effective analysis profile, with the empty default normalized.
+	Scope Scope
+	// MatchPackages holds the exact selected type identities in ScopeSelected.
+	// It is nil for legacy. Selected-profile consumers must pass these identities
+	// to taint.WithMatchPackages; restricting graph roots alone is not sufficient.
+	MatchPackages []*types.Package
 	// SSA is the built SSA program.
 	SSA *ssa.Program
 	// CallGraph is reachable from Entries, built with the taint algorithm so
@@ -67,6 +87,13 @@ const loadMode = packages.NeedName |
 // load and type-check errors in the returned error rather than on stderr, so a
 // library caller never writes to the process streams.
 func Load(ctx context.Context, cfg Config) (*Program, error) {
+	scope := cfg.Scope
+	if scope == "" {
+		scope = ScopeLegacy
+	}
+	if scope != ScopeLegacy && scope != ScopeSelected {
+		return nil, fmt.Errorf("unknown analysis scope %q (want legacy or selected)", cfg.Scope)
+	}
 	patterns := cfg.Patterns
 	if len(patterns) == 0 {
 		patterns = []string{"./..."}
@@ -88,25 +115,45 @@ func Load(ctx context.Context, cfg Config) (*Program, error) {
 		return nil, fmt.Errorf("no packages matched %v", patterns)
 	}
 
-	prog, _ := ssautil.Packages(pkgs, ssa.InstantiateGenerics)
+	prog, initial := ssautil.Packages(pkgs, ssa.InstantiateGenerics)
 	prog.Build()
 
-	built := builtPackages(prog)
-	entries := entryPoints(built)
+	var built []*ssa.Package
+	var entries []*ssa.Function
+	var matchPackages []*types.Package
+	if scope == ScopeSelected {
+		entries = selectedEntryPoints(initial)
+		matchPackages = make([]*types.Package, 0, len(pkgs))
+		for _, pkg := range pkgs {
+			if pkg != nil && pkg.Types != nil {
+				matchPackages = append(matchPackages, pkg.Types)
+			}
+		}
+	} else {
+		built = builtPackages(prog)
+		entries = entryPoints(built)
+	}
 	if len(entries) == 0 {
 		return nil, fmt.Errorf("no entry points found in %v", patterns)
 	}
 
-	cg, _, err := callgraphutil.BuildCallGraph(ctx, callgraphutil.CallGraphAlgorithmTaint, prog, mainRoot(built), entries)
+	var cg *callgraph.Graph
+	if scope == ScopeSelected {
+		cg, _, err = callgraphutil.CreateCallGraphFromEntries(ctx, prog, entries)
+	} else {
+		cg, _, err = callgraphutil.BuildCallGraph(ctx, callgraphutil.CallGraphAlgorithmTaint, prog, mainRoot(built), entries)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("building call graph: %w", err)
 	}
 
 	return &Program{
-		SSA:       prog,
-		CallGraph: cg,
-		Entries:   entries,
-		Packages:  pkgs,
+		Scope:         scope,
+		MatchPackages: matchPackages,
+		SSA:           prog,
+		CallGraph:     cg,
+		Entries:       entries,
+		Packages:      pkgs,
 	}, nil
 }
 

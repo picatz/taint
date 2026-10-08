@@ -108,16 +108,26 @@ func run(pass *analysis.Pass) (any, error) {
 // supplies a whole-program graph. Canceling ctx stops the check early,
 // bounding the per-sink path enumeration.
 func Check(ctx context.Context, cg *callgraph.Graph) []taint.Finding {
+	return CheckWithOptions(ctx, cg)
+}
+
+// CheckWithOptions is Check with additional per-call taint options. Built-in
+// and configured models remain enabled, including their argument selectors and
+// sanitizers. The explicit ctx takes precedence over any WithContext option.
+// Options do not change the per-package Analyzer or global model configuration.
+func CheckWithOptions(ctx context.Context, cg *callgraph.Graph, opts ...taint.Option) []taint.Finding {
 	userModels, err := models.Load()
 	if err != nil {
 		return nil
 	}
 	allModels := append(slices.Clone(builtinModels), userModels...)
-	return checkGraph(ctx, cg, allModels)
+	return checkGraph(ctx, cg, allModels, opts...)
 }
 
-func checkGraph(ctx context.Context, cg *callgraph.Graph, allModels []taint.Model) []taint.Finding {
-	diagnostics := taint.CheckDetailed(cg, taint.NewSources(), taint.NewSinks(), taint.WithModels(allModels...), taint.WithContext(ctx))
+func checkGraph(ctx context.Context, cg *callgraph.Graph, allModels []taint.Model, opts ...taint.Option) []taint.Finding {
+	options := append([]taint.Option{taint.WithModels(allModels...)}, opts...)
+	options = append(options, taint.WithContext(ctx))
+	diagnostics := taint.CheckDetailed(cg, taint.NewSources(), taint.NewSinks(), options...)
 	dbg("results=%d", len(diagnostics))
 	return diagnostics.Findings("potential command injection")
 }
