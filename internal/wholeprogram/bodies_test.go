@@ -268,3 +268,30 @@ func TestBodiesLoadedWorkspaceReplacementAndNestedModule(t *testing.T) {
 		}
 	}
 }
+
+// Cancellation checks cover graph traversal and accounting without timing races.
+type bodyCancelContext struct {
+	context.Context
+	calls, cancelAt int
+}
+
+func (c *bodyCancelContext) Err() error {
+	c.calls++
+	if c.calls >= c.cancelAt {
+		return context.Canceled
+	}
+	return nil
+}
+func TestBodiesPlanningCancellationStages(t *testing.T) {
+	mod := &packages.Module{Path: "example.com/a", Dir: "/a"}
+	root := bodyTestPackage(t, "a", mod, "package p")
+	helper := bodyTestPackage(t, "a/helper", mod, "package p")
+	root.Imports = map[string]*packages.Package{"helper": helper}
+	for _, stage := range []int{2, 3} {
+		ctx := &bodyCancelContext{Context: context.Background(), cancelAt: stage}
+		extra, _, err := additionalBodies(ctx, []*packages.Package{root}, BodyLimits{1, 100})
+		if extra != nil || !errors.Is(err, context.Canceled) {
+			t.Fatalf("stage %d: %v %v", stage, extra, err)
+		}
+	}
+}
