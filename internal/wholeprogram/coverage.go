@@ -17,19 +17,28 @@ type BodyCoverage struct {
 	// module metadata. Same-module coverage cannot be classified for those inputs.
 	SelectedWithoutModuleIdentity []string
 	// SameModuleDependencies are imported, unselected package IDs belonging
-	// to an initial package's exact module. Their source bodies are not built.
+	// to an initial package's exact module, whether built or omitted.
 	SameModuleDependencies []string
+	// BuiltSameModuleDependencies are additional packages admitted for SSA bodies.
+	BuiltSameModuleDependencies []string
+	// AdditionalSyntaxBytes charges each loaded Syntax entry of each added variant.
+	AdditionalSyntaxBytes int64
 	// OtherDependencies counts remaining unselected dependencies, including
 	// other modules, the standard library, and unknown module identities.
 	OtherDependencies int
 }
 
-// BodyCoverage reports current selected-package-only loading without changing
+// BodyCoverage reports selected and additional body inputs without changing
 // roots, graph construction, or source/sink matching. Package IDs are sorted
 // and unique, including go/packages test variants. In a workspace, Main alone
 // is not sufficient: only modules represented by initial packages qualify.
 func (p *Program) BodyCoverage() BodyCoverage {
 	var result BodyCoverage
+	result.AdditionalSyntaxBytes = p.additionalSyntaxBytes
+	for _, pkg := range p.additionalBodyPackages {
+		result.BuiltSameModuleDependencies = append(result.BuiltSameModuleDependencies, pkg.ID)
+	}
+	sort.Strings(result.BuiltSameModuleDependencies)
 	selected := make(map[*packages.Package]bool)
 	selectedIDs := make(map[string]bool)
 	var modules []*packages.Module

@@ -21,7 +21,7 @@ import (
 )
 
 // Scope selects the whole-program analysis profile. The empty value preserves
-// the legacy profile. Neither profile expands dependency source bodies.
+// the legacy profile. Body availability is configured separately.
 type Scope string
 
 const (
@@ -33,6 +33,9 @@ const (
 
 // Config configures how Load discovers and builds the program.
 type Config struct {
+	// Bodies defaults to selected. Same-module requires ScopeSelected and positive limits.
+	Bodies     Bodies
+	BodyLimits BodyLimits
 	// Scope selects the analysis profile; empty means ScopeLegacy.
 	Scope Scope
 	// Dir is the directory to load; the module rooted at or above it is
@@ -51,6 +54,11 @@ type Config struct {
 // graph rooted at the entry points, those entry points, and the loaded
 // packages the graph was built from.
 type Program struct {
+	// Bodies and BodyLimits describe the effective body policy.
+	Bodies                 Bodies
+	BodyLimits             BodyLimits
+	additionalBodyPackages []*packages.Package
+	additionalSyntaxBytes  int64
 	// Scope is the effective analysis profile, with the empty default normalized.
 	Scope Scope
 	// MatchPackages holds the exact selected type identities in ScopeSelected.
@@ -66,7 +74,7 @@ type Program struct {
 	// Entries are the reachable roots: main and init for a command, or a
 	// library's exported API.
 	Entries []*ssa.Function
-	// Packages are the loaded packages the program was built from.
+	// Packages are the original selected packages, never the expanded body inputs.
 	Packages []*packages.Package
 }
 
@@ -94,6 +102,13 @@ func Load(ctx context.Context, cfg Config) (*Program, error) {
 	if scope != ScopeLegacy && scope != ScopeSelected {
 		return nil, fmt.Errorf("unknown analysis scope %q (want legacy or selected)", cfg.Scope)
 	}
+	bodies, err := bodyMode(cfg, scope)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("before loading packages: %w", err)
+	}
 	patterns := cfg.Patterns
 	if len(patterns) == 0 {
 		patterns = []string{"./..."}
@@ -108,6 +123,9 @@ func Load(ctx context.Context, cfg Config) (*Program, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading packages: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("after loading packages: %w", err)
+	}
 	if errs := LoadErrors(pkgs); len(errs) > 0 {
 		return nil, fmt.Errorf("%d package load error(s): %s", len(errs), summarizeErrors(errs))
 	}
@@ -115,8 +133,30 @@ func Load(ctx context.Context, cfg Config) (*Program, error) {
 		return nil, fmt.Errorf("no packages matched %v", patterns)
 	}
 
-	prog, initial := ssautil.Packages(pkgs, ssa.InstantiateGenerics)
+	inputs := pkgs
+	var additional []*packages.Package
+	var syntaxBytes int64
+	if bodies == BodiesSameModule {
+		additional, syntaxBytes, err = additionalBodies(ctx, pkgs, cfg.BodyLimits)
+		if err != nil {
+			return nil, err
+		}
+		inputs = append(append([]*packages.Package(nil), pkgs...), additional...)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("before SSA creation: %w", err)
+	}
+	// SSA creation and Build do not accept a context. Cancellation is checked at
+	// their boundaries, but cannot promptly interrupt either operation.
+	prog, initial := ssautil.Packages(inputs, ssa.InstantiateGenerics)
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("before SSA build: %w", err)
+	}
 	prog.Build()
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("after SSA build: %w", err)
+	}
+	initial = initial[:len(pkgs)]
 
 	var built []*ssa.Package
 	var entries []*ssa.Function
@@ -137,6 +177,9 @@ func Load(ctx context.Context, cfg Config) (*Program, error) {
 		return nil, fmt.Errorf("no entry points found in %v", patterns)
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("before call graph: %w", err)
+	}
 	var cg *callgraph.Graph
 	if scope == ScopeSelected {
 		cg, _, err = callgraphutil.CreateCallGraphFromEntries(ctx, prog, entries)
@@ -148,12 +191,16 @@ func Load(ctx context.Context, cfg Config) (*Program, error) {
 	}
 
 	return &Program{
-		Scope:         scope,
-		MatchPackages: matchPackages,
-		SSA:           prog,
-		CallGraph:     cg,
-		Entries:       entries,
-		Packages:      pkgs,
+		Bodies:                 bodies,
+		BodyLimits:             cfg.BodyLimits,
+		additionalBodyPackages: additional,
+		additionalSyntaxBytes:  syntaxBytes,
+		Scope:                  scope,
+		MatchPackages:          matchPackages,
+		SSA:                    prog,
+		CallGraph:              cg,
+		Entries:                entries,
+		Packages:               pkgs,
 	}, nil
 }
 

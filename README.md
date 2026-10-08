@@ -476,3 +476,10 @@ from selected code remain eligible; dependencies do not acquire source bodies.
 See [analysis scope](docs/analysis-scope.md) for initializer, method, mixed
 command/library, and propagation semantics. Add `-coverage` for stderr-only
 profile and body-coverage diagnostics.
+
+For bounded dependency bodies without widening roots or source/sink ownership,
+use `-scope=selected -bodies=same-module -max-body-packages=N
+-max-body-syntax-bytes=N`. Both additional-input budgets must be explicitly
+positive. Exceeding either fails the scan before SSA construction, with no
+findings output. These bound parsed inputs, not memory or execution time; see
+[body coverage](docs/body-coverage.md) for exact semantics and limits.
