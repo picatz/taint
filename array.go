@@ -91,7 +91,7 @@ func checkArrayElement(path callgraphutil.Path, ctx taintContext, value, index s
 		if _, _, modeled := ctx.propagatorForCall(&v.Call); modeled {
 			return checkSSAValueWithContext(path, ctx, v, visited.clone())
 		}
-		if src, ok := ctx.matchSourceCall(&v.Call); ok {
+		if src, ok := ctx.matchSourceCall(path, v); ok {
 			return true, src, v.Call.Value
 		}
 		if handled, t, s, x := checkArrayCallElement(path, ctx, v, index, -1, next); handled {
@@ -102,7 +102,7 @@ func checkArrayElement(path callgraphutil.Path, ctx taintContext, value, index s
 			if _, _, modeled := ctx.propagatorForCall(&call.Call); modeled {
 				return checkSSAValueWithContext(path, ctx, call, visited.clone())
 			}
-			if src, ok := ctx.matchSourceCall(&call.Call); ok {
+			if src, ok := ctx.matchSourceCall(path, call); ok {
 				return true, src, call.Call.Value
 			}
 			if handled, t, s, x := checkArrayCallElement(path, ctx, call, index, v.Index, next); handled {
