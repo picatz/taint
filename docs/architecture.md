@@ -39,6 +39,15 @@ taint it or satisfy sanitizer coverage. Return-summary modeling maps callee
 return values back to caller arguments and has a fixed recursion bound to avoid
 unbounded summaries.
 
+Array-value indexing preserves the selected element through conversions, local
+copies, and analyzable return slots. For non-escaping local arrays, element and
+whole-array writes share a backward reaching-definition walk; constant indices
+keep siblings separate, while unknown indices may alias any element. A copied
+array is read at its original load, not at a later use of the copy. Explicit
+summary models still apply even when a callee body appears clean. Escaped memory
+falls back to the existing analysis; this is not a complete array-alias model,
+and generic pointer-write summaries remain a known limitation.
+
 ## Rule Registries
 
 Sources, sinks, sanitizers, and propagators are represented as typed internal

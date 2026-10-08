@@ -1219,6 +1219,9 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 		if isStringContentType(value.X.Type()) {
 			return checkSSAValueWithContext(path, ctx, value.X, visited)
 		}
+		if isArrayValueType(value.X.Type()) {
+			return checkArrayElement(path, ctx, value.X, value.Index, visited)
+		}
 	case *ssa.IndexAddr:
 		refs := value.Referrers()
 		if refs != nil {
@@ -1380,6 +1383,11 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 			return false, "", nil
 		}
 		if value.Op == token.MUL {
+			if addr, ok := value.X.(*ssa.IndexAddr); ok {
+				if handled, tainted, src, tv := checkAddressedArrayElement(path, ctx, addr.X, addr.Index, value, visited); handled {
+					return tainted, src, tv
+				}
+			}
 			if effects, ok := reachingGlobalValuesForLoad(path, value, remainingSummaryDepth(path, ctx)); ok {
 				for _, effect := range effects {
 					effectPath := path

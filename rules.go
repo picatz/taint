@@ -742,6 +742,15 @@ func (r *ruleRegistry) sanitizerForValue(v ssa.Value) (sanitizerRule, bool) {
 			return allStoredValuesSanitized(value, func(v ssa.Value) (sanitizerRule, bool) {
 				return visit(v, depth, bindings)
 			})
+		case *ssa.Index:
+			// A directly sanitized array result has no intervening mutable
+			// storage. Do not extend this proof to array loads: a whole-array
+			// sanitized store may be followed by a tainted element write.
+			if isArrayValueType(value.X.Type()) {
+				if call, ok := unwrapFieldValue(value.X).(*ssa.Call); ok {
+					return r.sanitizerForCall(&call.Call)
+				}
+			}
 		case *ssa.Phi:
 			return allValuesSanitized(value.Edges, func(v ssa.Value) (sanitizerRule, bool) {
 				return visit(v, depth, bindings)
