@@ -1455,11 +1455,6 @@ type mapEvent struct {
 	definite bool
 }
 
-type mapPathState struct {
-	writes []sideEffectValue
-	killed bool
-}
-
 func reachingMapLookupValuesWithLimit(lookup *ssa.Lookup, maxDepth int) []sideEffectValue {
 	if lookup == nil || lookup.X == nil || lookup.Parent() == nil || lookup.Block() == nil {
 		return nil
@@ -1658,22 +1653,7 @@ func directCalleeMapEventsRecursive(call *ssa.Call, lookup *ssa.Lookup, depth in
 	if len(returns) == 0 {
 		return nil
 	}
-	var allWrites []sideEffectValue
-	killOnAllPaths := true
-	for _, ret := range returns {
-		states := collectMapPathStates(helperEvents, ret)
-		if len(states) == 0 {
-			killOnAllPaths = false
-			continue
-		}
-		for _, state := range states {
-			if !state.killed {
-				killOnAllPaths = false
-			}
-			allWrites = append(allWrites, state.writes...)
-		}
-	}
-	allWrites = dedupeSideEffectValues(allWrites)
+	allWrites, killOnAllPaths := summarizeMapPaths(helperEvents, returns)
 	for i := range allWrites {
 		allWrites[i].call = call
 		allWrites[i].callee = callee
@@ -1808,62 +1788,107 @@ func calleeMapEvents(callee *ssa.Function, params map[ssa.Value]struct{}, lookup
 	return out
 }
 
-// collectMapPathStates walks events backwards from `use` through the callee's
-// CFG, accumulating writes seen along each path. A definite kill ends the
-// walk along that path. Mirrors collectBufferPathStates.
-func collectMapPathStates(events []mapEvent, use ssa.Instruction) []mapPathState {
-	if len(events) == 0 || use == nil || use.Block() == nil {
-		return nil
+// summarizeMapPaths retains the ordered union of writes and the all-path kill
+// decision without materializing paths. The query-local DFS visits each cursor
+// once per return; gray edges are the legacy un-killed cycle cutoff, whereas
+// black edges are already explored joins. A definite kill cuts off predecessors,
+// after collecting every event at its instruction (including write/kill ties).
+//
+// First-visit DFS order has the same first occurrences as flattening the old
+// path states: every encountered write reaches a terminal state, and revisiting
+// a suffix cannot introduce a new first occurrence. Deduplicate before the
+// caller remaps metadata, since distinct effects may become equal after remapping.
+//
+// For R returns, I instructions, E predecessor edges and F event/value entries,
+// reduction takes expected O(R*(I+E+F)) time and O(I+E+F) space. Event discovery,
+// alias/type matching and depth-bounded nested helper expansion precede this
+// function and are not covered by that bound. No SSA is retained across queries.
+func summarizeMapPaths(events []mapEvent, returns []*ssa.Return) ([]sideEffectValue, bool) {
+	if len(events) == 0 || len(returns) == 0 {
+		return nil, false
 	}
-	type cursorKey struct {
+	type cursor struct {
 		block  *ssa.BasicBlock
 		before ssa.Instruction
 	}
-	var visit func(*ssa.BasicBlock, ssa.Instruction, []sideEffectValue, map[cursorKey]struct{}) []mapPathState
-	visit = func(block *ssa.BasicBlock, before ssa.Instruction, writes []sideEffectValue, seen map[cursorKey]struct{}) []mapPathState {
-		if block == nil {
-			return []mapPathState{{writes: writes}}
+	type frame struct {
+		cursor
+		nextPred int
+	}
+	const (
+		gray  = 1
+		black = 2
+	)
+	byInstr := make(map[ssa.Instruction][]mapEvent)
+	for _, event := range events {
+		byInstr[event.instr] = append(byInstr[event.instr], event)
+	}
+	var writes []sideEffectValue
+	seenWrites := make(map[sideEffectValue]struct{})
+	allKilled := true
+	for _, ret := range returns {
+		if ret == nil || ret.Block() == nil {
+			allKilled = false
+			continue
 		}
-		key := cursorKey{block: block, before: before}
-		if _, ok := seen[key]; ok {
-			return []mapPathState{{writes: writes}}
-		}
-		nextSeen := make(map[cursorKey]struct{}, len(seen)+1)
-		for seenKey := range seen {
-			nextSeen[seenKey] = struct{}{}
-		}
-		nextSeen[key] = struct{}{}
-		for i := blockScanStart(block, before) - 1; i >= 0; i-- {
-			instr := block.Instrs[i]
-			var killed bool
-			for _, ev := range events {
-				if ev.instr != instr {
+		colors := make(map[cursor]uint8)
+		stack := []frame{{cursor: cursor{block: ret.Block(), before: ret}}}
+		for len(stack) > 0 {
+			current := &stack[len(stack)-1]
+			if colors[current.cursor] == 0 {
+				colors[current.cursor] = gray
+				if current.block == nil {
+					allKilled = false
+					colors[current.cursor] = black
+					stack = stack[:len(stack)-1]
 					continue
 				}
-				switch ev.kind {
-				case mapEventWrite:
-					writes = append(writes, ev.values...)
-				case mapEventKill:
-					if ev.definite {
-						killed = true
+				killed := false
+				for i := blockScanStart(current.block, current.before) - 1; i >= 0; i-- {
+					for _, event := range byInstr[current.block.Instrs[i]] {
+						switch event.kind {
+						case mapEventWrite:
+							for _, value := range event.values {
+								if _, seen := seenWrites[value]; !seen {
+									seenWrites[value] = struct{}{}
+									writes = append(writes, value)
+								}
+							}
+						case mapEventKill:
+							killed = killed || event.definite
+						}
+					}
+					if killed {
+						break
 					}
 				}
+				if killed || len(current.block.Preds) == 0 {
+					if !killed {
+						allKilled = false
+					}
+					colors[current.cursor] = black
+					stack = stack[:len(stack)-1]
+					continue
+				}
 			}
-			if killed {
-				return []mapPathState{{writes: writes, killed: true}}
+			if current.nextPred == len(current.block.Preds) {
+				colors[current.cursor] = black
+				stack = stack[:len(stack)-1]
+				continue
+			}
+			next := cursor{block: current.block.Preds[current.nextPred]}
+			current.nextPred++
+			switch colors[next] {
+			case gray:
+				allKilled = false
+			case black:
+				// A shared suffix already contributed its writes and cutoffs.
+			default:
+				stack = append(stack, frame{cursor: next})
 			}
 		}
-		if len(block.Preds) == 0 {
-			return []mapPathState{{writes: writes}}
-		}
-		var out []mapPathState
-		for _, pred := range block.Preds {
-			predWrites := append([]sideEffectValue(nil), writes...)
-			out = append(out, visit(pred, nil, predWrites, nextSeen)...)
-		}
-		return out
 	}
-	return visit(use.Block(), use, nil, nil)
+	return writes, allKilled
 }
 
 func sameMapValue(candidate, target ssa.Value) bool {
