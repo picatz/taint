@@ -137,7 +137,8 @@ jobs:
     # Staticcheck v0.8.1 cannot decode Go 1.27.2 export data. Use the patched
     # minimum Go line until a released Staticcheck supports that format.
     # This excludes check_go127_test.go and sink_paths_go127_test.go from
-    # lint only; Go 1.27 tests, race, vet, and security checks still cover them.
+    # lint only; Go 1.27 tests, race, and vet still cover them. Security checks
+    # remain on the preferred patched toolchain.
     env:
       GOTOOLCHAIN: local
     steps:
