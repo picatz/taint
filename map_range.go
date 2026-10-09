@@ -12,6 +12,7 @@ import (
 // entries, and let later writes taint already-extracted scalar copies.
 type mapRangeEvent struct {
 	instr       ssa.Instruction
+	index       int
 	mapv        ssa.Value
 	key         ssa.Value
 	value       ssa.Value // nil for delete, clear, or allocation
@@ -36,10 +37,8 @@ func reachingMapRangeValues(mapv ssa.Value, use ssa.Instruction, component int) 
 	// execution-path enumeration are needed, including for loop backedges.
 	events := make(map[ssa.Instruction]mapRangeEvent)
 	var writes []mapRangeEvent
-	positions := make(map[ssa.Instruction]int)
 	for _, block := range use.Parent().Blocks {
 		for index, instr := range block.Instrs {
-			positions[instr] = index
 			var event mapRangeEvent
 			switch v := instr.(type) {
 			case *ssa.MapUpdate:
@@ -75,6 +74,8 @@ func reachingMapRangeValues(mapv ssa.Value, use ssa.Instruction, component int) 
 			if !mapRangeMayAlias(event.mapv, mapv) {
 				continue
 			}
+			event.mapv = mapRangeIdentity(event.mapv)
+			event.index = index
 			event.constantKey, event.keyType, event.keyKnown = mapRangeConstantKey(event.key)
 			events[instr] = event
 			if event.value != nil {
@@ -85,7 +86,7 @@ func reachingMapRangeValues(mapv ssa.Value, use ssa.Instruction, component int) 
 	var out []ssa.Value
 	seenValues := make(map[ssa.Value]bool)
 	for _, write := range writes {
-		if !mapRangeWriteReaches(write, use, events, positions) {
+		if !mapRangeWriteReaches(write, use, events) {
 			continue
 		}
 		value := write.value
@@ -105,27 +106,46 @@ func reachingMapRangeValues(mapv ssa.Value, use ssa.Instruction, component int) 
 // cursor, rather than a visited execution path, bounds work to O(I + E) per
 // candidate and O(W * (I + E)) per read. The initial partial block and a later
 // whole-block visit are distinct, so textually later loop writes are included.
-func mapRangeWriteReaches(write mapRangeEvent, use ssa.Instruction, events map[ssa.Instruction]mapRangeEvent, positions map[ssa.Instruction]int) bool {
-	work := []mapRangeCursor{{block: write.instr.Block(), index: positions[write.instr] + 1}}
-	seen := make(map[mapRangeCursor]bool)
+func mapRangeWriteReaches(write mapRangeEvent, use ssa.Instruction, events map[ssa.Instruction]mapRangeEvent) bool {
+	work := []mapRangeCursor{{block: write.instr.Block(), index: write.index + 1}}
+	// Successor cursors always enter at instruction zero. The single
+	// initial partial block needs no visited slot; four bits per full block
+	// cover the key/map dynamic-identity states without per-state maps.
+	seen := make([]uint8, len(use.Parent().Blocks))
+	keyInstr, _ := write.key.(ssa.Instruction)
+	mapInstr, _ := mapRangeIdentity(write.mapv).(ssa.Instruction)
+	reflexiveKey := write.key != nil && mapRangeReflexiveKey(write.key.Type())
 	for len(work) > 0 {
 		cursor := work[len(work)-1]
 		work = work[:len(work)-1]
-		if cursor.block == nil || seen[cursor] {
+		if cursor.block == nil {
 			continue
 		}
-		seen[cursor] = true
+		if cursor.index == 0 {
+			state := uint8(0)
+			if cursor.keyChanged {
+				state |= 1
+			}
+			if cursor.mapChanged {
+				state |= 2
+			}
+			mask := uint8(1 << state)
+			if seen[cursor.block.Index]&mask != 0 {
+				continue
+			}
+			seen[cursor.block.Index] |= mask
+		}
 		killed := false
 		for _, instr := range cursor.block.Instrs[cursor.index:] {
 			if instr == use {
 				return true
 			}
-			if keyInstr, ok := write.key.(ssa.Instruction); ok && instr == keyInstr {
+			if instr == keyInstr {
 				// The same SSA key can denote a different runtime value on
 				// the next loop iteration. Constant keys remain comparable.
 				cursor.keyChanged = true
 			}
-			if mapInstr, ok := mapRangeIdentity(write.mapv).(ssa.Instruction); ok && instr == mapInstr {
+			if instr == mapInstr {
 				cursor.mapChanged = true
 			}
 			event, ok := events[instr]
@@ -134,7 +154,7 @@ func mapRangeWriteReaches(write mapRangeEvent, use ssa.Instruction, events map[s
 				continue
 			}
 			sameKey := event.keyKnown && write.keyKnown && event.constantKey == write.constantKey && types.Identical(event.keyType, write.keyType)
-			if !cursor.keyChanged && event.key == write.key && write.key != nil && mapRangeReflexiveKey(write.key.Type()) {
+			if !cursor.keyChanged && event.key == write.key && reflexiveKey {
 				sameKey = true
 			}
 			if event.clear || sameKey {

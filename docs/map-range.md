@@ -31,8 +31,14 @@ It does not infer iteration order, correlate key tests with entries already
 visited, or prove general branch conditions. For example, updating the entry
 currently being visited can conservatively flow to a later iteration even though
 that entry will not be visited again. Such correlations may produce false
-positives. Pointer-valued keys and elements use the existing pointee analysis;
-they are not immutable copies of the pointed-to contents.
+positives. Pointer-valued keys and elements are not immutable copies of the pointed-to
+contents. Directly dereferenced pointers to entry-block local allocations use
+the actual dereference position, with a finite backward walk over local stores.
+A closed-use guard rejects helpers, closures, pointer Phi joins, lookups, other
+pointer extractions, and container escapes; those cases retain the existing
+pointee analysis. Four inherited pointee false negatives and one conservative
+Phi-clear false positive are characterized separately with their semantic
+expectations. This is not a general heap-alias or helper-pointee model.
 
 Helper writes, helper reads of caller-created maps, and helper-returned maps are
 not summarized by this model. Unknown helper effects may cause missed flows or
@@ -47,7 +53,7 @@ remain outside this local model. No whole-map fallback is used.
 The read builds a query-local index of relevant map events. Each candidate then
 uses a finite CFG worklist with visited instruction cursors. With W candidate
 writes, I instructions, and E CFG edges, candidate liveness costs
-O(W × (I + E)) per read, in addition to alias/event indexing. There is no runtime
+O(W × (I + E)) per read, in addition to alias/event indexing and key-type comparison costs. There is no runtime
 map enumeration, runtime loop unrolling, or enumeration of execution paths.
 Repeated reads repeat the query; there is no global cache retaining SSA programs.
 This bound applies to this local range model, not the entire analyzer or its

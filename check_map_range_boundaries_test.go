@@ -11,6 +11,7 @@ const mapRangeBoundaryHelpers = `
 func source() string { return "input" }
 func sink(string) {}
 func flag() bool { return true }
+func setPointer(p *string, s string) { *p = s }
 `
 
 func mapRangeBoundaryProgram(body string) string {
@@ -28,6 +29,8 @@ func TestCheckDetailedMapRangeBoundaries(t *testing.T) {
 		{"alias_clear", `m := map[string]string{"q": source()}; a := m; clear(a); for _, v := range m { sink(v) }`, 0},
 		{"alias_other_map", `m := map[string]string{"q": "safe"}; other := map[string]string{"q": source()}; a := other; a["x"] = source(); for _, v := range m { sink(v) }`, 0},
 		{"interface_alias", `m := map[string]string{"q": "safe"}; var boxed any = m; a := boxed.(map[string]string); a["q"] = source(); for _, v := range m { sink(v) }`, 1},
+		{"interface_comma_ok_alias", `m := map[string]string{"q": "safe"}; var boxed any = m; a, ok := boxed.(map[string]string); if ok { a["q"] = source() }; for _, v := range m { sink(v) }`, 1},
+		{"interface_comma_ok_range", `m := map[string]string{"q": source()}; var boxed any = m; a, ok := boxed.(map[string]string); if ok { for _, v := range a { sink(v) } }`, 1},
 		{"unresolved_sibling_fields", `h := &struct{ a, b map[string]string }{a: map[string]string{"q": source()}, b: map[string]string{"q": "safe"}}; for _, v := range h.b { sink(v) }`, 0},
 		{"phi_range", `m := map[string]string{"q": source()}; if flag() { m = map[string]string{"q": "safe"} }; for _, v := range m { sink(v) }`, 1},
 		{"phi_clean_range", `m := map[string]string{"q": "safe"}; if flag() { m = map[string]string{"q": "also safe"} }; _ = source(); for _, v := range m { sink(v) }`, 0},
@@ -53,6 +56,10 @@ func TestCheckDetailedMapRangeBoundaries(t *testing.T) {
 		{"interface_nan_key_delete_is_weak", `f := float64(0); f /= f; var k any = f; m := map[any]string{k: source()}; delete(m, k); for _, v := range m { sink(v) }`, 1},
 		{"struct_nan_key_delete_is_weak", `f := float64(0); f /= f; k := struct{ f float64 }{f}; m := map[struct{ f float64 }]string{k: source()}; delete(m, k); for _, v := range m { sink(v) }`, 1},
 		{"array_nan_key_delete_is_weak", `f := float64(0); f /= f; k := [1]float64{f}; m := map[[1]float64]string{k: source()}; delete(m, k); for _, v := range m { sink(v) }`, 1},
+		{"interface_distinct_integer_types_delete", `m := map[any]string{int(1): source()}; delete(m, int64(1)); for _, v := range m { sink(v) }`, 1},
+		{"interface_distinct_integer_types_overwrite", `m := map[any]string{int(1): source()}; m[int64(1)] = "safe"; for _, v := range m { sink(v) }`, 1},
+		{"interface_distinct_named_types_delete", `type K string; m := map[any]string{K("q"): source()}; delete(m, "q"); for _, v := range m { sink(v) }`, 1},
+		{"interface_same_type_delete_control", `m := map[any]string{int64(1): source()}; delete(m, int64(1)); for _, v := range m { sink(v) }`, 0},
 		// The key definition is the same SSA instruction, but reexecuting it
 		// on an outer-loop backedge produces a different runtime key. The
 		// prior iteration's entry can survive the next iteration's update.
@@ -65,15 +72,26 @@ func TestCheckDetailedMapRangeBoundaries(t *testing.T) {
 		// iteration. The write after the inner break cannot flow into that
 		// iteration's already extracted value or the next fresh map.
 		{"nested_fresh_allocation", `for flag() { m := map[string]string{"q": "safe"}; for _, v := range m { m["q"] = source(); sink(v); break } }`, 0},
+		// A saved Phi can retain the previous allocation's runtime instance;
+		// making another map does not clear the saved old map.
+		{"fresh_allocation_old_map_retained_phi", `var saved map[string]string; for i := 0; i < 2; i++ { m := map[string]string{"q": "safe"}; for _, v := range saved { sink(v) }; m["q"] = source(); saved = m }`, 1},
+		{"fresh_allocation_old_map_retained_phi_key", `var saved map[string]string; for i := 0; i < 2; i++ { m := make(map[string]string); for k := range saved { sink(k) }; m[source()] = "safe"; saved = m }`, 1},
+		{"two_branch_maps_retained_phi", `var saved map[string]string; for i := 0; i < 2; i++ { m := map[string]string{"q": "safe"}; if i == 1 { for _, v := range saved { sink(v) } }; m["q"] = source(); saved = m }`, 1},
 		{"nested_other_map", `outer := map[string]string{"q": source()}; inner := map[string]string{"q": "safe"}; for range outer { for _, v := range inner { sink(v) } }`, 0},
 		{"pointer_value", `p := new(string); *p = source(); m := map[string]*string{"q": p}; for _, v := range m { sink(*v) }`, 1},
 		{"pointer_clean_value_tainted_key", `p := new(string); *p = "safe"; m := map[string]*string{source(): p}; for _, v := range m { sink(*v) }`, 0},
 		{"pointer_value_clean_key", `p := new(string); *p = source(); m := map[string]*string{"q": p}; for k := range m { sink(k) }`, 0},
+		{"pointer_key_clean_pointee_tainted_value", `p := new(string); *p = "safe"; m := map[*string]string{p: source()}; for k := range m { sink(*k) }`, 0},
+		{"named_pointer_clean_value_tainted_key", `type P *string; p := new(string); *p = "safe"; m := map[string]P{source(): P(p)}; for _, v := range m { sink(*v) }`, 0},
+		{"pointer_source_before_overwrite", `p := new(string); *p = source(); m := map[string]*string{"q": p}; q := new(string); *q = "safe"; m["q"] = q; for _, v := range m { sink(*v) }`, 0},
+		{"pointer_source_after_overwrite", `p := new(string); *p = "safe"; m := map[string]*string{"q": p}; q := new(string); *q = source(); m["q"] = q; for _, v := range m { sink(*v) }`, 1},
 		{"pointer_unrelated_pointee", `p := new(string); *p = "safe"; other := new(string); *other = source(); m := map[string]*string{"q": p}; for _, v := range m { sink(*v) }`, 0},
 		// Unlike strings, pointer elements still refer to mutable pointees.
 		{"pointer_write_after_extract", `p := new(string); *p = "safe"; m := map[string]*string{"q": p}; for _, v := range m { *p = source(); sink(*v); break }`, 1},
 		{"pointer_write_after_dereference", `p := new(string); *p = "safe"; m := map[string]*string{"q": p}; for _, v := range m { sink(*v); *p = source(); break }`, 0},
 		{"pointer_clean_before_dereference", `p := new(string); *p = source(); m := map[string]*string{"q": p}; for _, v := range m { *p = "safe"; sink(*v); break }`, 0},
+		{"pointer_helper_write_after_extract", `p := new(string); *p = "safe"; m := map[string]*string{"q": p}; for _, v := range m { setPointer(v, source()); sink(*v); break }`, 1},
+		{"pointer_clean_through_extract_multiple_entries", `p := new(string); q := new(string); *p = source(); *q = source(); m := map[string]*string{"p": p, "q": q}; for _, v := range m { *v = "safe"; sink(*v) }`, 0},
 		{"pointer_deleted_entry_retains_pointee", `p := new(string); *p = source(); m := map[string]*string{"q": p}; for k, v := range m { delete(m, k); sink(*v); break }`, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,6 +113,33 @@ func TestCheckDetailedMapRangeBoundaries(t *testing.T) {
 				}
 				assertEvidenceOrder(t, evidenceKinds(d.Evidence), EvidenceSourceMatch, EvidenceSinkMatch)
 			}
+		})
+	}
+}
+
+// These are known precision limits, not supported clean or tainted controls.
+// Four pointer-alias flows are inherited false negatives in the general pointee
+// fallback. A Phi-selected map's clear is a weak kill, so even a definite clear
+// through the same Phi currently leaves a conservative false positive. Keep
+// semantic expectations visible and promote cases when the limitation changes.
+func TestCheckDetailedMapRangeAliasLimitations(t *testing.T) {
+	for _, tc := range []struct {
+		name, body             string
+		observed, semanticWant int
+	}{
+		{"pointer_helper_write_before_range", `p := new(string); *p = "safe"; m := map[string]*string{"q": p}; setPointer(p, source()); for _, v := range m { sink(*v) }`, 0, 1},
+		{"pointer_phi_alias_store", `p := new(string); q := new(string); *p = "safe"; *q = "safe"; a := q; if flag() { a = p }; *a = source(); m := map[string]*string{"p": p}; for _, v := range m { sink(*v) }`, 0, 1},
+		{"pointer_prior_range_store", `p := new(string); *p = "safe"; m := map[string]*string{"p": p}; for _, w := range m { *w = source() }; for _, v := range m { sink(*v) }`, 0, 1},
+		{"pointer_lookup_alias_store", `p := new(string); *p = "safe"; m := map[string]*string{"p": p}; *m["p"] = source(); for _, v := range m { sink(*v) }`, 0, 1},
+		{"phi_write_then_clear_same_phi", `m := make(map[string]string); if flag() { m = make(map[string]string) }; m["q"] = source(); clear(m); for _, v := range m { sink(v) }`, 1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cg, pkg := detailedGraphForSource(t, mapRangeBoundaryProgram(tc.body))
+			got := CheckDetailed(cg, NewSources(pkg+".source"), NewSinks(pkg+".sink"))
+			if len(got) != tc.observed {
+				t.Fatalf("known limitation changed: got %d, recorded %d, semantic expectation %d; review and promote this case to the supported suite", len(got), tc.observed, tc.semanticWant)
+			}
+			t.Logf("known precision limit: observed %d, semantic expectation %d", tc.observed, tc.semanticWant)
 		})
 	}
 }
