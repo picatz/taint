@@ -16,6 +16,7 @@ import (
 	cmdi "github.com/picatz/taint/command/injection"
 	ptrv "github.com/picatz/taint/command/pathtraversal"
 	"github.com/picatz/taint/internal/analyzercmd"
+	"github.com/picatz/taint/internal/modelflag"
 	"github.com/picatz/taint/internal/wholeprogram"
 	logi "github.com/picatz/taint/log/injection"
 	ssrf "github.com/picatz/taint/network/ssrf"
@@ -68,6 +69,8 @@ Flags:
   -analyzers list   comma-separated subset to run (default: all)
                     one or more of: cmdi, logi, ptrv, sqli, ssrf, xss
   -format format    output format: text, json, or sarif (default text)
+  -models path      additive YAML model file or directory (relative to -C)
+                    requires exactly one selected analyzer
   -tags list        comma-separated build tags
   -test             include test files and packages
   -scope profile    analysis profile: legacy or selected (default legacy)
@@ -80,6 +83,7 @@ Flags:
 
 Same-module bodies require -scope=selected and both limits explicitly positive.
 Limits bound additional parsed inputs, not RSS, execution time, or total SSA size.
+Model kind labels are informational; custom findings use the selected analyzer.
 
 Exit status is 0 when nothing is found, 3 when findings are reported, and 1 on
 error.
@@ -104,7 +108,9 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		bodies             string
 		maxBodyPackages    int
 		maxBodySyntaxBytes int64
+		models             modelflag.Flag
 	)
+	models.Register(fs)
 	fs.StringVar(&bodies, "bodies", "selected", "SSA body inputs: selected or same-module")
 	fs.IntVar(&maxBodyPackages, "max-body-packages", 0, "maximum additional dependency packages (same-module only)")
 	fs.Int64Var(&maxBodySyntaxBytes, "max-body-syntax-bytes", 0, "maximum additional parsed syntax bytes (same-module only)")
@@ -157,6 +163,21 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "taint scan:", err)
 		return scanExitError
 	}
+	var modelsSet bool
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "models" {
+			modelsSet = true
+		}
+	})
+	if modelsSet && len(selected) != 1 {
+		fmt.Fprintln(stderr, "taint scan: -models requires exactly one selected analyzer (-analyzers); model kind labels do not route rules")
+		return scanExitError
+	}
+	userModels, err := models.LoadFrom(dir)
+	if err != nil {
+		fmt.Fprintln(stderr, "taint scan: -models:", err)
+		return scanExitError
+	}
 
 	fmt.Fprintln(stderr, "taint scan: loading packages...")
 	prog, err := wholeprogram.Load(ctx, wholeprogram.Config{
@@ -185,6 +206,9 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	var opts []taint.Option
+	if len(userModels) > 0 {
+		opts = append(opts, taint.WithModels(userModels...))
+	}
 	if prog.Scope == wholeprogram.ScopeSelected {
 		opts = append(opts, taint.WithMatchPackages(prog.MatchPackages...))
 	}

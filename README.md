@@ -231,8 +231,14 @@ can gate on it. See [docs/vulncheck.md](docs/vulncheck.md).
 
 Beyond the built-in coverage below, you can teach any detector about your own
 frameworks and helpers with **models**: data-driven sources, sinks,
-sanitizers, and flow summaries in YAML. Pass `-models path/` to any CLI, or use
-`taint.WithModels` from the library. See [docs/models.md](docs/models.md).
+sanitizers, and flow summaries in YAML. Pass `-models path/` to a detector CLI,
+or use `taint.WithModels` from the library. Whole-program scans also accept
+models: `taint scan -analyzers=sqli -models models/ ./...`. With `-models`,
+`scan` requires exactly one selected analyzer: model `kind` labels are
+informational, and findings use that analyzer's identity. Relative model paths
+resolve under `-C` when supplied, otherwise under the current directory.
+Models augment the built-in rules without changing the selected occurrence
+scope or same-module body limits. See [docs/models.md](docs/models.md).
 
 ### `sqli`
 
