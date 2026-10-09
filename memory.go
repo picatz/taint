@@ -1592,16 +1592,6 @@ func mapBuiltinEventsForCall(call *ssa.Call, lookup *ssa.Lookup) []mapEvent {
 	return nil
 }
 
-func mapKeysMayMatch(a, b ssa.Value) (bool, bool) {
-	ka, aOK := constantKey(a)
-	kb, bOK := constantKey(b)
-	if aOK && bOK {
-		eq := ka == kb
-		return eq, eq
-	}
-	return true, false
-}
-
 func directCalleeMapEventsWithLimit(call *ssa.Call, lookup *ssa.Lookup, maxDepth int) []mapEvent {
 	return directCalleeMapEventsRecursive(call, lookup, summaryLimit(maxDepth), map[mapSummaryKey]struct{}{})
 }
@@ -1681,6 +1671,10 @@ func directCalleeMapEventsRecursive(call *ssa.Call, lookup *ssa.Lookup, depth in
 }
 
 func calleeMapEvents(callee *ssa.Function, params map[ssa.Value]struct{}, lookup *ssa.Lookup, resolve func(ssa.Value) ssa.Value, depth int, seen map[mapSummaryKey]struct{}) []mapEvent {
+	return calleeMapEventsWithKeyResolver(callee, params, lookup, resolve, resolve, depth, seen)
+}
+
+func calleeMapEventsWithKeyResolver(callee *ssa.Function, params map[ssa.Value]struct{}, lookup *ssa.Lookup, resolve, resolveKey func(ssa.Value) ssa.Value, depth int, seen map[mapSummaryKey]struct{}) []mapEvent {
 	if callee == nil || len(params) == 0 || lookup == nil {
 		return nil
 	}
@@ -1698,10 +1692,9 @@ func calleeMapEvents(callee *ssa.Function, params map[ssa.Value]struct{}, lookup
 				key := v.Key
 				value := v.Value
 				if resolve != nil {
-					key = resolve(key)
 					value = resolve(value)
 				}
-				matches, definite := mapKeysMayMatch(key, lookup.Index)
+				matches, definite := mapKeysMayMatchResolved(key, lookup.Index, resolveKey)
 				if !matches {
 					continue
 				}
@@ -1724,10 +1717,7 @@ func calleeMapEvents(callee *ssa.Function, params map[ssa.Value]struct{}, lookup
 							continue
 						}
 						key := common.Args[1]
-						if resolve != nil {
-							key = resolve(key)
-						}
-						matches, definite := mapKeysMayMatch(key, lookup.Index)
+						matches, definite := mapKeysMayMatchResolved(key, lookup.Index, resolveKey)
 						if !matches {
 							continue
 						}
@@ -1777,7 +1767,20 @@ func calleeMapEvents(callee *ssa.Function, params map[ssa.Value]struct{}, lookup
 				nestedResolve := func(value ssa.Value) ssa.Value {
 					return resolveWithParamArgs(value, nestedParamArgs)
 				}
-				nestedEvents := calleeMapEvents(nestedCallee, nestedParams, lookup, nestedResolve, depth-1, seen)
+				// Key wrappers may still contain a parameter from any enclosing
+				// helper. Retain that resolver chain without rewriting SSA or
+				// changing value-summary substitution.
+				nestedKeyArgs := callParamArgs(nestedCallee, v)
+				nestedResolveKey := func(value ssa.Value) ssa.Value {
+					if actual := resolveWithParamArgs(value, nestedKeyArgs); actual != value {
+						return actual
+					}
+					if resolveKey != nil {
+						return resolveKey(value)
+					}
+					return value
+				}
+				nestedEvents := calleeMapEventsWithKeyResolver(nestedCallee, nestedParams, lookup, nestedResolve, nestedResolveKey, depth-1, seen)
 				for _, event := range nestedEvents {
 					event.instr = v
 					out = append(out, event)
@@ -1911,12 +1914,7 @@ func mapUpdateMatchesLookup(update *ssa.MapUpdate, lookup *ssa.Lookup) (bool, bo
 	if update == nil || lookup == nil {
 		return false, false
 	}
-	updateKey, updateKnown := constantKey(update.Key)
-	lookupKey, lookupKnown := constantKey(lookup.Index)
-	if updateKnown && lookupKnown {
-		return updateKey == lookupKey, updateKey == lookupKey
-	}
-	return true, false
+	return mapKeysMayMatch(update.Key, lookup.Index)
 }
 
 // -----------------------------------------------------------------------------

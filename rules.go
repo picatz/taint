@@ -1324,68 +1324,6 @@ func stringConstant(v ssa.Value) (string, bool) {
 	return stringConstantValue(v, map[ssa.Value]struct{}{})
 }
 
-func constantKey(v ssa.Value) (string, bool) {
-	return constantKeyValue(v, map[ssa.Value]struct{}{})
-}
-
-func constantKeyValue(v ssa.Value, seen map[ssa.Value]struct{}) (string, bool) {
-	if v == nil {
-		return "", false
-	}
-	if _, ok := seen[v]; ok {
-		return "", false
-	}
-	seen[v] = struct{}{}
-	switch value := v.(type) {
-	case *ssa.Const:
-		if value.Value == nil {
-			return "", false
-		}
-		return value.Value.Kind().String() + ":" + value.Value.ExactString(), true
-	case *ssa.ChangeInterface:
-		return constantKeyValue(value.X, seen)
-	case *ssa.ChangeType:
-		return constantKeyValue(value.X, seen)
-	case *ssa.Convert:
-		return constantKeyValue(value.X, seen)
-	case *ssa.MakeInterface:
-		return constantKeyValue(value.X, seen)
-	case *ssa.UnOp:
-		if value.Op != token.MUL {
-			return "", false
-		}
-		stored, ok := storedValuesForLoad(value)
-		if !ok {
-			return "", false
-		}
-		return commonConstantKey(stored, seen)
-	case *ssa.Phi:
-		return commonConstantKey(value.Edges, seen)
-	}
-	return "", false
-}
-
-func commonConstantKey(values []ssa.Value, seen map[ssa.Value]struct{}) (string, bool) {
-	if len(values) == 0 {
-		return "", false
-	}
-	var out string
-	for i, value := range values {
-		got, ok := constantKeyValue(value, cloneSSAValueSeen(seen))
-		if !ok {
-			return "", false
-		}
-		if i == 0 {
-			out = got
-			continue
-		}
-		if got != out {
-			return "", false
-		}
-	}
-	return out, true
-}
-
 func stringConstantValue(v ssa.Value, seen map[ssa.Value]struct{}) (string, bool) {
 	if v == nil {
 		return "", false
