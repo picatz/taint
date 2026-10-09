@@ -182,3 +182,78 @@ func TestHelperMapEmptyReduction(t *testing.T) {
 		}
 	}
 }
+
+// These intentionally abstract cursor graphs isolate boundaries that random
+// cases also cover. They are never executed or passed back to SSA analysis.
+func TestHelperMapCursorBoundaries(t *testing.T) {
+	cg, _ := detailedGraphForSource(t, helperSummaryProgram("Diamonds", 0))
+	fn, call, _ := helperSummaryQueries(cg)
+	ret := calleeReturns(fn)[0]
+	root := ret.Block()
+	for _, name := range []string{"killed_shared_join", "cycle", "killed_cycle", "weak_kill", "nil_predecessor", "kill_then_write_tie", "write_then_kill_tie", "before_and_end", "multiple_repeated_returns", "metadata_before_remapping"} {
+		t.Run(name, func(t *testing.T) {
+			pre, post := &ssa.Call{}, &ssa.Call{}
+			root.Instrs = []ssa.Instruction{pre, ret, post}
+			a, b, c := &ssa.BasicBlock{}, &ssa.BasicBlock{}, &ssa.BasicBlock{}
+			ai, bi, ci := &ssa.Call{}, &ssa.Call{}, &ssa.Call{}
+			a.Instrs, b.Instrs, c.Instrs = []ssa.Instruction{ai}, []ssa.Instruction{bi}, []ssa.Instruction{ci}
+			root.Preds, a.Preds, b.Preds = []*ssa.BasicBlock{a, b}, []*ssa.BasicBlock{c}, []*ssa.BasicBlock{c}
+			value := sideEffectValue{value: fn.Params[1]}
+			write := func(instr ssa.Instruction) mapEvent {
+				return mapEvent{kind: mapEventWrite, instr: instr, values: []sideEffectValue{value}}
+			}
+			kill := func(instr ssa.Instruction, definite bool) mapEvent {
+				return mapEvent{kind: mapEventKill, instr: instr, definite: definite}
+			}
+			events := []mapEvent{write(pre), write(ai), write(bi), write(ci)}
+			returns := []*ssa.Return{ret}
+			wantKill := false
+			switch name {
+			case "killed_shared_join":
+				events = append(events, kill(ci, true))
+				wantKill = true
+			case "cycle", "killed_cycle":
+				root.Preds, a.Preds, b.Preds = []*ssa.BasicBlock{a}, []*ssa.BasicBlock{b}, []*ssa.BasicBlock{a}
+				if name == "killed_cycle" {
+					events = append(events, kill(bi, true))
+					wantKill = true
+				}
+			case "weak_kill":
+				events = append(events, kill(ci, false))
+			case "nil_predecessor":
+				root.Preds = []*ssa.BasicBlock{nil}
+			case "kill_then_write_tie":
+				events = []mapEvent{kill(pre, true), write(pre)}
+				wantKill = true
+			case "write_then_kill_tie":
+				events = []mapEvent{write(pre), kill(pre, true)}
+				wantKill = true
+			case "before_and_end":
+				root.Preds = []*ssa.BasicBlock{root}
+				events = []mapEvent{write(pre), {kind: mapEventWrite, instr: post, values: []sideEffectValue{{value: nil}}}, kill(post, true)}
+				wantKill = true
+			case "multiple_repeated_returns":
+				returns = []*ssa.Return{ret, ret, ret}
+			case "metadata_before_remapping":
+				events = []mapEvent{{kind: mapEventWrite, instr: pre, values: []sideEffectValue{value, {value: value.value, call: call}, {value: value.value, callee: fn}, {value: value.value, definite: true}, value}}}
+			}
+			want, legacyKill := helperSummaryLegacyReturns(events, returns)
+			got, gotKill := summarizeMapPaths(events, returns)
+			if legacyKill != wantKill {
+				t.Fatalf("bad fixture: kill %v, want %v", legacyKill, wantKill)
+			}
+			if !reflect.DeepEqual(want, got) || gotKill != wantKill {
+				t.Fatalf("want (%#v,%v), got (%#v,%v)", want, wantKill, got, gotKill)
+			}
+			if name == "metadata_before_remapping" && len(got) != 4 {
+				t.Fatalf("lost metadata distinctions: %#v", got)
+			}
+			if (name == "kill_then_write_tie" || name == "write_then_kill_tie") && len(got) != 1 {
+				t.Fatal("lost tied write")
+			}
+			if name == "before_and_end" && len(got) != 2 {
+				t.Fatal("lost end-cursor write")
+			}
+		})
+	}
+}
