@@ -134,13 +134,19 @@ jobs:
 
   staticcheck:
     runs-on: ubuntu-latest
+    # Staticcheck v0.8.1 cannot decode Go 1.27.2 export data. Use the patched
+    # minimum Go line until a released Staticcheck supports that format.
+    # This excludes check_go127_test.go and sink_paths_go127_test.go from
+    # lint only; Go 1.27 tests, race, vet, and security checks still cover them.
+    env:
+      GOTOOLCHAIN: local
     steps:
     - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
     - name: Setup Go
       uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
       with:
-        go-version-file: go.mod
+        go-version: "1.26.9"
 
     - name: staticcheck
       run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
