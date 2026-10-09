@@ -32,8 +32,12 @@ Let R be the number of returns, I the helper's instruction count, E its
 predecessor-edge count, and F the number of input event/value entries. For the
 already-built events, indexing plus reduction costs expected O(R*(I+E+F)) time
 and O(I+E+F) space, with hash-map operations taken as expected constant time.
-Each return has at most one end cursor per block plus its initial before-return
-cursor. No instruction or edge is traversed once per CFG path.
+This expression assumes ordinary SSA, where every block has an instruction.
+For arbitrary synthetic graphs with empty blocks, include the block count B:
+expected O(F + R*(B+I+E+F)) time. Live auxiliary/output storage is O(B+F);
+this is not a hard Go heap/RSS cap or cumulative allocation bound. Each return
+has at most one end cursor per block plus its initial before-return cursor.
+No instruction or edge is traversed once per CFG path.
 
 This is a bound on reduction only, not the entire helper query or analyzer.
 Finding events still scans helper instructions, resolves arguments/constants,
