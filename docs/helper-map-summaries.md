@@ -73,3 +73,11 @@ SSA construction. `BenchmarkHelperMapCollectorReduction` compares old and new
 reduction including event indexing, excluding event discovery. Fixture setup and
 output comparisons are outside the timed loops. Report these scopes separately;
 shared-host timings are not reliable evidence of throughput speedup.
+
+## Selected-key correctness
+
+The finite reducer remains unchanged. Selected map-key matching now preserves
+concrete interface key types and resolves key parameter wrappers separately from
+value summaries. See [selected map-key identity](map-key-identity.md) for supported
+conversions and remaining conservative boundaries. This does not repair the
+nested control-flow limitations described above.
