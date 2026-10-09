@@ -175,11 +175,20 @@ func scalarMapKeyConstant(value constant.Value, typ types.Type) (mapKeyConstant,
 			}
 		}
 		if bits != 0 {
-			modulus := constant.Shift(constant.MakeInt64(1), token.SHL, bits)
-			mask := constant.BinaryOp(modulus, token.SUB, constant.MakeInt64(1))
-			value = constant.BinaryOp(value, token.AND, mask)
-			if basic.Info()&types.IsUnsigned == 0 && constant.BitLen(value) == int(bits) {
-				value = constant.BinaryOp(value, token.SUB, modulus)
+			// Most keys already fit. Avoid allocating big-integer masks for
+			// this identity case; boundary/overflow cases use the same exact
+			// truncation below (including the signed minimum).
+			fits := constant.BitLen(value) < int(bits)
+			if basic.Info()&types.IsUnsigned != 0 {
+				fits = constant.Sign(value) >= 0 && constant.BitLen(value) <= int(bits)
+			}
+			if !fits {
+				modulus := constant.Shift(constant.MakeInt64(1), token.SHL, bits)
+				mask := constant.BinaryOp(modulus, token.SUB, constant.MakeInt64(1))
+				value = constant.BinaryOp(value, token.AND, mask)
+				if basic.Info()&types.IsUnsigned == 0 && constant.BitLen(value) == int(bits) {
+					value = constant.BinaryOp(value, token.SUB, modulus)
+				}
 			}
 		}
 		if original.Kind() != constant.Int && !constant.Compare(original, token.EQL, value) {
