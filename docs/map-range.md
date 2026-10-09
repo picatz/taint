@@ -25,8 +25,10 @@ Reexecuting a loop-local map allocation starts a fresh map.
 ## Scope and precision limits
 
 This model covers direct same-function map updates, representation-preserving
-conversions, and possible aliases through Phi joins. Possible aliases can
+conversions, and possible aliases through Phi joins. Distinct possible aliases
 contribute writes, but do not establish definite kills of every alternative.
+An identical Phi value can prove a kill only before that Phi definition is
+reexecuted; later loop executions may name a different runtime map.
 It does not infer iteration order, correlate key tests with entries already
 visited, or prove general branch conditions. For example, updating the entry
 currently being visited can conservatively flow to a later iteration even though
@@ -36,15 +38,16 @@ contents. Directly dereferenced pointers to entry-block local allocations use
 the actual dereference position, with a finite backward walk over local stores.
 A closed-use guard rejects helpers, closures, pointer Phi joins, lookups, other
 pointer extractions, and container escapes; those cases retain the existing
-pointee analysis. Four inherited pointee false negatives and one conservative
-Phi-clear false positive are characterized separately with their semantic
-expectations. This is not a general heap-alias or helper-pointee model.
+pointee analysis. Four inherited pointee false negatives are characterized separately with their
+semantic expectations. This is not a general heap-alias or helper-pointee model.
 
 Helper writes, helper reads of caller-created maps, and helper-returned maps are
 not summarized by this model. Unknown helper effects may cause missed flows or
 leave earlier candidate writes alive. These are explicit limitations, not
 claims that helper flows are clean. Dedicated characterization tests preserve
-three known helper false negatives separately from supported cases. General
+three inherited helper false negatives separately from supported cases. These
+seven characterized misses already existed before map-range support; they are
+not newly introduced clean results. General
 heap/global map aliasing, reflection, concurrent mutation, and omitted bodies
 remain outside this local model. No whole-map fallback is used.
 

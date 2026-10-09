@@ -85,8 +85,9 @@ func reachingMapRangeValues(mapv ssa.Value, use ssa.Instruction, component int) 
 	}
 	var out []ssa.Value
 	seenValues := make(map[ssa.Value]bool)
+	scratch := mapRangeWork{seen: make([]uint8, len(use.Parent().Blocks))}
 	for _, write := range writes {
-		if !mapRangeWriteReaches(write, use, events) {
+		if !scratch.reaches(write, use, events) {
 			continue
 		}
 		value := write.value
@@ -101,23 +102,29 @@ func reachingMapRangeValues(mapv ssa.Value, use ssa.Instruction, component int) 
 	return out
 }
 
-// mapRangeWriteReaches is a may-flow query: any finite CFG path from this
+// mapRangeWork.reaches is a may-flow query: any finite CFG path from this
 // write to the read without a definite kill suffices. A visited instruction
 // cursor, rather than a visited execution path, bounds work to O(I + E) per
 // candidate and O(W * (I + E)) per read. The initial partial block and a later
 // whole-block visit are distinct, so textually later loop writes are included.
-func mapRangeWriteReaches(write mapRangeEvent, use ssa.Instruction, events map[ssa.Instruction]mapRangeEvent) bool {
-	work := []mapRangeCursor{{block: write.instr.Block(), index: write.index + 1}}
+type mapRangeWork struct {
+	seen    []uint8
+	cursors []mapRangeCursor
+}
+
+func (scratch *mapRangeWork) reaches(write mapRangeEvent, use ssa.Instruction, events map[ssa.Instruction]mapRangeEvent) bool {
+	clear(scratch.seen)
+	scratch.cursors = append(scratch.cursors[:0], mapRangeCursor{block: write.instr.Block(), index: write.index + 1})
 	// Successor cursors always enter at instruction zero. The single
 	// initial partial block needs no visited slot; four bits per full block
 	// cover the key/map dynamic-identity states without per-state maps.
-	seen := make([]uint8, len(use.Parent().Blocks))
+	seen := scratch.seen
 	keyInstr, _ := write.key.(ssa.Instruction)
 	mapInstr, _ := mapRangeIdentity(write.mapv).(ssa.Instruction)
 	reflexiveKey := write.key != nil && mapRangeReflexiveKey(write.key.Type())
-	for len(work) > 0 {
-		cursor := work[len(work)-1]
-		work = work[:len(work)-1]
+	for len(scratch.cursors) > 0 {
+		cursor := scratch.cursors[len(scratch.cursors)-1]
+		scratch.cursors = scratch.cursors[:len(scratch.cursors)-1]
 		if cursor.block == nil {
 			continue
 		}
@@ -163,8 +170,8 @@ func mapRangeWriteReaches(write mapRangeEvent, use ssa.Instruction, events map[s
 			}
 		}
 		if !killed {
-			for _, succ := range cursor.block.Succs {
-				work = append(work, mapRangeCursor{block: succ, keyChanged: cursor.keyChanged, mapChanged: cursor.mapChanged})
+			for i := len(cursor.block.Succs) - 1; i >= 0; i-- {
+				scratch.cursors = append(scratch.cursors, mapRangeCursor{block: cursor.block.Succs[i], keyChanged: cursor.keyChanged, mapChanged: cursor.mapChanged})
 			}
 		}
 	}
@@ -173,8 +180,9 @@ func mapRangeWriteReaches(write mapRangeEvent, use ssa.Instruction, events map[s
 
 // Only representation-preserving wrappers establish definite map identity.
 // Do not peel loads/fields to their allocation: distinct map-valued fields in
-// one object are not the same map. Phi aliases contribute possible writes but
-// cannot establish a definite kill of an entry on all alternatives.
+// one object are not the same map. Different Phi alternatives only may alias;
+// identical Phi values name the same runtime map until their definition is
+// reexecuted, which the candidate worklist tracks separately.
 func mapRangeIdentity(value ssa.Value) ssa.Value {
 	for {
 		switch v := value.(type) {
@@ -205,8 +213,7 @@ func mapRangeMustAlias(a, b ssa.Value) bool {
 	if a == nil || a != b {
 		return false
 	}
-	_, phi := a.(*ssa.Phi)
-	return !phi
+	return true
 }
 
 func mapRangeMayAlias(a, b ssa.Value) bool {

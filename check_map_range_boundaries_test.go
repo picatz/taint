@@ -37,6 +37,15 @@ func TestCheckDetailedMapRangeBoundaries(t *testing.T) {
 		{"phi_alias_write", `m := map[string]string{"q": "safe"}; a := map[string]string{"q": "safe"}; if flag() { a = m }; a["q"] = source(); for _, v := range m { sink(v) }`, 1},
 		{"phi_alias_clear_is_weak", `m := map[string]string{"q": source()}; a := map[string]string{"q": "safe"}; if flag() { a = m }; clear(a); for _, v := range m { sink(v) }`, 1},
 		{"phi_alias_overwrite_is_weak", `m := map[string]string{"q": source()}; a := map[string]string{"q": "safe"}; if flag() { a = m }; a["q"] = "safe"; for _, v := range m { sink(v) }`, 1},
+		{"phi_write_then_clear_same_phi", `m := make(map[string]string); if flag() { m = make(map[string]string) }; m["q"] = source(); clear(m); for _, v := range m { sink(v) }`, 0},
+		{"phi_write_then_overwrite_same_phi", `m := make(map[string]string); if flag() { m = make(map[string]string) }; m["q"] = source(); m["q"] = "safe"; for _, v := range m { sink(v) }`, 0},
+		{"phi_write_then_delete_same_phi", `m := make(map[string]string); if flag() { m = make(map[string]string) }; m["q"] = source(); delete(m, "q"); for _, v := range m { sink(v) }`, 0},
+		// Reexecuting a map-valued Phi may select a different runtime map;
+		// a later kill through it must not erase the old instance's entries.
+		{"phi_reexecuted_clear_retains_old_map", `old := make(map[string]string); fresh := make(map[string]string); m := old; for i := 0; i < 2; i++ { clear(m); for _, v := range old { sink(v) }; m["q"] = source(); m = fresh }`, 1},
+		{"phi_reexecuted_overwrite_retains_old_map", `old := make(map[string]string); fresh := make(map[string]string); m := old; for i := 0; i < 2; i++ { m["q"] = "safe"; for _, v := range old { sink(v) }; m["q"] = source(); m = fresh }`, 1},
+		{"phi_reexecuted_delete_retains_old_map", `old := make(map[string]string); fresh := make(map[string]string); m := old; for i := 0; i < 2; i++ { delete(m, "q"); for _, v := range old { sink(v) }; m["q"] = source(); m = fresh }`, 1},
+		{"same_phi_outside_loop_kill", `m := make(map[string]string); if flag() { m = make(map[string]string) }; for i := 0; i < 2; i++ { clear(m); for _, v := range m { sink(v) }; m["q"] = source() }`, 0},
 		{"named_conversion_write", `type M map[string]string; m := M{"q": "safe"}; a := map[string]string(m); a["q"] = source(); for _, v := range m { sink(v) }`, 1},
 		{"named_conversion_clear", `type M map[string]string; m := M{"q": source()}; clear(map[string]string(m)); for _, v := range m { sink(v) }`, 0},
 		{"named_key_value_isolation", `type K string; type V string; m := map[K]V{K(source()): "safe"}; for _, v := range m { sink(string(v)) }`, 0},
@@ -118,10 +127,9 @@ func TestCheckDetailedMapRangeBoundaries(t *testing.T) {
 }
 
 // These are known precision limits, not supported clean or tainted controls.
-// Four pointer-alias flows are inherited false negatives in the general pointee
-// fallback. A Phi-selected map's clear is a weak kill, so even a definite clear
-// through the same Phi currently leaves a conservative false positive. Keep
-// semantic expectations visible and promote cases when the limitation changes.
+// These pointer-alias flows are inherited false negatives in the general
+// pointee fallback. Keep semantic expectations visible and promote cases when
+// the limitation changes.
 func TestCheckDetailedMapRangeAliasLimitations(t *testing.T) {
 	for _, tc := range []struct {
 		name, body             string
@@ -131,7 +139,6 @@ func TestCheckDetailedMapRangeAliasLimitations(t *testing.T) {
 		{"pointer_phi_alias_store", `p := new(string); q := new(string); *p = "safe"; *q = "safe"; a := q; if flag() { a = p }; *a = source(); m := map[string]*string{"p": p}; for _, v := range m { sink(*v) }`, 0, 1},
 		{"pointer_prior_range_store", `p := new(string); *p = "safe"; m := map[string]*string{"p": p}; for _, w := range m { *w = source() }; for _, v := range m { sink(*v) }`, 0, 1},
 		{"pointer_lookup_alias_store", `p := new(string); *p = "safe"; m := map[string]*string{"p": p}; *m["p"] = source(); for _, v := range m { sink(*v) }`, 0, 1},
-		{"phi_write_then_clear_same_phi", `m := make(map[string]string); if flag() { m = make(map[string]string) }; m["q"] = source(); clear(m); for _, v := range m { sink(v) }`, 1, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cg, pkg := detailedGraphForSource(t, mapRangeBoundaryProgram(tc.body))
