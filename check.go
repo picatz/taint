@@ -1147,6 +1147,13 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 		refs := value.Referrers()
 		if refs != nil {
 			for _, ref := range *refs {
+				// Storing a pointer in a map does not write to its allocation.
+				// Following that use would leak the other map component (for
+				// example a tainted key) back into a clean pointed-to value.
+				if _, ok := ref.(*ssa.MapUpdate); ok {
+					continue
+				}
+
 				refVal, isVal := ref.(ssa.Value)
 				if isVal {
 					tainted, src, tv := checkSSAValueWithContext(path, ctx, refVal, visited)
@@ -1387,6 +1394,15 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 			return false, "", nil
 		}
 		if value.Op == token.MUL {
+			if values, handled := reachingMapRangePointeeValues(value); handled {
+				for _, candidate := range values {
+					if tainted, src, tv := checkSSAValueWithContext(path, ctx, candidate, visited.clone()); tainted {
+						return true, src, tv
+					}
+				}
+				return false, "", nil
+			}
+
 			if addr, ok := value.X.(*ssa.IndexAddr); ok {
 				if handled, tainted, src, tv := checkAddressedArrayElement(path, ctx, addr.X, addr.Index, value, visited); handled {
 					return tainted, src, tv
@@ -1490,10 +1506,20 @@ func checkSSAValueWithContext(path callgraphutil.Path, ctx taintContext, v ssa.V
 		// carries the string's contents; propagating the whole tuple would
 		// also taint iteration status and offsets. Map iterators use the same
 		// SSA instructions, so keep their key/value flow separate.
-		if next, ok := value.Tuple.(*ssa.Next); ok && next.IsString && value.Index == 2 {
+		if next, ok := value.Tuple.(*ssa.Next); ok {
 			if iter, ok := next.Iter.(*ssa.Range); ok {
-				return checkSSAValueWithContext(path, ctx, iter.X, visited)
+				if next.IsString && value.Index == 2 {
+					return checkSSAValueWithContext(path, ctx, iter.X, visited)
+				}
+				if !next.IsString {
+					for _, candidate := range reachingMapRangeValues(iter.X, next, value.Index) {
+						if tainted, src, tv := checkSSAValueWithContext(path, ctx, candidate, visited.clone()); tainted {
+							return true, src, tv
+						}
+					}
+				}
 			}
+			return false, "", nil
 		}
 		if call, ok := value.Tuple.(*ssa.Call); ok {
 			tainted, src, tv := checkCallReturnValues(path, ctx, call, value.Index, visited.clone())

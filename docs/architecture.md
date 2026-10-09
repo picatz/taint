@@ -52,6 +52,13 @@ using their original bodies, preserving the selected pointer path. Dynamic
 helper indices remain possible writes rather than definite overwrites; constant
 paths into entry-block array allocations can prove direct local overwrites.
 
+Map range reads keep iterator status, keys, and values separate. Same-function
+entry writes flow to each `Next` through a finite CFG worklist, with definite
+per-entry overwrites/deletes and whole-map clears killing older definitions.
+Loop-carried writes may reach later iterations; scalar values already extracted
+are not changed by later map mutation. See [map range propagation](map-range.md)
+for the local alias boundary, helper limitations, and cost model.
+
 ## Rule Registries
 
 Sources, sinks, sanitizers, and propagators are represented as typed internal
