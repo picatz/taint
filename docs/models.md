@@ -210,6 +210,36 @@ $ sqli -models ./models ./...
 For import-aware gating to run your model, its `package` should be an import
 path the analyzed program actually imports.
 
+### From whole-program scans
+
+`taint scan` accepts the same additive model file or directory. Select exactly
+one analyzer when supplying `-models`:
+
+```console
+$ taint scan -analyzers=sqli -models ./models ./...
+$ taint scan -C ./service -analyzers=sqli -models ./models/acme-db.yaml ./...
+```
+
+In the second example, the model path is `./service/models/acme-db.yaml`.
+Relative paths resolve under `-C`, regardless of flag order; without `-C` they
+resolve under the current working directory. Absolute paths are unchanged.
+Paths and model YAML are validated before loading Go packages. A missing or
+invalid model returns exit status `1` with no report on stdout.
+
+This first increment requires exactly one selected analyzer, including when
+`-models` is explicitly empty. Omitting `-analyzers` selects all detectors and
+is therefore rejected with `-models`. Repeating the same analyzer in the list
+still selects one analyzer. The model's `kind` labels are informational; they
+do not route rules to detectors. Custom findings use the selected analyzer's
+message, text/JSON identity, and SARIF rule ID, alongside its built-in findings.
+
+Models do not expand analysis scope. With `-scope=selected`, source and sink
+occurrences must still belong to selected packages. `-bodies=same-module` can
+provide helper bodies for propagation, but does not select dependency-owned
+occurrences or bypass either body budget. See [analysis-scope.md](analysis-scope.md)
+and [body-coverage.md](body-coverage.md). Existing text, JSON, and SARIF formats
+and exit codes apply: `0` for clean, `3` for findings, `1` for errors.
+
 ### From the interactive tool
 
 The `taint` interactive tool has a `models` command for iterating on a model

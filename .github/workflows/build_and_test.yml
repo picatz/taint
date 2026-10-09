@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ["1.26.x", "1.27.x"]
+        go: ["1.26.9", "1.27.2"]
     env:
       # Verify the selected version, without auto-switching to go.mod's
       # preferred toolchain and accidentally testing it twice.
@@ -100,7 +100,7 @@ jobs:
   # Exercise package loading and CLI orchestration under the race detector.
   # Keep SSA-heavy packages serial and give them a separate bounded job.
   race-wholeprogram:
-    name: race (wholeprogram + CLI, Go 1.27)
+    name: race (wholeprogram + CLI, Go 1.27.2)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -111,7 +111,7 @@ jobs:
     - name: Setup Go
       uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
       with:
-        go-version: "1.27.x"
+        go-version: "1.27.2"
         check-latest: true
 
     - name: Test with race detector (wholeprogram + CLI)
@@ -134,13 +134,20 @@ jobs:
 
   staticcheck:
     runs-on: ubuntu-latest
+    # Staticcheck v0.8.1 cannot decode Go 1.27.2 export data. Use the patched
+    # minimum Go line until a released Staticcheck supports that format.
+    # This excludes check_go127_test.go and sink_paths_go127_test.go from
+    # lint only; Go 1.27 tests, race, and vet still cover them. Security checks
+    # remain on the preferred patched toolchain.
+    env:
+      GOTOOLCHAIN: local
     steps:
     - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
     - name: Setup Go
       uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
       with:
-        go-version-file: go.mod
+        go-version: "1.26.9"
 
     - name: staticcheck
       run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...

@@ -5,6 +5,7 @@ package modelflag
 
 import (
 	"flag"
+	"path/filepath"
 
 	"github.com/picatz/taint"
 )
@@ -22,5 +23,16 @@ func (f *Flag) Register(fs *flag.FlagSet) {
 
 // Load parses the models named by the flag. An unset flag returns nil, nil.
 func (f *Flag) Load() ([]taint.Model, error) {
-	return taint.ModelsFromPath(f.path)
+	return f.LoadFrom("")
+}
+
+// LoadFrom parses the models named by the flag, resolving a relative path
+// against dir. An unset or empty flag returns nil, nil, even when dir is set.
+// It does not change the process working directory.
+func (f *Flag) LoadFrom(dir string) ([]taint.Model, error) {
+	path := f.path
+	if path != "" && dir != "" && !filepath.IsAbs(path) {
+		path = filepath.Join(dir, path)
+	}
+	return taint.ModelsFromPath(path)
 }
